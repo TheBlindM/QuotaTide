@@ -6,6 +6,7 @@ import { loadConfig } from "./config.js";
 import { QuotaDatabase } from "./database.js";
 import { Mailer } from "./mailer.js";
 import { QuotaMonitor } from "./monitor.js";
+import { decodeRequestPath } from "./static-path.js";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = path.join(rootDir, "public");
@@ -37,7 +38,13 @@ function sendJson(response, status, body) {
 function serveStatic(request, response) {
   const url = new URL(request.url, "http://localhost");
   const requested = url.pathname === "/" ? "/index.html" : url.pathname;
-  const decoded = decodeURIComponent(requested);
+  const decodedPath = decodeRequestPath(requested);
+  if (!decodedPath.ok) {
+    response.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+    response.end("Bad request");
+    return;
+  }
+  const decoded = decodedPath.value;
   const filePath = path.resolve(publicDir, `.${decoded}`);
   if (!filePath.startsWith(`${publicDir}${path.sep}`) || !existsSync(filePath)) {
     response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });

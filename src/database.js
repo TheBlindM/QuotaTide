@@ -172,6 +172,7 @@ export class QuotaDatabase {
     this.setState("radar", { ...radar, fetchedAt: capturedAt });
     return {
       isNew:
+        Boolean(previous?.latest?.id) &&
         Boolean(radar.latest?.id) &&
         radar.latest.id !== previous?.latest?.id,
       previous,
@@ -187,6 +188,15 @@ export class QuotaDatabase {
       )
       .run(key, type, date, Date.now(), deliveryStatus, detail || "");
     return result.changes > 0;
+  }
+
+  getAlert(key) {
+    return this.db
+      .prepare(
+        `SELECT alert_key, delivery_status
+         FROM alerts WHERE alert_key = ?`,
+      )
+      .get(key);
   }
 
   updateAlertDelivery(key, status, detail = "") {

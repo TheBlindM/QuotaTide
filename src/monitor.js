@@ -26,7 +26,8 @@ export class QuotaMonitor {
 
   async deliverAlert(key, type, date, subject, text) {
     const inserted = this.database.createAlert({ key, type, date, detail: text });
-    if (!inserted) return;
+    const existing = inserted ? null : this.database.getAlert(key);
+    if (!inserted && existing?.delivery_status !== "failed") return;
     const result = await this.mailer.send(subject, text);
     this.database.updateAlertDelivery(key, result.status, result.detail);
   }
@@ -34,7 +35,10 @@ export class QuotaMonitor {
   async refreshRadar() {
     try {
       const radar = await fetchResetRadar(this.config);
-      this.database.recordRadar(radar);
+      const result = this.database.recordRadar(radar);
+      if (result.isNew) {
+        this.database.setState("pending_radar_event_id", radar.latest.id);
+      }
       return radar;
     } catch (error) {
       this.database.setState("radar_failure", {
@@ -92,12 +96,12 @@ export class QuotaMonitor {
       const radarCanExplainReset =
         result.epochChanged &&
         radar?.latest?.id &&
-        radar.latest.id !==
-          this.database.getState("last_confirmed_radar_event_id") &&
+        radar.latest.id === this.database.getState("pending_radar_event_id") &&
         Number.isFinite(announcedAt) &&
         announcedAt >= (result.previous?.capturedAt || 0) - 2 * 60 * 60 * 1000;
       if (radarCanExplainReset) {
         this.database.setState("last_confirmed_radar_event_id", radar.latest.id);
+        this.database.setState("pending_radar_event_id", null);
         this.database.setState("last_confirmed_reset", {
           at: now,
           reason: "global_announced_reset",
@@ -154,8 +158,9 @@ export class QuotaMonitor {
       radar: status.radar,
       lastSuccessAt: status.lastSuccessAt,
       stale:
-        Boolean(status.lastSuccessAt) &&
-        Date.now() - status.lastSuccessAt > staleAfterMs,
+        status.consecutiveFailures > 0 ||
+        (Boolean(status.lastSuccessAt) &&
+          Date.now() - status.lastSuccessAt > staleAfterMs),
       consecutiveFailures: status.consecutiveFailures,
       lastFailure: status.lastFailure,
       lastConfirmedReset: status.lastConfirmedReset,

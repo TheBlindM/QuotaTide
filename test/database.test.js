@@ -42,3 +42,22 @@ test("每日使用跨普通快照和中途重置持续累计", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("首次读取雷达建立基线，之后不同事件才算新公告", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "codex-radar-test-"));
+  const database = new QuotaDatabase(
+    path.join(directory, "test.sqlite"),
+    "Asia/Shanghai",
+  );
+  try {
+    const first = database.recordRadar({ latest: { id: "event-1" } });
+    const same = database.recordRadar({ latest: { id: "event-1" } });
+    const next = database.recordRadar({ latest: { id: "event-2" } });
+    assert.equal(first.isNew, false);
+    assert.equal(same.isNew, false);
+    assert.equal(next.isNew, true);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
