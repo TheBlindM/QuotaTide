@@ -5,8 +5,8 @@
   "type": "module",
   "description": "单账号 Codex 共享额度监控、每日阈值和邮件告警服务",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
+    "start": "node --env-file-if-exists=.env --use-env-proxy src/server.js",
+    "dev": "node --env-file-if-exists=.env --use-env-proxy --watch src/server.js",
     "test": "node --test",
     "check": "node --check src/server.js && node --check public/app.js"
   },

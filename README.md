@@ -25,14 +25,10 @@ npm start
 
 访问 `http://127.0.0.1:4317`。
 
-环境变量不会由 Node.js 自动从 `.env` 加载；可由进程管理器注入，或在 shell 中先执行：
+`npm start` 和 `npm run dev` 会自动读取项目根目录的 `.env`。
 
-```bash
-set -a
-source .env
-set +a
-npm start
-```
+如果访问 ChatGPT 需要本机代理，请同时设置 `HTTP_PROXY`、
+`HTTPS_PROXY` 和 `NODE_USE_ENV_PROXY=1`。
 
 ## auth.json
 
