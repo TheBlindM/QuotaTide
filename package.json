@@ -1,0 +1,19 @@
+{
+  "name": "codex-shared-quota-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "单账号 Codex 共享额度监控、每日阈值和邮件告警服务",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test",
+    "check": "node --check src/server.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "nodemailer": "^9.0.3"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

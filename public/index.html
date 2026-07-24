@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Codex 共享账号周额度、每日阈值和重置雷达监控台"
+    />
+    <title>Codex 额度监控</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">C</span>
+          <div>
+            <p class="eyebrow">SHARED ACCOUNT</p>
+            <h1>Codex 额度监控</h1>
+          </div>
+        </div>
+        <div class="header-actions">
+          <span id="lastUpdated" class="updated">尚未采集</span>
+          <button id="refreshButton" class="refresh-button" type="button">
+            刷新额度
+          </button>
+        </div>
+      </header>
+
+      <section id="notice" class="notice" hidden></section>
+
+      <section class="hero-grid" aria-label="当前额度概览">
+        <article class="account-card panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-kicker">当前账号</p>
+              <h2 id="accountPlan">待配置</h2>
+            </div>
+            <span id="statusBadge" class="status-badge neutral">未连接</span>
+          </div>
+          <dl class="identity-list">
+            <div>
+              <dt>邮箱</dt>
+              <dd id="accountEmail">—</dd>
+            </div>
+            <div>
+              <dt>Account ID</dt>
+              <dd id="accountId">—</dd>
+            </div>
+            <div>
+              <dt>采集频率</dt>
+              <dd id="pollInterval">每 1 小时</dd>
+            </div>
+          </dl>
+          <div class="account-meta">
+            <span id="mailStatus">邮件未配置</span>
+            <span id="failureStatus">采集正常</span>
+          </div>
+        </article>
+
+        <article class="today-card panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-kicker">今日使用</p>
+              <h2><span id="todayUsed">0.0</span><small>%</small></h2>
+            </div>
+            <div class="limit-copy">
+              上限 <strong id="todayLimit">16%</strong>
+            </div>
+          </div>
+          <div
+            class="progress-track"
+            role="progressbar"
+            aria-label="今日额度进度"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+          >
+            <div id="todayProgress" class="progress-fill"></div>
+            <span class="threshold threshold-warning">80%</span>
+          </div>
+          <div class="progress-caption">
+            <span id="todayState">正常</span>
+            <span id="todayRemaining">距建议上限还有 16.0%</span>
+          </div>
+        </article>
+      </section>
+
+      <section class="quota-card panel">
+        <div class="panel-head">
+          <div>
+            <p class="section-kicker">账号额度窗口</p>
+            <h2>每周额度</h2>
+          </div>
+          <div class="quota-number">
+            <strong id="weeklyUsed">—</strong><span>% 已用</span>
+          </div>
+        </div>
+        <div class="weekly-track">
+          <div id="weeklyProgress" class="weekly-fill"></div>
+        </div>
+        <div class="quota-facts">
+          <div>
+            <span>剩余额度</span>
+            <strong id="weeklyRemaining">—</strong>
+          </div>
+          <div>
+            <span>计划重置</span>
+            <strong id="weeklyReset">—</strong>
+          </div>
+          <div>
+            <span>距离重置</span>
+            <strong id="weeklyCountdown">—</strong>
+          </div>
+          <div>
+            <span>Reset Credits</span>
+            <strong id="resetCredits">—</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="lower-grid">
+        <article class="panel history-card">
+          <div class="panel-head">
+            <div>
+              <p class="section-kicker">趋势</p>
+              <h2>最近 7 天</h2>
+            </div>
+            <span class="legend"><i></i> 每日使用 / 上限</span>
+          </div>
+          <div id="historyChart" class="history-chart">
+            <p class="empty-state">采集后显示每日使用记录</p>
+          </div>
+        </article>
+
+        <article class="panel radar-card">
+          <div class="panel-head">
+            <div>
+              <p class="section-kicker">GLOBAL RESET RADAR</p>
+              <h2>全局重置雷达</h2>
+            </div>
+            <span id="radarStatus" class="live-dot">等待数据</span>
+          </div>
+          <p id="radarTime" class="radar-time">尚未读取公告</p>
+          <p id="radarText" class="radar-text">
+            雷达用于解释额外重置，不替代账号自己的计划重置时间。
+          </p>
+          <a
+            id="radarLink"
+            class="radar-link"
+            href="https://codex-resets.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            查看 Codex Resets
+          </a>
+        </article>
+      </section>
+
+      <section class="panel alert-card">
+        <div class="panel-head">
+          <div>
+            <p class="section-kicker">通知</p>
+            <h2>最近告警</h2>
+          </div>
+        </div>
+        <div id="alertList" class="alert-list">
+          <p class="empty-state">暂无告警</p>
+        </div>
+      </section>
+
+      <footer>
+        <span>工作日 16% · 周末 10% · 80% 预警 · 100% 超额</span>
+        <span>仅监控，不拦截请求</span>
+      </footer>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
