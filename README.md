@@ -30,6 +30,35 @@ npm start
 如果访问 ChatGPT 需要本机代理，请同时设置 `HTTP_PROXY`、
 `HTTPS_PROXY` 和 `NODE_USE_ENV_PROXY=1`。
 
+## 使用 Docker 运行
+
+项目内的 `compose.yaml` 已配置：
+
+- 页面仅发布到本机 `127.0.0.1:4317`；
+- `/Users/benteli/.codex/auth.json` 作为只读 secret 挂载；
+- SQLite 数据保存在 Docker named volume；
+- 容器通过 `host.docker.internal:7897` 使用本机代理；
+- 容器异常退出或 Docker 重启后自动恢复。
+
+启动：
+
+```bash
+docker compose up -d --build
+```
+
+查看状态：
+
+```bash
+docker compose ps
+docker compose logs --tail=100 monitor
+```
+
+停止服务但保留历史数据：
+
+```bash
+docker compose down
+```
+
 ## auth.json
 
 支持常见的 Codex CLI 嵌套结构和 New API 扁平结构：

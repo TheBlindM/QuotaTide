@@ -1,0 +1,46 @@
+name: codex-quota-monitor
+
+services:
+  monitor:
+    build:
+      context: .
+    container_name: codex-quota-monitor
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4317:4317"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4317
+      TIMEZONE: Asia/Shanghai
+      AUTH_JSON_PATH: /run/secrets/codex-auth.json
+      POLL_INTERVAL_MINUTES: 60
+      DATABASE_PATH: /app/data/quota-monitor.sqlite
+      CODEX_BASE_URL: https://chatgpt.com
+      CODEX_RESETS_URL: https://codex-resets.com/api/resets
+      HTTP_PROXY: http://host.docker.internal:7897
+      HTTPS_PROXY: http://host.docker.internal:7897
+      NO_PROXY: 127.0.0.1,localhost
+    volumes:
+      - quota-data:/app/data
+    secrets:
+      - source: codex-auth
+        target: codex-auth.json
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4317/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  quota-data:
+
+secrets:
+  codex-auth:
+    file: /Users/benteli/.codex/auth.json
