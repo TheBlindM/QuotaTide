@@ -5,6 +5,7 @@ import {
   calculateDelta,
   dailyLimitFor,
   evaluateDailyPolicy,
+  isEpochChange,
   localDateParts,
 } from "./policy.js";
 
@@ -107,11 +108,7 @@ export class QuotaDatabase {
       .get(date);
     const dailyUsed = Math.max(0, Number(existing?.used_percent || 0) + delta);
     const policy = evaluateDailyPolicy(dailyUsed, limit);
-    const epochChanged = Boolean(
-      previous &&
-        (previous.resetAt !== current.resetAt ||
-          current.usedPercent + 0.01 < previous.usedPercent),
-    );
+    const epochChanged = isEpochChange(previous, current);
 
     this.db.exec("BEGIN");
     try {
@@ -158,6 +155,93 @@ export class QuotaDatabase {
       planType: usage.planType,
     });
     return { date, policy, previous, current, epochChanged, delta };
+  }
+
+  reconcileDerivedData() {
+    const snapshots = this.db
+      .prepare(
+        `SELECT captured_at, used_percent, remaining_percent, reset_at,
+                window_seconds, plan_type, allowed, reset_credits
+         FROM snapshots ORDER BY captured_at, id`,
+      )
+      .all()
+      .map((row) => ({
+        capturedAt: row.captured_at,
+        usedPercent: row.used_percent,
+        remainingPercent: row.remaining_percent,
+        resetAt: row.reset_at,
+        windowSeconds: row.window_seconds,
+        planType: row.plan_type,
+        allowed: Boolean(row.allowed),
+        resetCredits: row.reset_credits,
+      }));
+
+    const days = new Map();
+    let previous = null;
+    for (const current of snapshots) {
+      const { date } = localDateParts(
+        new Date(current.capturedAt),
+        this.timezone,
+      );
+      const existing = days.get(date) || {
+        used: 0,
+        updatedAt: current.capturedAt,
+      };
+      existing.used += calculateDelta(previous, current);
+      existing.updatedAt = Math.max(existing.updatedAt, current.capturedAt);
+      days.set(date, existing);
+      previous = current;
+    }
+
+    this.db.exec("BEGIN");
+    try {
+      this.db.exec("DELETE FROM daily_usage");
+      const insertDay = this.db.prepare(
+        `INSERT INTO daily_usage (
+          local_date, used_percent, limit_percent, status, updated_at
+        ) VALUES (?, ?, ?, ?, ?)`,
+      );
+      for (const [date, day] of days) {
+        const limit = dailyLimitFor(
+          new Date(day.updatedAt),
+          this.timezone,
+        );
+        const policy = evaluateDailyPolicy(day.used, limit);
+        insertDay.run(date, day.used, limit, policy.status, day.updatedAt);
+      }
+
+      const thresholdAlerts = this.db
+        .prepare(
+          `SELECT alert_key, type, local_date
+           FROM alerts
+           WHERE type IN ('daily_warning', 'daily_exceeded')`,
+        )
+        .all();
+      const deleteAlert = this.db.prepare(
+        "DELETE FROM alerts WHERE alert_key = ?",
+      );
+      for (const alert of thresholdAlerts) {
+        const day = days.get(alert.local_date);
+        const policy = day
+          ? evaluateDailyPolicy(
+              day.used,
+              dailyLimitFor(new Date(day.updatedAt), this.timezone),
+            )
+          : null;
+        const remainsValid = policy
+          ? alert.type === "daily_exceeded"
+            ? policy.ratio >= 1
+            : policy.ratio >= 0.8
+          : false;
+        if (!remainsValid) deleteAlert.run(alert.alert_key);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    return { snapshots: snapshots.length, days: days.size };
   }
 
   recordFailure(message, capturedAt = Date.now()) {

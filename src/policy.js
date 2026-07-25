@@ -33,12 +33,23 @@ export function evaluateDailyPolicy(used, limit) {
   };
 }
 
+export const RESET_AT_JITTER_TOLERANCE_SECONDS = 60;
+
+export function isEpochChange(previous, current) {
+  if (!previous) return false;
+  const resetAtChanged =
+    Number.isFinite(previous.resetAt) &&
+    Number.isFinite(current.resetAt) &&
+    Math.abs(previous.resetAt - current.resetAt) >
+      RESET_AT_JITTER_TOLERANCE_SECONDS;
+  const usageDropped =
+    current.usedPercent + 0.01 < previous.usedPercent;
+  return resetAtChanged || usageDropped;
+}
+
 export function calculateDelta(previous, current) {
   if (!previous) return 0;
-  const epochChanged =
-    previous.resetAt !== current.resetAt ||
-    current.usedPercent + 0.01 < previous.usedPercent;
-  return epochChanged
+  return isEpochChange(previous, current)
     ? Math.max(0, current.usedPercent)
     : Math.max(0, current.usedPercent - previous.usedPercent);
 }

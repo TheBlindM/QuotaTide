@@ -45,3 +45,13 @@ test("重置后把新 epoch 的已用比例加入当天而不是记负数", () =
     4,
   );
 });
+
+test("reset_at 抖动 1 秒不应开启新的额度 epoch", () => {
+  assert.equal(
+    calculateDelta(
+      { usedPercent: 12, resetAt: 1785405709 },
+      { usedPercent: 12, resetAt: 1785405710 },
+    ),
+    0,
+  );
+});

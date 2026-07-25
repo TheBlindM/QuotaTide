@@ -61,3 +61,40 @@ test("首次读取雷达建立基线，之后不同事件才算新公告", () =>
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("reset_at 小幅抖动不会重复累计，且可修复历史汇总与错误告警", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "codex-jitter-test-"));
+  const database = new QuotaDatabase(
+    path.join(directory, "test.sqlite"),
+    "Asia/Shanghai",
+  );
+  try {
+    const first = Date.parse("2026-07-25T01:00:00Z");
+    database.recordSnapshot(usage(12, 1785405709), first);
+    database.recordSnapshot(usage(12, 1785405710), first + 60 * 60 * 1000);
+    assert.equal(database.status(first + 60 * 60 * 1000).today.used, 0);
+
+    database.db
+      .prepare(
+        `UPDATE daily_usage
+         SET used_percent = 24, status = 'exceeded'
+         WHERE local_date = '2026-07-25'`,
+      )
+      .run();
+    database.createAlert({
+      key: "2026-07-25:daily-exceeded",
+      type: "daily_exceeded",
+      date: "2026-07-25",
+      detail: "legacy incorrect alert",
+    });
+
+    database.reconcileDerivedData();
+    const repaired = database.status(first + 60 * 60 * 1000);
+    assert.equal(repaired.today.used, 0);
+    assert.equal(repaired.today.status, "normal");
+    assert.equal(repaired.alerts.length, 0);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

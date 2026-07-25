@@ -12,6 +12,7 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const publicDir = path.join(rootDir, "public");
 const config = loadConfig(rootDir);
 const database = new QuotaDatabase(config.databasePath, config.timezone);
+database.reconcileDerivedData();
 const mailer = new Mailer(config.smtp);
 const monitor = new QuotaMonitor({ config, database, mailer });
 
