@@ -264,6 +264,15 @@ h2 {
   font-size: 20px;
 }
 
+.limit-copy small {
+  display: block;
+  max-width: 150px;
+  margin-top: 5px;
+  color: var(--green);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .progress-track,
 .weekly-track {
   position: relative;

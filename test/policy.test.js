@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   calculateDelta,
   dailyLimitFor,
+  dynamicDailyLimitFor,
   evaluateDailyPolicy,
 } from "../src/policy.js";
 
@@ -18,6 +19,24 @@ test("周末每日上限为周额度 10%", () => {
     dailyLimitFor(new Date("2026-07-25T04:00:00Z"), "Asia/Shanghai"),
     10,
   );
+});
+
+test("未用完的工作日额度平分给本周剩余工作日", () => {
+  const usageByDate = new Map([
+    ["2026-07-27", 10],
+  ]);
+  assert.equal(dynamicDailyLimitFor("2026-07-28", usageByDate), 17.5);
+});
+
+test("工作日超用不扣减后续工作日的基础额度", () => {
+  const usageByDate = new Map([
+    ["2026-07-27", 20],
+  ]);
+  assert.equal(dynamicDailyLimitFor("2026-07-28", usageByDate), 16);
+});
+
+test("缺失的历史工作日不能当作未使用额度结转", () => {
+  assert.equal(dynamicDailyLimitFor("2026-07-31", new Map()), 16);
 });
 
 test("达到当日上限的 80% 时预警，达到 100% 时超额", () => {

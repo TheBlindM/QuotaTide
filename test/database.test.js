@@ -98,3 +98,28 @@ test("reset_at 小幅抖动不会重复累计，且可修复历史汇总与错�
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("数据库状态把前一工作日结余平分给剩余工作日", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "codex-carry-test-"));
+  const database = new QuotaDatabase(
+    path.join(directory, "test.sqlite"),
+    "Asia/Shanghai",
+  );
+  try {
+    const mondayMorning = Date.parse("2026-07-27T01:00:00Z");
+    const mondayEvening = Date.parse("2026-07-27T10:00:00Z");
+    const tuesdayMorning = Date.parse("2026-07-28T01:00:00Z");
+    database.recordSnapshot(usage(0), mondayMorning);
+    database.recordSnapshot(usage(10), mondayEvening);
+    database.recordSnapshot(usage(10), tuesdayMorning);
+
+    const monday = database.status(mondayEvening);
+    const tuesday = database.status(tuesdayMorning);
+    assert.equal(monday.today.limit, 16);
+    assert.equal(tuesday.today.limit, 17.5);
+    assert.equal(tuesday.today.used, 0);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

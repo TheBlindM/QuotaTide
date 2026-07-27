@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   calculateDelta,
   dailyLimitFor,
+  dynamicDailyLimitFor,
   evaluateDailyPolicy,
   isEpochChange,
   localDateParts,
@@ -88,6 +89,15 @@ export class QuotaDatabase {
       : null;
   }
 
+  dailyUsageMap() {
+    return new Map(
+      this.db
+        .prepare("SELECT local_date, used_percent FROM daily_usage")
+        .all()
+        .map((row) => [row.local_date, row.used_percent]),
+    );
+  }
+
   recordSnapshot(usage, capturedAt = Date.now()) {
     const previous = this.latestSnapshot();
     const current = {
@@ -101,7 +111,7 @@ export class QuotaDatabase {
       resetCredits: usage.resetCredits,
     };
     const { date } = localDateParts(new Date(capturedAt), this.timezone);
-    const limit = dailyLimitFor(new Date(capturedAt), this.timezone);
+    const limit = dynamicDailyLimitFor(date, this.dailyUsageMap());
     const delta = calculateDelta(previous, current);
     const existing = this.db
       .prepare("SELECT used_percent FROM daily_usage WHERE local_date = ?")
@@ -192,6 +202,9 @@ export class QuotaDatabase {
       days.set(date, existing);
       previous = current;
     }
+    const usageByDate = new Map(
+      [...days].map(([date, day]) => [date, day.used]),
+    );
 
     this.db.exec("BEGIN");
     try {
@@ -202,10 +215,8 @@ export class QuotaDatabase {
         ) VALUES (?, ?, ?, ?, ?)`,
       );
       for (const [date, day] of days) {
-        const limit = dailyLimitFor(
-          new Date(day.updatedAt),
-          this.timezone,
-        );
+        const limit = dynamicDailyLimitFor(date, usageByDate);
+        day.limit = limit;
         const policy = evaluateDailyPolicy(day.used, limit);
         insertDay.run(date, day.used, limit, policy.status, day.updatedAt);
       }
@@ -223,10 +234,7 @@ export class QuotaDatabase {
       for (const alert of thresholdAlerts) {
         const day = days.get(alert.local_date);
         const policy = day
-          ? evaluateDailyPolicy(
-              day.used,
-              dailyLimitFor(new Date(day.updatedAt), this.timezone),
-            )
+          ? evaluateDailyPolicy(day.used, day.limit)
           : null;
         const remainsValid = policy
           ? alert.type === "daily_exceeded"
@@ -297,8 +305,13 @@ export class QuotaDatabase {
     const todayRow = this.db
       .prepare("SELECT * FROM daily_usage WHERE local_date = ?")
       .get(date);
-    const limit = dailyLimitFor(new Date(now), this.timezone);
+    const baseLimit = dailyLimitFor(new Date(now), this.timezone);
+    const limit =
+      todayRow?.limit_percent ??
+      dynamicDailyLimitFor(date, this.dailyUsageMap());
     const today = evaluateDailyPolicy(todayRow?.used_percent || 0, limit);
+    today.baseLimit = baseLimit;
+    today.adjustment = limit - baseLimit;
     const history = this.db
       .prepare(
         `SELECT local_date, used_percent, limit_percent, status, updated_at

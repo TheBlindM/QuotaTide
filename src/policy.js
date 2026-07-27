@@ -18,6 +18,35 @@ export function dailyLimitFor(date, timezone) {
   return weekday === "Sat" || weekday === "Sun" ? 10 : 16;
 }
 
+export const WEEKDAY_QUOTA_POOL = 80;
+export const BASE_WORKDAY_LIMIT = WEEKDAY_QUOTA_POOL / 5;
+
+function addLocalDays(localDate, days) {
+  const date = new Date(`${localDate}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+export function dynamicDailyLimitFor(localDate, usageByDate) {
+  const weekday = new Date(`${localDate}T00:00:00Z`).getUTCDay();
+  if (weekday === 0 || weekday === 6) return 10;
+
+  const monday = addLocalDays(localDate, -(weekday - 1));
+  let carryover = 0;
+  for (let offset = 0; offset < weekday - 1; offset += 1) {
+    const date = addLocalDays(monday, offset);
+    const remainingWorkdays = 5 - offset;
+    const allocatedCarryover = carryover / remainingWorkdays;
+    const limit = BASE_WORKDAY_LIMIT + allocatedCarryover;
+    const unused = usageByDate.has(date)
+      ? Math.max(0, limit - Math.max(0, Number(usageByDate.get(date)) || 0))
+      : 0;
+    carryover = carryover - allocatedCarryover + unused;
+  }
+  const remainingWorkdays = 6 - weekday;
+  return BASE_WORKDAY_LIMIT + carryover / remainingWorkdays;
+}
+
 export function evaluateDailyPolicy(used, limit) {
   const safeUsed = Math.max(0, Number(used) || 0);
   const ratio = limit > 0 ? safeUsed / limit : 0;
