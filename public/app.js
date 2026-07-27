@@ -126,10 +126,10 @@ function render(data) {
   $("todayUsed").textContent = formatNumber(data.today.used);
   $("todayLimit").textContent = `${data.today.limit}%`;
   $("limitAdjustment").textContent =
-    data.today.baseLimit === 10
+    data.today.policyKind === "weekend_fixed"
       ? "周末固定额度"
       : data.today.adjustment > 0.01
-        ? `基础 16% + 结转 ${formatNumber(data.today.adjustment)}%`
+        ? `基础 ${formatNumber(data.today.baseLimit)}% + 结转 ${formatNumber(data.today.adjustment)}%`
         : "工作日基础额度";
   $("todayProgress").style.width = `${data.today.progressPercent}%`;
   $("todayProgress").className = `progress-fill ${data.today.status}`;

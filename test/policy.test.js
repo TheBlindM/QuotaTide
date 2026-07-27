@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   calculateDelta,
   dailyLimitFor,
+  dayPolicyFor,
   dynamicDailyLimitFor,
   evaluateDailyPolicy,
 } from "../src/policy.js";
@@ -19,6 +20,10 @@ test("周末每日上限为周额度 10%", () => {
     dailyLimitFor(new Date("2026-07-25T04:00:00Z"), "Asia/Shanghai"),
     10,
   );
+  assert.deepEqual(dayPolicyFor("2026-07-25"), {
+    kind: "weekend_fixed",
+    baseLimit: 10,
+  });
 });
 
 test("未用完的工作日额度平分给本周剩余工作日", () => {

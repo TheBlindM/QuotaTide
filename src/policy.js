@@ -13,13 +13,21 @@ export function localDateParts(date, timezone) {
   };
 }
 
-export function dailyLimitFor(date, timezone) {
-  const { weekday } = localDateParts(date, timezone);
-  return weekday === "Sat" || weekday === "Sun" ? 10 : 16;
+export const BASE_WORKDAY_LIMIT = 16;
+export const WEEKDAY_BASE_TOTAL = BASE_WORKDAY_LIMIT * 5;
+export const WEEKEND_DAILY_LIMIT = 10;
+
+export function dayPolicyFor(localDate) {
+  const weekday = new Date(`${localDate}T00:00:00Z`).getUTCDay();
+  return weekday === 0 || weekday === 6
+    ? { kind: "weekend_fixed", baseLimit: WEEKEND_DAILY_LIMIT }
+    : { kind: "weekday_dynamic", baseLimit: BASE_WORKDAY_LIMIT };
 }
 
-export const WEEKDAY_QUOTA_POOL = 80;
-export const BASE_WORKDAY_LIMIT = WEEKDAY_QUOTA_POOL / 5;
+export function dailyLimitFor(date, timezone) {
+  const { date: localDate } = localDateParts(date, timezone);
+  return dayPolicyFor(localDate).baseLimit;
+}
 
 function addLocalDays(localDate, days) {
   const date = new Date(`${localDate}T00:00:00Z`);
@@ -29,7 +37,8 @@ function addLocalDays(localDate, days) {
 
 export function dynamicDailyLimitFor(localDate, usageByDate) {
   const weekday = new Date(`${localDate}T00:00:00Z`).getUTCDay();
-  if (weekday === 0 || weekday === 6) return 10;
+  const policy = dayPolicyFor(localDate);
+  if (policy.kind === "weekend_fixed") return policy.baseLimit;
 
   const monday = addLocalDays(localDate, -(weekday - 1));
   let carryover = 0;
@@ -37,14 +46,14 @@ export function dynamicDailyLimitFor(localDate, usageByDate) {
     const date = addLocalDays(monday, offset);
     const remainingWorkdays = 5 - offset;
     const allocatedCarryover = carryover / remainingWorkdays;
-    const limit = BASE_WORKDAY_LIMIT + allocatedCarryover;
+    const limit = policy.baseLimit + allocatedCarryover;
     const unused = usageByDate.has(date)
       ? Math.max(0, limit - Math.max(0, Number(usageByDate.get(date)) || 0))
       : 0;
     carryover = carryover - allocatedCarryover + unused;
   }
   const remainingWorkdays = 6 - weekday;
-  return BASE_WORKDAY_LIMIT + carryover / remainingWorkdays;
+  return policy.baseLimit + carryover / remainingWorkdays;
 }
 
 export function evaluateDailyPolicy(used, limit) {

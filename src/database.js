@@ -3,7 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   calculateDelta,
-  dailyLimitFor,
+  dayPolicyFor,
   dynamicDailyLimitFor,
   evaluateDailyPolicy,
   isEpochChange,
@@ -305,13 +305,15 @@ export class QuotaDatabase {
     const todayRow = this.db
       .prepare("SELECT * FROM daily_usage WHERE local_date = ?")
       .get(date);
-    const baseLimit = dailyLimitFor(new Date(now), this.timezone);
+    const dayPolicy = dayPolicyFor(date);
+    const baseLimit = dayPolicy.baseLimit;
     const limit =
       todayRow?.limit_percent ??
       dynamicDailyLimitFor(date, this.dailyUsageMap());
     const today = evaluateDailyPolicy(todayRow?.used_percent || 0, limit);
     today.baseLimit = baseLimit;
     today.adjustment = limit - baseLimit;
+    today.policyKind = dayPolicy.kind;
     const history = this.db
       .prepare(
         `SELECT local_date, used_percent, limit_percent, status, updated_at
