@@ -20,3 +20,6 @@ Assignee: codex
   的 roll-forward 规则。
 - 2026-07-28：开始逐项确认 v1 支持矩阵、安装包、签名主体、更新体验和
   开源发布权限。事实以发布链路研究为基线，只向用户确认产品与成本取舍。
+- 2026-07-28：用户确认 v1 支持矩阵为 macOS Apple Silicon + Intel（一个
+  universal build）以及 Windows x64。Windows ARM64 不作为首版承诺，待
+  签名链和真机测试可重复后再扩展。
