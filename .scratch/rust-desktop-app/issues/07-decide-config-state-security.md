@@ -1,4 +1,4 @@
-Status: in_progress
+Status: closed
 Type: wayfinder:grilling
 Parent: ../map.md
 Blocked by: ./02-verify-platform-integrations.md, ./03-audit-upstream-data-contracts.md, ./05-choose-application-architecture.md
@@ -49,3 +49,9 @@ Assignee: codex
 - 2026-07-28：用户确认保存 SMTP 设置不以测试邮件成功为前提。保存只执行
   字段/TLS 校验、凭证库更新和 SQLite 原子提交；测试邮件是独立显式操作，
   网络或认证失败保留设置并只显示脱敏错误。
+- 2026-07-28：共同理解已确认，完整实施基线记录于
+  [`docs/research/config-state-security.md`](../../../docs/research/config-state-security.md)。
+  使用单一版本化 SQLite、不可变事实与可重建投影、策略 revision、双 slot
+  系统凭证、settings revision 乐观并发、外部变更 journal、迁移前校验备份、
+  自动恢复与严格 allowlist 诊断导出。清除全部本地数据会删除数据库、备份、
+  日志和两个 SMTP credential slots，但永远不修改 `auth.json`。
