@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-and-ui:
+    name: Core and UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy, rustfmt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install UI dependencies
+        run: npm --prefix ui ci
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+      - name: Lint quota core
+        run: cargo clippy -p quota-core --all-targets --all-features -- -D warnings
+      - name: Test quota core
+        run: cargo test -p quota-core
+      - name: Check UI
+        run: npm --prefix ui run check
+      - name: Check desktop version consistency
+        run: node scripts/check-desktop-versions.mjs
+      - name: Verify generated TypeScript bindings
+        run: git diff --exit-code -- ui/src/bindings
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
+      - name: Check licenses and dependency policy
+        run: cargo deny check
+
+  macos-bundle:
+    name: macOS universal bundle
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          components: clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install UI dependencies
+        run: npm --prefix ui ci
+      - name: Test desktop workspace
+        run: cargo test --workspace
+      - name: Lint desktop workspace
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build universal application bundle
+        run: cargo tauri build --target universal-apple-darwin --bundles app
+
+  windows-bundle:
+    name: Windows x64 bundle
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install UI dependencies
+        run: npm --prefix ui ci
+      - name: Test desktop workspace
+        run: cargo test --workspace
+      - name: Lint desktop workspace
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build NSIS application bundle
+        run: cargo tauri build --bundles nsis

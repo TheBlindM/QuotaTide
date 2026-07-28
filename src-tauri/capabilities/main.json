@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The QuotaTide UI can call application commands but receives no plugin capabilities.",
+  "windows": ["main"],
+  "permissions": []
+}

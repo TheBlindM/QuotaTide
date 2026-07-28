@@ -1,76 +1,70 @@
-# Codex 共享额度监控
+# QuotaTide
 
-本地单账号监控服务：每小时读取 Codex `auth.json`，查询真实周额度，按工作日基础 16%（未用部分平分给本周后续工作日）/ 周末 10% 计算每日使用阈值，展示当前账号本次额度窗口的完整 7 天，并提供邮件告警和 Codex Resets 的 24 小时重置概率预测。
+QuotaTide 是一个面向 macOS 与 Windows 的独立开源托盘应用，用于在本机监控
+单个 Codex 账号的当前七日额度窗口。
 
-## 快速开始
+作者：TheBlind
 
-要求 Node.js 22.13 或更高版本。
+License：MIT
+应用标识：`dev.theblind.quotatide`
 
-```bash
-npm install
-cp .env.example .env
-```
+## 当前状态
 
-编辑 `.env`，至少设置：
+项目正在从旧 Node/Docker 原型重构为 Rust/Tauri 桌面应用。目前只完成
+**Ticket 14 的应用骨架**：
 
-```dotenv
-AUTH_JSON_PATH=/你的/auth.json/绝对路径
-```
+- Rust workspace 与框架无关的 `quota-core`；
+- Tauri 2 隐藏窗口和单一 Tide Dial 托盘入口；
+- Vite + Preact + TypeScript UI；
+- 类型化的公开构建信息 command；
+- macOS/Windows bundle CI 骨架。
 
-然后启动：
+当前版本尚未读取 `auth.json`、请求真实额度、保存 SQLite 账本、发送通知或
+邮件，也没有完成发布 smoke。旧 Node 服务仍暂时保留供后续行为迁移测试使用，
+但新桌面应用不启动它、不读取它的数据库，也不依赖 Docker。
 
-```bash
-npm start
-```
+## 开发要求
 
-访问 `http://127.0.0.1:4317`。
+- Rust 1.88.0（由 `rust-toolchain.toml` 固定）
+- Node.js 22.13 或更高
+- macOS：Xcode Command Line Tools
+- Windows：Microsoft C++ Build Tools 与 WebView2
+- Tauri CLI 2.11.4
+- cargo-deny 0.20.2
 
-`npm start` 和 `npm run dev` 会自动读取项目根目录的 `.env`。
-
-如果访问 ChatGPT 需要本机代理，请同时设置 `HTTP_PROXY`、
-`HTTPS_PROXY` 和 `NODE_USE_ENV_PROXY=1`。
-
-## 使用 Docker 运行
-
-项目内的 `compose.yaml` 已配置：
-
-- 页面仅发布到本机 `127.0.0.1:4317`；
-- `/Users/benteli/.codex/auth.json` 作为只读 secret 挂载；
-- SQLite 数据保存在 Docker named volume；
-- 容器通过 `host.docker.internal:7897` 使用本机代理；
-- 容器异常退出或 Docker 重启后自动恢复。
-
-启动：
+安装工具与前端依赖：
 
 ```bash
-docker compose up -d --build
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+cargo install tauri-cli --version 2.11.4 --locked
+cargo install cargo-deny --version 0.20.2 --locked
+npm --prefix ui ci
 ```
 
-查看状态：
+运行测试和检查：
 
 ```bash
-docker compose ps
-docker compose logs --tail=100 monitor
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+cargo deny check
+npm --prefix ui run check
+node scripts/check-desktop-versions.mjs
+git diff --exit-code -- ui/src/bindings
 ```
 
-停止服务但保留历史数据：
+生成 Tide Dial 平台图标并启动桌面开发模式：
 
 ```bash
-docker compose down
+npm run icons
+cargo tauri dev
 ```
 
-## auth.json
+## 产品规范
 
-支持常见的 Codex CLI 嵌套结构和 New API 扁平结构：
+- [实施规范](.scratch/rust-desktop-app/spec.md)
+- [最低系统版本与发布 QA](docs/research/minimum-os-and-release-qa.md)
+- [架构决策](docs/research/application-architecture.md)
+- [本地安全模型](docs/research/config-state-security.md)
 
-```json
-{"tokens":{"access_token":"…","account_id":"…"}}
-```
-
-```json
-{"access_token":"…","account_id":"…"}
-```
-
-如果文件中没有 `account_id`，服务会尝试从 access token 的 JWT claim 中读取。服务不会修改该文件。
-
-完整行为见 [服务规范](docs/spec.md)，上游接口依据见 [额度调研](docs/research/codex-quota-sources.md) 和 [重置预测调研](docs/research/codex-reset-prediction.md)。
+QuotaTide 与 OpenAI 没有官方关系。Codex 和 OpenAI 是其各自所有者的商标。

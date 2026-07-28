@@ -1,4 +1,9 @@
 node_modules/
+target/
+ui/node_modules/
+ui/dist/
+*.tsbuildinfo
+.eslintcache
 .env
 data/
 *.log
