@@ -30,3 +30,8 @@ Assignee: codex
   启动稳定 60 秒后检查，之后每 24 小时一次，并支持手动检查和关闭自动检查。
   只有远端 SemVer 更高且 Tauri signature 有效才提示；不静默下载、不强制
   安装，用户点击“安装并重启”后才下载、再次验签并安装。
+- 2026-07-28：用户决定当前开源项目不购买 Apple Developer ID 或 Windows
+  Authenticode 证书，v1 作为未签名预览版公开。Release 必须明确说明
+  Gatekeeper/SmartScreen 未知发布者提示，不引导关闭全局安全保护。免费生成
+  的 Tauri updater signature 仍是强制安全边界；平台签名 seam 保留，未来
+  获得证书后可启用。

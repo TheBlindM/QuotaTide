@@ -47,3 +47,7 @@ _Avoid_: 多账号列表、合并历史、已删除账号
 **支持矩阵**:
 正式版本承诺构建、签名、测试并持续维护的操作系统与 CPU 组合；v1 包含 macOS Apple Silicon、macOS Intel 和 Windows x64。
 _Avoid_: 能够编译的平台、未经验证的平台、所有桌面系统
+
+**未签名预览版**:
+尚未使用 Apple Developer ID 或 Windows Authenticode 发布者证书的公开构建；它仍由 Tauri updater key 验证更新完整性，但操作系统会显示未知开发者警告。
+_Avoid_: 已签名正式版、不安全更新包、开发者本机构建
