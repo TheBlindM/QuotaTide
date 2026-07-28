@@ -38,3 +38,7 @@ Assignee: codex
 - 2026-07-28：用户确认不提供自动降级。已发布 tag、manifest 和 assets
   不覆盖、不移动；故障时从已知良好代码发布更高 patch 版本并重新生成 updater
   signature。旧安装包可保留供手动恢复，但 static updater 只向前升级。
+- 2026-07-28：用户确认未签名预览版从 `0.1.0` 开始，以普通 GitHub Release
+  发布并在标题/说明中明确标注 Preview；不勾选 GitHub prerelease，以保证
+  `/releases/latest/` static updater endpoint 可用。满足稳定门槛后再发布
+  `1.0.0`。
