@@ -2,7 +2,7 @@ Status: open
 Type: wayfinder:research
 Parent: ../map.md
 Blocked by: none
-Assignee: unassigned
+Assignee: codex
 
 # 审核 Codex 与重置雷达数据契约
 
