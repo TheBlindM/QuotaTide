@@ -30,3 +30,7 @@ OpenAI 官方产品，也不能在首次公开 Release 后随意改变持久身�
   `QuotaTide`、executable `quotatide`、Rust package prefix `quotatide-*`，
   安装包使用 `QuotaTide_<version>_universal.dmg` 和
   `QuotaTide_<version>_x64-setup.exe`。开源前删除旧“额度”运行时命名。
+- 2026-07-28：用户确认作者名为 `TheBlind`。MIT copyright 使用
+  `Copyright (c) 2026 TheBlind and QuotaTide contributors`，Windows
+  CompanyName 使用 `TheBlind`，关于页写
+  `Created by TheBlind with community contributors`，同时保留独立项目声明。
