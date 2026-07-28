@@ -1,8 +1,8 @@
-Status: open
+Status: in_progress
 Type: wayfinder:grilling
 Parent: ../map.md
 Blocked by: ./05-choose-application-architecture.md, ./06-research-release-pipeline.md
-Assignee: unassigned
+Assignee: codex
 
 # 决定安装、更新与开源发布策略
 
@@ -18,3 +18,5 @@ Assignee: unassigned
   中正式选择并做端到端原型。策略票还需确认 macOS universal + Windows x64
   矩阵、NSIS/MSI 范围、自动检查但用户确认安装，以及 GitHub static updater
   的 roll-forward 规则。
+- 2026-07-28：开始逐项确认 v1 支持矩阵、安装包、签名主体、更新体验和
+  开源发布权限。事实以发布链路研究为基线，只向用户确认产品与成本取舍。
