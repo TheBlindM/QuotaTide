@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img"
+  aria-labelledby="title description">
+  <title id="title">QuotaTide application icon</title>
+  <desc id="description">A circular quota gauge containing a rising tide.</desc>
+  <defs>
+    <linearGradient id="tile" x1="170" y1="130" x2="850" y2="900" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#17325c"/>
+      <stop offset="0.52" stop-color="#08182f"/>
+      <stop offset="1" stop-color="#030a18"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="290" y1="240" x2="760" y2="770" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#74f5ff"/>
+      <stop offset="0.45" stop-color="#29c7ff"/>
+      <stop offset="1" stop-color="#2670ff"/>
+    </linearGradient>
+    <linearGradient id="tide" x1="340" y1="470" x2="680" y2="770" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#56efff"/>
+      <stop offset="0.44" stop-color="#15b8f2"/>
+      <stop offset="1" stop-color="#1762e6"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="260" y1="175" x2="650" y2="710" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="0.32" stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="43%" r="52%">
+      <stop offset="0" stop-color="#16d9ff" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#16d9ff" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="dialClip">
+      <circle cx="512" cy="500" r="232"/>
+    </clipPath>
+  </defs>
+
+  <rect x="76" y="76" width="872" height="872" rx="220" fill="#020713" opacity="0.72"/>
+  <rect x="88" y="72" width="848" height="848" rx="210" fill="url(#tile)"/>
+  <rect x="102" y="86" width="820" height="820" rx="196" fill="none"
+    stroke="#6aa4ff" stroke-opacity="0.22" stroke-width="8"/>
+  <ellipse cx="512" cy="456" rx="356" ry="350" fill="url(#halo)"/>
+
+  <circle cx="512" cy="500" r="268" fill="#051225" stroke="#020712" stroke-width="18"/>
+  <circle cx="512" cy="500" r="252" fill="none" stroke="url(#rim)" stroke-width="44"/>
+  <circle cx="512" cy="500" r="226" fill="none" stroke="#d8fbff"
+    stroke-opacity="0.22" stroke-width="7"/>
+
+  <g stroke="#b9f8ff" stroke-linecap="round" stroke-width="15">
+    <path d="M512 275v34"/>
+    <path d="M407 294l14 32"/>
+    <path d="M320 360l27 22"/>
+    <path d="M279 459l34 7"/>
+    <path d="M617 294l-14 32"/>
+    <path d="M704 360l-27 22"/>
+    <path d="M745 459l-34 7"/>
+  </g>
+
+  <g clip-path="url(#dialClip)">
+    <path d="M246 602
+      C312 552 365 548 421 582
+      C474 614 528 622 578 573
+      C626 526 665 501 700 522
+      C731 540 745 574 778 582
+      L778 774 L246 774 Z" fill="url(#tide)"/>
+    <path d="M246 602
+      C312 552 365 548 421 582
+      C474 614 528 622 578 573
+      C626 526 665 501 700 522"
+      fill="none" stroke="#c8fbff" stroke-opacity="0.74" stroke-width="11"
+      stroke-linecap="round"/>
+    <path d="M304 660 C418 704 568 704 706 624"
+      fill="none" stroke="#ffffff" stroke-opacity="0.14" stroke-width="18"
+      stroke-linecap="round"/>
+  </g>
+
+  <path d="M296 305 C376 203 535 180 666 236"
+    fill="none" stroke="url(#glass)" stroke-linecap="round" stroke-width="22"/>
+  <rect x="121" y="104" width="782" height="782" rx="184"
+    fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="5"/>
+</svg>

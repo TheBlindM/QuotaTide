@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img"
+  aria-labelledby="title description">
+  <title id="title">QuotaTide monochrome tray glyph</title>
+  <desc id="description">A bold circular gauge containing a tide.</desc>
+  <defs>
+    <clipPath id="dialClip">
+      <circle cx="32" cy="31" r="22"/>
+    </clipPath>
+  </defs>
+  <circle cx="32" cy="31" r="26" fill="none" stroke="#000000" stroke-width="6"/>
+  <g clip-path="url(#dialClip)">
+    <path d="M7 37
+      C15 31 21 32 27 37
+      C33 42 39 39 44 34
+      C50 28 55 30 59 35
+      L59 58 L7 58 Z" fill="#000000"/>
+  </g>
+</svg>

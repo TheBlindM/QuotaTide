@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img"
+  aria-labelledby="title description">
+  <title id="title">QuotaTide compact application icon</title>
+  <desc id="description">A simplified quota gauge and tide for small pixel sizes.</desc>
+  <defs>
+    <linearGradient id="tile" x1="40" y1="30" x2="216" y2="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#17345e"/>
+      <stop offset="1" stop-color="#040b19"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="64" y1="54" x2="196" y2="202" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#75f5ff"/>
+      <stop offset="0.55" stop-color="#25c8ff"/>
+      <stop offset="1" stop-color="#2670ff"/>
+    </linearGradient>
+    <linearGradient id="tide" x1="70" y1="112" x2="176" y2="202" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#55f0ff"/>
+      <stop offset="1" stop-color="#1763e8"/>
+    </linearGradient>
+    <clipPath id="dialClip">
+      <circle cx="128" cy="126" r="64"/>
+    </clipPath>
+  </defs>
+
+  <rect x="12" y="12" width="232" height="232" rx="58" fill="#020713"/>
+  <rect x="16" y="13" width="224" height="224" rx="55" fill="url(#tile)"/>
+  <circle cx="128" cy="126" r="79" fill="#051326" stroke="#020713" stroke-width="7"/>
+  <circle cx="128" cy="126" r="72" fill="none" stroke="url(#rim)" stroke-width="15"/>
+  <g clip-path="url(#dialClip)">
+    <path d="M56 151
+      C78 133 96 137 112 149
+      C132 164 146 159 160 144
+      C176 126 187 128 202 143
+      L202 206 L56 206 Z" fill="url(#tide)"/>
+    <path d="M56 151
+      C78 133 96 137 112 149
+      C132 164 146 159 160 144
+      C176 126 187 128 202 143"
+      fill="none" stroke="#d2fcff" stroke-opacity="0.85" stroke-width="4"
+      stroke-linecap="round"/>
+  </g>
+</svg>

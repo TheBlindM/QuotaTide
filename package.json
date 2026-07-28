@@ -7,8 +7,9 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env --use-env-proxy src/server.js",
     "dev": "node --env-file-if-exists=.env --use-env-proxy --watch src/server.js",
+    "icons": "node scripts/generate-icons.mjs",
     "test": "node --test",
-    "check": "node --check src/server.js && node --check public/app.js"
+    "check": "node --check src/server.js && node --check public/app.js && node --check scripts/generate-icons.mjs"
   },
   "dependencies": {
     "nodemailer": "^9.0.3"

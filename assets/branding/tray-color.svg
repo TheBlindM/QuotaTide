@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img"
+  aria-labelledby="title description">
+  <title id="title">QuotaTide color tray icon</title>
+  <desc id="description">A compact cyan quota gauge containing a blue tide.</desc>
+  <defs>
+    <linearGradient id="rim" x1="12" y1="10" x2="54" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7af7ff"/>
+      <stop offset="0.55" stop-color="#27c9ff"/>
+      <stop offset="1" stop-color="#2a72ff"/>
+    </linearGradient>
+    <linearGradient id="tide" x1="18" y1="29" x2="47" y2="55" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#52efff"/>
+      <stop offset="1" stop-color="#1763e8"/>
+    </linearGradient>
+    <clipPath id="dialClip">
+      <circle cx="32" cy="31" r="21"/>
+    </clipPath>
+  </defs>
+  <circle cx="32" cy="31" r="30" fill="#05101f"/>
+  <circle cx="32" cy="31" r="25" fill="#071a30" stroke="url(#rim)" stroke-width="6"/>
+  <g clip-path="url(#dialClip)">
+    <path d="M8 37
+      C15 31 21 32 27 37
+      C33 42 39 39 44 34
+      C50 28 55 30 58 35
+      L58 58 L8 58 Z" fill="url(#tide)"/>
+  </g>
+</svg>
