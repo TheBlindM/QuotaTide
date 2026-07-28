@@ -1,8 +1,12 @@
-# Codex 额度桌面助手
+# QuotaTide
 
-一个面向最终用户的 macOS 与 Windows 托盘应用，用于监控单个 Codex 账号的额度窗口、每日使用策略与重置预期，并在需要关注时提醒用户。
+一个面向最终用户的独立开源 macOS 与 Windows 托盘应用，用于监控单个 Codex 账号的额度窗口、每日使用策略与重置预期，并在需要关注时提醒用户。
 
 ## Language
+
+**QuotaTide**:
+产品的公开名称；中文界面可使用“Codex 额度助手”作为描述性副标题，但不得暗示与 OpenAI 存在官方关系。
+_Avoid_: OpenAI Codex Monitor、官方额度助手、Codex 官方客户端
 
 **托盘应用**:
 常驻 macOS 菜单栏或 Windows 系统托盘、通过小窗口提供核心状态和配置入口的桌面产品。
