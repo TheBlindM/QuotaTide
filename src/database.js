@@ -225,16 +225,7 @@ export class QuotaDatabase {
          FROM snapshots ORDER BY captured_at, id`,
       )
       .all()
-      .map((row) => ({
-        capturedAt: row.captured_at,
-        usedPercent: row.used_percent,
-        remainingPercent: row.remaining_percent,
-        resetAt: row.reset_at,
-        windowSeconds: row.window_seconds,
-        planType: row.plan_type,
-        allowed: Boolean(row.allowed),
-        resetCredits: row.reset_credits,
-      }));
+      .map(snapshotFromRow);
 
     const days = new Map();
     let previous = null;
@@ -355,11 +346,12 @@ export class QuotaDatabase {
     const todayRow = this.db
       .prepare("SELECT * FROM daily_usage WHERE local_date = ?")
       .get(date);
+    const dailyUsage = this.dailyUsageMap();
     const dayPolicy = dayPolicyFor(date);
     const baseLimit = dayPolicy.baseLimit;
     const limit =
       todayRow?.limit_percent ??
-      dynamicDailyLimitFor(date, this.dailyUsageMap());
+      dynamicDailyLimitFor(date, dailyUsage);
     const today = evaluateDailyPolicy(todayRow?.used_percent || 0, limit);
     today.baseLimit = baseLimit;
     today.adjustment = limit - baseLimit;
@@ -384,6 +376,16 @@ export class QuotaDatabase {
     const windowUsage = hasWeeklyWindow
       ? this.currentWindowUsage(latest, windowStartAt, now)
       : { usage: new Map(), updatedAt: new Map() };
+    const recordedLimits = new Map(
+      this.db
+        .prepare(
+          `SELECT local_date, limit_percent
+           FROM daily_usage
+           WHERE local_date BETWEEN ? AND ?`,
+        )
+        .all(windowDates[0] || "", windowDates.at(-1) || "")
+        .map((row) => [row.local_date, row.limit_percent]),
+    );
     const history = windowDates.map((windowDate) => {
       const hasData =
         windowDate <= date && windowUsage.usage.has(windowDate);
@@ -397,10 +399,9 @@ export class QuotaDatabase {
         };
       }
       const used = windowUsage.usage.get(windowDate);
-      const dayLimit = dynamicDailyLimitFor(
-        windowDate,
-        windowUsage.usage,
-      );
+      const dayLimit =
+        recordedLimits.get(windowDate) ??
+        dynamicDailyLimitFor(windowDate, dailyUsage);
       const policy = evaluateDailyPolicy(used, dayLimit);
       return {
         date: windowDate,

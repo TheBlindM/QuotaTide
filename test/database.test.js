@@ -191,3 +191,39 @@ test("趋势只展示当前账号额度窗口所关心的 7 天", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("额度窗口周中开始时趋势沿用自然周结转后的当日上限", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "codex-limit-test-"));
+  const database = new QuotaDatabase(
+    path.join(directory, "test.sqlite"),
+    "Asia/Shanghai",
+  );
+  try {
+    const previousResetAt =
+      Date.parse("2026-07-28T00:20:00Z") / 1000;
+    const currentResetAt =
+      Date.parse("2026-08-04T00:20:00Z") / 1000;
+    database.recordSnapshot(
+      usage(0, previousResetAt),
+      Date.parse("2026-07-27T01:00:00Z"),
+    );
+    database.recordSnapshot(
+      usage(10, previousResetAt),
+      Date.parse("2026-07-27T10:00:00Z"),
+    );
+    database.recordSnapshot(
+      usage(1, currentResetAt),
+      Date.parse("2026-07-28T01:00:00Z"),
+    );
+
+    const status = database.status(Date.parse("2026-07-28T02:00:00Z"));
+
+    assert.equal(status.today.limit, 17.5);
+    assert.equal(status.history[0].date, "2026-07-28");
+    assert.equal(status.history[0].used, 1);
+    assert.equal(status.history[0].limit, 17.5);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
