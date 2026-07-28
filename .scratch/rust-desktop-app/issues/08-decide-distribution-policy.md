@@ -1,4 +1,4 @@
-Status: in_progress
+Status: closed
 Type: wayfinder:grilling
 Parent: ../map.md
 Blocked by: ./05-choose-application-architecture.md, ./06-research-release-pipeline.md
@@ -50,3 +50,8 @@ Assignee: codex
   提交仓库，private key/password 只进入受保护 GitHub Environment，并由
   维护者保存两份离线加密备份。私钥不进入 Git 或安装包，正常轮换必须先用
   旧 key 发布包含新公钥的 bridge release。
+- 2026-07-28：共同理解已确认，完整策略记录于
+  [`docs/research/distribution-policy.md`](../../../docs/research/distribution-policy.md)。
+  v1 是 GitHub Releases 承载的 `0.x` 未签名预览版：macOS universal DMG、
+  Windows x64 per-user NSIS、强制 Tauri updater signing、用户确认安装、
+  immutable Release、higher-patch roll-forward 和单维护者受控发布。

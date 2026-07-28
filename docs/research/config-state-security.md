@@ -156,6 +156,7 @@ app_settings
   auth_path                 TEXT
   policy_timezone           TEXT NOT NULL
   autostart_enabled         INTEGER NOT NULL CHECK (autostart_enabled IN (0, 1))
+  auto_update_check_enabled INTEGER NOT NULL CHECK (auto_update_check_enabled IN (0, 1))
   active_policy_revision_id INTEGER NOT NULL REFERENCES policy_revisions(id)
   active_account_stream_id  INTEGER REFERENCES account_streams(id)
   created_at_ms             INTEGER NOT NULL
@@ -165,6 +166,9 @@ app_settings
 - 首次运行从系统读取 IANA 时区，识别失败回退 `Asia/Shanghai`。
 - `auth_path` 只有在文件选择器返回路径，Rust 成功规范化、只读打开并验证
   Codex auth 结构后才能替换。
+- `auto_update_check_enabled` 首次运行默认为 `1`；用户关闭后，定时更新检查
+  不发网络请求，显式手动检查仍可用。updater endpoint 编译进应用，不能由
+  设置改成任意 URL。
 - 当前账号由下一次成功 auth/usage refresh 设置；手工路径变化本身不伪造
   账号切换。
 - 所有设置 DTO 带 `expected_settings_revision`。保存时不匹配返回
@@ -406,6 +410,22 @@ source_health
 
 这里只保存 allowlisted error code 与本机 salted fingerprint。不得保存
 `reqwest`、keyring、SMTP 或操作系统的原始错误字符串。
+
+更新检查使用独立的当前状态，不与 Codex/Radar freshness 混在一起：
+
+```text
+update_state
+  singleton_id              INTEGER PRIMARY KEY CHECK (singleton_id = 1)
+  last_attempt_at_ms        INTEGER
+  last_success_at_ms        INTEGER
+  last_available_version    TEXT
+  next_automatic_check_at_ms INTEGER
+  public_error_code         TEXT
+  updated_at_ms             INTEGER NOT NULL
+```
+
+这里不保存下载 IP、设备标识、GitHub response body 或 updater signature。
+应用升级不创建额度提醒事件。
 
 ## 提醒 outbox schema
 
@@ -685,6 +705,7 @@ SettingsDraft
   seven_day_base_units[7]
   carry_workdays_enabled
   autostart_enabled
+  auto_update_check_enabled
   smtp { enabled, host, port, tls_mode, username, from, recipients[] }
   alert_preferences[event_kind][channel]
 

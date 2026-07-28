@@ -33,11 +33,11 @@ Type: wayfinder:map
 - [决定桌面应用架构与模块边界](./issues/05-choose-application-architecture.md) — 采用 `quota-core` 深模块、Tauri 生产适配层和轻量 Preact UI；刷新 actor、SQLite 事实与 outbox、独立 delivery worker 形成可测试事务边界，旧 Node 只保留行为契约并在开源前移除。
 - [调研跨平台发布与更新链路](./issues/06-research-release-pipeline.md) — 采用 macOS universal Developer ID DMG、Windows x64 per-user NSIS 与条件式 Authenticode、GitHub protected immutable Releases 和强制 Tauri updater 签名；静态 endpoint 仅向前修复，发布凭证与 fork PR 严格隔离。
 - [决定配置、状态与本地安全模型](./issues/07-decide-config-state-security.md) — 非秘密配置、事实、投影与 outbox 进入版本化 SQLite，SMTP 密码使用双 slot 系统凭证；历史持续本地保留，设置原子提交，迁移前备份，损坏可恢复，诊断导出严格脱敏。
+- [决定安装、更新与开源发布策略](./issues/08-decide-distribution-policy.md) — v1 以 GitHub Releases 发布 `0.x` 未签名预览版：macOS universal DMG、Windows x64 per-user NSIS、强制 updater 验签、用户确认安装、higher-patch roll-forward 与单维护者受控发布。
 
 ## Not yet specified
 
-- 仍需在发行策略票中正式确认支持矩阵、Windows 签名供应商、安装包、自动更新和贡献者发布权限。
-- 上述配置与发行策略完成后，需要判断品牌命名、应用图标、本地化与 QA 矩阵是否仍阻碍 build-ready spec。
+- 无；产品身份、视觉资产、本地化和发布 QA 已升级为明确的 child tickets。
 
 ## Out of scope
 
