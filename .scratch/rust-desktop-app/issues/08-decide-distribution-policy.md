@@ -26,3 +26,7 @@ Assignee: codex
 - 2026-07-28：用户确认 Windows v1 只提供 x64 per-user NSIS `setup.exe`，
   默认不提权并安装到当前用户目录；同一安装包作为手动下载与 Tauri updater
   载体。MSI 和 per-machine 企业部署不属于 v1。
+- 2026-07-28：用户确认默认启用 GitHub Releases static endpoint 更新检查：
+  启动稳定 60 秒后检查，之后每 24 小时一次，并支持手动检查和关闭自动检查。
+  只有远端 SemVer 更高且 Tauri signature 有效才提示；不静默下载、不强制
+  安装，用户点击“安装并重启”后才下载、再次验签并安装。
