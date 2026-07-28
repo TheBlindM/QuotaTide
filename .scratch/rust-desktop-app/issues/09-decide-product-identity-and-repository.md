@@ -22,3 +22,7 @@ OpenAI 官方产品，也不能在首次公开 Release 后随意改变持久身�
   额度助手”作为描述性副标题，并在 README/关于页明确它是独立社区项目，
   不隶属于、不受 OpenAI 背书。初步公开检索未发现明显同类产品撞名，但这
   不是商标法律审查。
+- 2026-07-28：公开 GitHub `owner/repo` 暂时不能确认，用户要求继续其他
+  身份决策。不得创建远程仓库或把 `benteli/quota-tide` 当成已决定地址；
+  updater endpoint 保持 build-time placeholder，首次公开 Release 前必须
+  回填并锁定。
