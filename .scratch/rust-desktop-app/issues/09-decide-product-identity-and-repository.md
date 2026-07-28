@@ -37,3 +37,6 @@ OpenAI 官方产品，也不能在首次公开 Release 后随意改变持久身�
 - 2026-07-28：用户确认仓库创建后启用 GitHub Private Vulnerability
   Reporting，`SECURITY.md` 引导安全问题私密提交，普通缺陷使用 Issues；
   v1 不公开个人邮箱，避免垃圾邮件和凭证钓鱼。
+- 2026-07-28：用户确认永久应用标识为 `dev.theblind.quotatide`，用于
+  macOS bundle identifier、Windows 应用身份、系统凭证库 service 和应用
+  数据归属。它与 GitHub 仓库地址解耦，首次公开版本后不得更改。
