@@ -170,6 +170,10 @@ test("趋势只展示当前账号额度窗口所关心的 7 天", () => {
       status.history.map((day) => day.used),
       [1, 11, 1, null, null, null, null],
     );
+    assert.deepEqual(
+      status.history.map((day) => day.limit),
+      [10, 16, 17.25, null, null, null, null],
+    );
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

@@ -52,17 +52,31 @@ function renderHistory(history) {
     return;
   }
   const ordered = history;
-  const max = Math.max(...ordered.map((day) => Math.max(day.used, day.limit)), 16);
+  const max = Math.max(
+    ...ordered.map((day) =>
+      Math.max(Number(day.used) || 0, Number(day.limit) || 0),
+    ),
+    16,
+  );
   chart.innerHTML = ordered
     .map((day) => {
-      const height = Math.min(100, (day.used / max) * 100);
-      const limitHeight = Math.min(100, (day.limit / max) * 100);
+      const hasData = day.used != null && day.limit != null;
+      const height = hasData ? Math.min(100, (day.used / max) * 100) : 0;
+      const limitHeight = hasData
+        ? Math.min(100, (day.limit / max) * 100)
+        : 0;
+      const usedLabel = hasData ? `${formatNumber(day.used)}%` : "—";
+      const limitLabel = hasData ? `${formatNumber(day.limit)}%` : "—";
       return `
-        <div class="history-day" title="${day.date}：${formatNumber(day.used)}% / ${day.limit}%">
-          <span class="history-value">${formatNumber(day.used)}%</span>
+        <div class="history-day" title="${day.date}：${usedLabel} / ${limitLabel}">
+          <span class="history-value">${usedLabel}</span>
           <div class="history-bars">
-            <span class="history-limit" style="bottom:${limitHeight}%"></span>
-            <span class="history-used ${day.status}" style="height:${height}%"></span>
+            ${
+              hasData
+                ? `<span class="history-limit" style="bottom:${limitHeight}%"></span>
+                   <span class="history-used ${day.status}" style="height:${height}%"></span>`
+                : ""
+            }
           </div>
           <span class="history-label">${day.date.slice(5)}</span>
         </div>`;

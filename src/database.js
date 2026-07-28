@@ -346,14 +346,12 @@ export class QuotaDatabase {
     const historyByDate = new Map(
       historyRows.map((row) => [row.local_date, row]),
     );
-    const usageByDate = this.dailyUsageMap();
     const history = windowDates.map((windowDate) => {
       const row = historyByDate.get(windowDate);
       return {
         date: windowDate,
         used: row ? row.used_percent : null,
-        limit:
-          row?.limit_percent ?? dynamicDailyLimitFor(windowDate, usageByDate),
+        limit: row ? row.limit_percent : null,
         status: row?.status || "pending",
         updatedAt: row?.updated_at || null,
       };
