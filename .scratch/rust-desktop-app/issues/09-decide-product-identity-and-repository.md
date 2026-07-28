@@ -34,3 +34,6 @@ OpenAI 官方产品，也不能在首次公开 Release 后随意改变持久身�
   `Copyright (c) 2026 TheBlind and QuotaTide contributors`，Windows
   CompanyName 使用 `TheBlind`，关于页写
   `Created by TheBlind with community contributors`，同时保留独立项目声明。
+- 2026-07-28：用户确认仓库创建后启用 GitHub Private Vulnerability
+  Reporting，`SECURITY.md` 引导安全问题私密提交，普通缺陷使用 Issues；
+  v1 不公开个人邮箱，避免垃圾邮件和凭证钓鱼。
