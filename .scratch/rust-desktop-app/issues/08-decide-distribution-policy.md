@@ -35,3 +35,6 @@ Assignee: codex
   Gatekeeper/SmartScreen 未知发布者提示，不引导关闭全局安全保护。免费生成
   的 Tauri updater signature 仍是强制安全边界；平台签名 seam 保留，未来
   获得证书后可启用。
+- 2026-07-28：用户确认不提供自动降级。已发布 tag、manifest 和 assets
+  不覆盖、不移动；故障时从已知良好代码发布更高 patch 版本并重新生成 updater
+  signature。旧安装包可保留供手动恢复，但 static updater 只向前升级。
