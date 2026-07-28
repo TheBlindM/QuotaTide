@@ -2,7 +2,7 @@ Status: open
 Type: wayfinder:grilling
 Parent: ../map.md
 Blocked by: ./04-prototype-tray-window.md, ./07-decide-config-state-security.md, ./09-decide-product-identity-and-repository.md
-Assignee: unassigned
+Assignee: codex
 
 # 决定本地化与可访问性范围
 
@@ -13,3 +13,6 @@ Assignee: unassigned
 模式的验收边界。结论应覆盖 macOS 与 Windows，不能让毛玻璃视觉牺牲可读性。
 
 ## Comments
+
+- 2026-07-28：开始确认 QuotaTide v1 的语言覆盖与可访问性验收边界。该票为
+  HITL grilling，所有产品取舍由用户逐项确认，不能由代理代答。
