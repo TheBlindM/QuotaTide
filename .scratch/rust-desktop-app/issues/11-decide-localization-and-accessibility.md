@@ -21,3 +21,6 @@ Assignee: codex
   已确认 Tauri locale 返回 BCP 47 或 `null`、locale 与 region 需要分开处理，
   以及 VoiceOver/Narrator、WCAG 2.2、减少动态、减少透明度和 Windows
   forced-colors 的可验证平台边界；语言集合与产品回退仍等待用户决定。
+- 2026-07-28：用户确认 v1 完整支持简体中文（`zh-CN`）和英语（`en`）。
+  覆盖应用界面、系统通知、邮件正文、错误提示和 QuotaTide 自有安装说明；
+  两种语言都属于正式支持范围，不以“社区翻译/尽力而为”降级。
