@@ -42,3 +42,7 @@ Assignee: codex
   发布并在标题/说明中明确标注 Preview；不勾选 GitHub prerelease，以保证
   `/releases/latest/` static updater endpoint 可用。满足稳定门槛后再发布
   `1.0.0`。
+- 2026-07-28：用户确认 v1 采用单维护者发布例外：只有受保护 `main` 上 CI
+  通过的版本提交能经手动 workflow 和 GitHub Environment 确认发布；贡献者
+  PR 不接触 updater private key 或 Release 写权限，workflow、updater public
+  key 和发布脚本为敏感路径。有第二位可信维护者后启用双人审批和禁止自审。
