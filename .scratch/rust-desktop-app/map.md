@@ -35,6 +35,7 @@ Type: wayfinder:map
 - [决定配置、状态与本地安全模型](./issues/07-decide-config-state-security.md) — 非秘密配置、事实、投影与 outbox 进入版本化 SQLite，SMTP 密码使用双 slot 系统凭证；历史持续本地保留，设置原子提交，迁移前备份，损坏可恢复，诊断导出严格脱敏。
 - [决定安装、更新与开源发布策略](./issues/08-decide-distribution-policy.md) — v1 以 GitHub Releases 发布 `0.x` 未签名预览版：macOS universal DMG、Windows x64 per-user NSIS、强制 updater 验签、用户确认安装、higher-patch roll-forward 与单维护者受控发布。
 - [确定产品身份与开源仓库](./issues/09-decide-product-identity-and-repository.md) — 产品名 QuotaTide，作者 TheBlind，永久标识 `dev.theblind.quotatide`，统一本地/安装包/版权与独立项目声明；未确定的 GitHub 远程身份拆为发布前绑定任务。
+- [设计应用图标与托盘资产](./issues/10-design-app-icon-and-tray-assets.md) — 用户选择 A — Tide Dial；生产资产采用圆形额度仪表与上升潮水，大图标保留七日刻度，小尺寸使用光学校正版，并交付 macOS template 与 Windows color/high-contrast 多层资产。
 
 ## Not yet specified
 
