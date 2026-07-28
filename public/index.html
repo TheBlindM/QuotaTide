@@ -143,19 +143,45 @@
             </div>
             <span id="radarStatus" class="live-dot">等待数据</span>
           </div>
-          <p id="radarTime" class="radar-time">尚未读取公告</p>
-          <p id="radarText" class="radar-text">
-            雷达用于解释额外重置，不替代账号自己的计划重置时间。
-          </p>
-          <a
-            id="radarLink"
-            class="radar-link"
-            href="https://codex-resets.com/"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            查看 Codex Resets
-          </a>
+          <section id="predictionWatch" class="prediction-watch" hidden>
+            <div class="prediction-summary">
+              <strong id="predictionChance" class="prediction-chance">—%</strong>
+              <div>
+                <span id="predictionWindow">未来 24 小时</span>
+                <b>重置概率</b>
+              </div>
+            </div>
+            <p id="predictionMeta" class="prediction-meta">—</p>
+            <p id="predictionText" class="prediction-text"></p>
+            <a
+              id="predictionLink"
+              class="radar-link"
+              href="https://codex-resets.com/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              查看预测依据
+            </a>
+            <p class="prediction-disclaimer">
+              第三方 AI 估算，不代表 OpenAI 承诺；账号额度仍以上游数据为准。
+            </p>
+          </section>
+          <section class="radar-history">
+            <p class="radar-history-label">最近一次全局重置公告</p>
+            <p id="radarTime" class="radar-time">尚未读取公告</p>
+            <p id="radarText" class="radar-text">
+              雷达用于解释额外重置，不替代账号自己的计划重置时间。
+            </p>
+            <a
+              id="radarLink"
+              class="radar-link"
+              href="https://codex-resets.com/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              查看 Codex Resets
+            </a>
+          </section>
         </article>
       </section>
 

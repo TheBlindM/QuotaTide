@@ -35,6 +35,15 @@ function relativeTime(timestamp) {
   return formatter.format(Math.round(seconds / 86400), "day");
 }
 
+function safeExternalUrl(value, fallback = "https://codex-resets.com/") {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.href : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function renderHistory(history) {
   const chart = $("historyChart");
   if (!history?.length) {
@@ -163,12 +172,38 @@ function render(data) {
     : "尚未采集";
 
   const radar = data.radar;
+  const prediction =
+    radar?.watch && Date.parse(radar.watch.expiresAt) > Date.now()
+      ? radar.watch
+      : null;
+  const predictionWatch = $("predictionWatch");
+  if (prediction) {
+    predictionWatch.hidden = false;
+    predictionWatch.dataset.level =
+      prediction.chancePercent >= 70
+        ? "high"
+        : prediction.chancePercent >= 40
+          ? "medium"
+          : "low";
+    $("predictionChance").textContent = `${formatNumber(prediction.chancePercent, 0)}%`;
+    $("predictionWindow").textContent = `未来 ${prediction.windowHours} 小时`;
+    $("predictionMeta").textContent =
+      `${relativeTime(prediction.observedAt)}发现 · ` +
+      `有效至 ${formatDateTime(prediction.expiresAt, data.timezone)}`;
+    $("predictionText").textContent =
+      prediction.source.text || "Codex Resets 当前未提供预测说明。";
+    $("predictionLink").href = safeExternalUrl(prediction.source.url);
+  } else {
+    predictionWatch.hidden = true;
+    delete predictionWatch.dataset.level;
+  }
+
   if (radar?.latest) {
     $("radarStatus").textContent = `共 ${radar.total} 次`;
     $("radarStatus").className = "live-dot active";
-    $("radarTime").textContent = `最近重置公告：${relativeTime(radar.latest.announcedAt)}`;
+    $("radarTime").textContent = relativeTime(radar.latest.announcedAt);
     $("radarText").textContent = radar.latest.text;
-    $("radarLink").href = radar.latest.url || "https://codex-resets.com/";
+    $("radarLink").href = safeExternalUrl(radar.latest.url);
     $("radarLink").textContent = "查看原公告";
   }
 

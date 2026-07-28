@@ -63,22 +63,71 @@ test("额度响应按窗口长度识别每周窗口", () => {
 });
 
 test("重置雷达只保留展示所需的公开字段", () => {
-  const radar = normalizeRadar({
-    events: [
-      {
-        tweet_id: "123",
-        tweet_url: "https://x.com/example",
-        text: "reset",
-        announced_at: "2026-07-24T00:00:00Z",
+  const radar = normalizeRadar(
+    {
+      events: [
+        {
+          tweet_id: "123",
+          tweet_url: "https://x.com/example",
+          text: "reset",
+          announced_at: "2026-07-24T00:00:00Z",
+        },
+      ],
+      stats: { total: 10, avg_interval_days: 8.8 },
+      generated_at: "2026-07-24T01:00:00Z",
+      watch: {
+        level: "strong",
+        tweet_id: "456",
+        tweet_url: "https://x.com/example/status/456",
+        text: "I am feeling like a limit reset.",
+        observed_at: "2026-07-28T00:27:37Z",
+        expires_at: "2026-07-29T00:27:37Z",
+        window_hours: 24,
+        reset_chance_24h: 75,
       },
-    ],
-    stats: { total: 10, avg_interval_days: 8.8 },
-    generated_at: "2026-07-24T01:00:00Z",
-  });
+    },
+    Date.parse("2026-07-28T01:00:00Z"),
+  );
   assert.deepEqual(radar.latest, {
     id: "123",
     url: "https://x.com/example",
     text: "reset",
     announcedAt: "2026-07-24T00:00:00Z",
   });
+  assert.deepEqual(radar.watch, {
+    level: "strong",
+    chancePercent: 75,
+    observedAt: "2026-07-28T00:27:37Z",
+    expiresAt: "2026-07-29T00:27:37Z",
+    windowHours: 24,
+    source: {
+      id: "456",
+      url: "https://x.com/example/status/456",
+      text: "I am feeling like a limit reset.",
+    },
+  });
+});
+
+test("过期或无效的重置预测不进入页面状态", () => {
+  const expired = normalizeRadar(
+    {
+      watch: {
+        reset_chance_24h: 75,
+        expires_at: "2026-07-28T00:27:37Z",
+      },
+    },
+    Date.parse("2026-07-28T01:00:00Z"),
+  );
+  const invalid = normalizeRadar(
+    {
+      watch: {
+        reset_chance_24h: 101,
+        expires_at: "2026-07-29T00:27:37Z",
+      },
+    },
+    Date.parse("2026-07-28T01:00:00Z"),
+  );
+
+  assert.equal(expired.watch, null);
+  assert.equal(invalid.watch, null);
 });

@@ -453,9 +453,109 @@ h2 {
   font-size: 11px;
 }
 
+.prediction-watch {
+  margin-top: 24px;
+  padding: 18px;
+  border: 1px solid #eadcb3;
+  border-radius: 16px;
+  background: #fff8dc;
+}
+
+.prediction-summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.prediction-chance {
+  min-width: 94px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: #5d3b08;
+  background: #f5ca58;
+  font-size: 30px;
+  line-height: 1;
+  text-align: center;
+}
+
+.prediction-watch[data-level="high"] .prediction-chance {
+  color: white;
+  background: var(--red);
+}
+
+.prediction-watch[data-level="medium"] .prediction-chance {
+  color: #5d3b08;
+  background: #f5ca58;
+}
+
+.prediction-watch[data-level="low"] .prediction-chance {
+  color: #24573f;
+  background: var(--green-soft);
+}
+
+.prediction-summary span,
+.prediction-summary b {
+  display: block;
+}
+
+.prediction-summary span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.prediction-summary b {
+  margin-top: 3px;
+  font-size: 18px;
+}
+
+.prediction-meta {
+  margin: 13px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.prediction-text {
+  display: -webkit-box;
+  margin: 12px 0 0;
+  overflow: hidden;
+  color: #504733;
+  font-size: 12px;
+  line-height: 1.6;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.prediction-disclaimer {
+  margin: 13px 0 0;
+  padding-top: 11px;
+  border-top: 1px solid rgba(93, 59, 8, 0.14);
+  color: #796b4e;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.radar-history {
+  margin-top: 24px;
+  padding-top: 19px;
+  border-top: 1px solid var(--line);
+}
+
+.prediction-watch[hidden] + .radar-history {
+  margin-top: 28px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.radar-history-label {
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .radar-time {
-  margin: 30px 0 10px;
-  font-size: 22px;
+  margin: 0 0 8px;
+  font-size: 20px;
   font-weight: 800;
   letter-spacing: -0.025em;
 }
