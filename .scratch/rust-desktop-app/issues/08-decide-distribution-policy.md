@@ -23,3 +23,6 @@ Assignee: codex
 - 2026-07-28：用户确认 v1 支持矩阵为 macOS Apple Silicon + Intel（一个
   universal build）以及 Windows x64。Windows ARM64 不作为首版承诺，待
   签名链和真机测试可重复后再扩展。
+- 2026-07-28：用户确认 Windows v1 只提供 x64 per-user NSIS `setup.exe`，
+  默认不提权并安装到当前用户目录；同一安装包作为手动下载与 Tauri updater
+  载体。MSI 和 per-machine 企业部署不属于 v1。
