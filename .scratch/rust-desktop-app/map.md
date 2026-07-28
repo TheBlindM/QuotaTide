@@ -37,10 +37,13 @@ Type: wayfinder:map
 - [确定产品身份与开源仓库](./issues/09-decide-product-identity-and-repository.md) — 产品名 QuotaTide，作者 TheBlind，永久标识 `dev.theblind.quotatide`，统一本地/安装包/版权与独立项目声明；未确定的 GitHub 远程身份拆为发布前绑定任务。
 - [设计应用图标与托盘资产](./issues/10-design-app-icon-and-tray-assets.md) — 用户选择 A — Tide Dial；生产资产采用圆形额度仪表与上升潮水，大图标保留七日刻度，小尺寸使用光学校正版，并交付 macOS template 与 Windows color/high-contrast 多层资产。
 - [决定本地化与可访问性范围](./issues/11-decide-localization-and-accessibility.md) — v1 完整支持 `zh-CN`/`en`，分离界面语言、格式区域和策略时区，采用提醒语言快照与 WCAG 2.2 AA 门禁，并固定键盘、读屏和辅助显示降级契约。
+- [验证最低系统版本与发布 QA 矩阵](./issues/12-verify-minimum-os-and-release-qa.md) — v1 候选最低正式支持 macOS 15 Sequoia universal（Apple Silicon + Intel）与 Windows 11 25H2 x64；macOS 14、Windows 10 22H2 和 Windows 11 24H2 只作扩大兼容 smoke，并以六类证据覆盖安装、平台集成、数据/安全、更新、双语/可访问性与资源预算。
 
 ## Not yet specified
 
-- 无；产品身份、视觉资产、本地化和发布 QA 已升级为明确的 child tickets。
+- GitHub `owner/repo`、remote 与 updater endpoint 仍等待用户确认；已由
+  [绑定 GitHub 仓库与 updater endpoint](./issues/13-bind-github-repository-and-updater.md)
+  独立阻断，不能使用 placeholder 发布。
 
 ## Out of scope
 

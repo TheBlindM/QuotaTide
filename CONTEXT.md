@@ -61,7 +61,7 @@ _Avoid_: 用户、成员、多账号
 _Avoid_: 多账号列表、合并历史、已删除账号
 
 **支持矩阵**:
-正式版本承诺构建、签名、测试并持续维护的操作系统与 CPU 组合；v1 包含 macOS Apple Silicon、macOS Intel 和 Windows x64。
+正式版本承诺构建、测试并持续维护的操作系统与 CPU 组合；v1 候选最低为 macOS 15 Sequoia 的 Apple Silicon、macOS 15 Sequoia 的 Intel，以及 Windows 11 25H2 x64。macOS 14、Windows 10 22H2 和 Windows 11 24H2 即使扩大兼容 smoke 通过，也不自动进入正式支持矩阵。
 _Avoid_: 能够编译的平台、未经验证的平台、所有桌面系统
 
 **未签名预览版**:

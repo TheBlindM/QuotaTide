@@ -1,4 +1,4 @@
-Status: open
+Status: closed
 Type: wayfinder:research
 Parent: ../map.md
 Blocked by: ./02-verify-platform-integrations.md, ./04-prototype-tray-window.md, ./07-decide-config-state-security.md, ./08-decide-distribution-policy.md, ./09-decide-product-identity-and-repository.md, ./10-design-app-icon-and-tray-assets.md, ./11-decide-localization-and-accessibility.md
@@ -21,3 +21,10 @@ gate 文档。
   OS/CPU 基线与一手来源，再把既有产品、架构、安全、发布、本地化决策展开为
   可执行的双平台 QA 矩阵；未有真实 Rust/Tauri 构建证据的项目必须明确标记为
   implementation smoke gate，不能伪装成已验证。
+- 2026-07-28：研究完成。v1 正式候选 floor 为 macOS 15 Sequoia universal
+  （Apple Silicon + Intel）与 Windows 11 25H2 x64；macOS 14、Windows 10
+  22H2 和 Windows 11 24H2 只做不承诺的扩大兼容 smoke。发布门禁已按
+  `AUTO/BUILD/SMOKE/MANUAL/LIVE/SECURITY` 展开 CPU、安装、平台集成、数据、
+  SMTP、更新、本地化/可访问性与资源预算，并明确全部真实构建证据仍待实施。
+  结论见 `docs/research/minimum-os-and-release-qa.md`，一手来源见
+  `docs/research/minimum-os-source-notes.md`。

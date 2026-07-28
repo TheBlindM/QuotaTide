@@ -39,6 +39,9 @@ v1 是通过 GitHub Releases 直接分发的 `0.x` 未签名预览版：
 
 “正式支持”表示每次发布都必须构建、运行自动测试、完成安装/更新 smoke test，
 并在兼容性问题出现时持续维护。能偶然编译不等于进入支持矩阵。
+具体最低版本与阻断 QA 为 macOS 15 Sequoia universal、Windows 11 25H2 x64，
+见[最低系统版本与发布 QA 门禁](./minimum-os-and-release-qa.md)；扩大兼容
+smoke 不能自动扩大本表的正式承诺。
 
 ### macOS 产物
 
