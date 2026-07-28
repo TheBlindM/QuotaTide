@@ -26,3 +26,7 @@ OpenAI 官方产品，也不能在首次公开 Release 后随意改变持久身�
   身份决策。不得创建远程仓库或把 `benteli/quota-tide` 当成已决定地址；
   updater endpoint 保持 build-time placeholder，首次公开 Release 前必须
   回填并锁定。
+- 2026-07-28：用户确认本地产品命名统一为 display/data directory
+  `QuotaTide`、executable `quotatide`、Rust package prefix `quotatide-*`，
+  安装包使用 `QuotaTide_<version>_universal.dmg` 和
+  `QuotaTide_<version>_x64-setup.exe`。开源前删除旧“额度”运行时命名。
