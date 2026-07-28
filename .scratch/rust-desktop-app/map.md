@@ -26,12 +26,12 @@ Type: wayfinder:map
 
 ## Decisions so far
 
-<!-- closed tickets are indexed here -->
+- [选择 Rust 跨平台桌面技术栈](./issues/01-choose-rust-desktop-stack.md) — 采用 Tauri 2 作为桌面壳，业务与系统能力归 Rust 核心，本地 WebView 只承载 UI；Slint 1.17 保留为 fallback。
 
 ## Not yet specified
 
 - UI 原型确认后才能明确窗口尺寸、信息密度、导航层级、深浅色与无障碍细节。
-- 技术栈确认后才能明确模块边界、异步运行模型、资源预算与数据库方案。
+- Tauri 2 已确认；仍需结合平台能力研究与 UI 原型明确模块边界、异步运行模型、资源预算、前端框架与数据库方案。
 - 平台能力研究后才能明确毛玻璃降级、托盘定位、权限失败与系统通知降级行为。
 - 发布链路研究后才能明确签名、公证、安装包、自动更新和贡献者发布流程。
 - 上述决策完成后，需要判断品牌命名、应用图标、本地化与 QA 矩阵是否仍阻碍 build-ready spec。
