@@ -16,3 +16,8 @@ Assignee: codex
 
 - 2026-07-28：开始确认 QuotaTide v1 的语言覆盖与可访问性验收边界。该票为
   HITL grilling，所有产品取舍由用户逐项确认，不能由代理代答。
+- 2026-07-28：平台事实与一手来源已整理到
+  [`docs/research/localization-accessibility-source-notes.md`](../../../docs/research/localization-accessibility-source-notes.md)。
+  已确认 Tauri locale 返回 BCP 47 或 `null`、locale 与 region 需要分开处理，
+  以及 VoiceOver/Narrator、WCAG 2.2、减少动态、减少透明度和 Windows
+  forced-colors 的可验证平台边界；语言集合与产品回退仍等待用户决定。
