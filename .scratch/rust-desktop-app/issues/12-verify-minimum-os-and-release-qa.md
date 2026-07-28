@@ -2,7 +2,7 @@ Status: open
 Type: wayfinder:research
 Parent: ../map.md
 Blocked by: ./02-verify-platform-integrations.md, ./04-prototype-tray-window.md, ./07-decide-config-state-security.md, ./08-decide-distribution-policy.md, ./09-decide-product-identity-and-repository.md, ./10-design-app-icon-and-tray-assets.md, ./11-decide-localization-and-accessibility.md
-Assignee: unassigned
+Assignee: codex
 
 # 验证最低系统版本与发布 QA 矩阵
 
@@ -16,3 +16,8 @@ SMTP、SQLite 恢复、更新、语言/可访问性和资源预算，形成 buil
 gate 文档。
 
 ## Comments
+
+- 2026-07-28：开始核对最低系统版本与 build-ready release gate。先锁定候选
+  OS/CPU 基线与一手来源，再把既有产品、架构、安全、发布、本地化决策展开为
+  可执行的双平台 QA 矩阵；未有真实 Rust/Tauri 构建证据的项目必须明确标记为
+  implementation smoke gate，不能伪装成已验证。
