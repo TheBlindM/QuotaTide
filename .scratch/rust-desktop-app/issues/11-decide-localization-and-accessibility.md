@@ -48,3 +48,9 @@ Assignee: codex
   200% 字体缩放可以启用内部滚动，但不能截断操作或丢失功能；所有核心功能
   可纯键盘完成，颜色不是唯一状态信号，并须通过 VoiceOver 与 Narrator
   双平台真机任务测试。
+- 2026-07-28：用户确认托盘窗口打开时聚焦当前页面标题并播报概要，首次 Tab
+  进入首个操作控件；通知 deep link 聚焦对应额度、雷达或错误区域且只播报
+  一次。普通刷新用 polite `role="status"`，需立即处理的错误才用
+  `role="alert"`。Tab 顺序遵循视觉顺序，设置分类支持方向键；Escape
+  返回/关闭，Cmd/Ctrl+, 打开设置，Cmd/Ctrl+R 刷新。禁止 hover-only 操作与
+  无修饰单字母快捷键；图标、输入状态和图表均有本地化 accessible name。
