@@ -42,3 +42,9 @@ Assignee: codex
   新语言；已进入 outbox 的提醒保存 message key、结构化参数与 locale
   snapshot，重试时保持创建语言。应用内历史从结构化事件按当前界面语言重绘，
   不以已经发送的整段文案作为 canonical data。
+- 2026-07-28：用户确认 WCAG 2.2 AA 是 v1 的设计与测试 release gate，但不
+  对外宣称正式认证。普通文本至少 4.5:1，大文本与非文本控件至少 3:1；
+  icon control 保持 44×44px hit area，紧凑内联控件最低 32px 并保留间距；
+  200% 字体缩放可以启用内部滚动，但不能截断操作或丢失功能；所有核心功能
+  可纯键盘完成，颜色不是唯一状态信号，并须通过 VoiceOver 与 Narrator
+  双平台真机任务测试。
