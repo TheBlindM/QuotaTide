@@ -11,6 +11,7 @@ const labels = {
 };
 
 function formatNumber(value, digits = 1) {
+  if (value == null || value === "") return "—";
   return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
 }
 
@@ -47,10 +48,10 @@ function safeExternalUrl(value, fallback = "https://codex-resets.com/") {
 function renderHistory(history) {
   const chart = $("historyChart");
   if (!history?.length) {
-    chart.innerHTML = '<p class="empty-state">采集后显示每日使用记录</p>';
+    chart.innerHTML = '<p class="empty-state">采集后显示当前额度周期</p>';
     return;
   }
-  const ordered = [...history].reverse();
+  const ordered = history;
   const max = Math.max(...ordered.map((day) => Math.max(day.used, day.limit)), 16);
   chart.innerHTML = ordered
     .map((day) => {

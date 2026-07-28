@@ -123,3 +123,55 @@ test("数据库状态把前一工作日结余平分给剩余工作日", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("趋势只展示当前账号额度窗口所关心的 7 天", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "codex-window-test-"));
+  const database = new QuotaDatabase(
+    path.join(directory, "test.sqlite"),
+    "Asia/Shanghai",
+  );
+  try {
+    const previousResetAt =
+      Date.parse("2026-07-26T00:20:00Z") / 1000;
+    const currentResetAt =
+      Date.parse("2026-08-02T00:20:00Z") / 1000;
+    database.recordSnapshot(
+      usage(5, previousResetAt),
+      Date.parse("2026-07-24T01:00:00Z"),
+    );
+    database.recordSnapshot(
+      usage(1, currentResetAt),
+      Date.parse("2026-07-26T01:00:00Z"),
+    );
+    database.recordSnapshot(
+      usage(12, currentResetAt),
+      Date.parse("2026-07-27T10:00:00Z"),
+    );
+    database.recordSnapshot(
+      usage(13, currentResetAt),
+      Date.parse("2026-07-28T01:00:00Z"),
+    );
+
+    const status = database.status(Date.parse("2026-07-28T02:00:00Z"));
+
+    assert.deepEqual(
+      status.history.map((day) => day.date),
+      [
+        "2026-07-26",
+        "2026-07-27",
+        "2026-07-28",
+        "2026-07-29",
+        "2026-07-30",
+        "2026-07-31",
+        "2026-08-01",
+      ],
+    );
+    assert.deepEqual(
+      status.history.map((day) => day.used),
+      [1, 11, 1, null, null, null, null],
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

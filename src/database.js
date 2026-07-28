@@ -10,6 +10,13 @@ import {
   localDateParts,
 } from "./policy.js";
 
+function addCalendarDays(date, days) {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days))
+    .toISOString()
+    .slice(0, 10);
+}
+
 export class QuotaDatabase {
   constructor(filePath, timezone) {
     mkdirSync(path.dirname(filePath), { recursive: true });
@@ -314,19 +321,43 @@ export class QuotaDatabase {
     today.baseLimit = baseLimit;
     today.adjustment = limit - baseLimit;
     today.policyKind = dayPolicy.kind;
-    const history = this.db
+    const hasWeeklyWindow =
+      Number.isFinite(latest?.resetAt) &&
+      Number.isFinite(latest?.windowSeconds);
+    const windowStartDate = hasWeeklyWindow
+      ? localDateParts(
+          new Date((latest.resetAt - latest.windowSeconds) * 1000),
+          this.timezone,
+        ).date
+      : null;
+    const windowDates = windowStartDate
+      ? Array.from({ length: 7 }, (_, index) =>
+          addCalendarDays(windowStartDate, index),
+        )
+      : [];
+    const historyRows = this.db
       .prepare(
         `SELECT local_date, used_percent, limit_percent, status, updated_at
-         FROM daily_usage ORDER BY local_date DESC LIMIT 7`,
+         FROM daily_usage
+         WHERE local_date BETWEEN ? AND ?
+         ORDER BY local_date`,
       )
-      .all()
-      .map((row) => ({
-        date: row.local_date,
-        used: row.used_percent,
-        limit: row.limit_percent,
-        status: row.status,
-        updatedAt: row.updated_at,
-      }));
+      .all(windowDates[0] || "", windowDates.at(-1) || "");
+    const historyByDate = new Map(
+      historyRows.map((row) => [row.local_date, row]),
+    );
+    const usageByDate = this.dailyUsageMap();
+    const history = windowDates.map((windowDate) => {
+      const row = historyByDate.get(windowDate);
+      return {
+        date: windowDate,
+        used: row ? row.used_percent : null,
+        limit:
+          row?.limit_percent ?? dynamicDailyLimitFor(windowDate, usageByDate),
+        status: row?.status || "pending",
+        updatedAt: row?.updated_at || null,
+      };
+    });
     const alerts = this.db
       .prepare(
         `SELECT type, local_date, created_at, delivery_status
