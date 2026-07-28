@@ -1,8 +1,8 @@
-Status: open
+Status: in_progress
 Type: wayfinder:grilling
 Parent: ../map.md
 Blocked by: ./08-decide-distribution-policy.md
-Assignee: unassigned
+Assignee: codex
 
 # 确定产品身份与开源仓库
 
@@ -14,3 +14,7 @@ SECURITY 联系方式和 updater endpoint。名称必须适合开源发布，不
 OpenAI 官方产品，也不能在首次公开 Release 后随意改变持久身份。
 
 ## Comments
+
+- 2026-07-28：开始确认产品显示名与持久技术身份。当前仓库没有 Git remote，
+  因此 `owner/repo`、updater endpoint 和公开安全联系方式都需要在发布前
+  明确。
