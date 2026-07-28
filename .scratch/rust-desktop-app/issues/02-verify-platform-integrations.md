@@ -2,7 +2,7 @@ Status: open
 Type: wayfinder:research
 Parent: ../map.md
 Blocked by: ./01-choose-rust-desktop-stack.md
-Assignee: unassigned
+Assignee: codex
 
 # 验证 macOS 与 Windows 平台集成
 
