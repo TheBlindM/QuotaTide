@@ -140,6 +140,14 @@ test("趋势只展示当前账号额度窗口所关心的 7 天", () => {
       Date.parse("2026-07-24T01:00:00Z"),
     );
     database.recordSnapshot(
+      usage(10, previousResetAt),
+      Date.parse("2026-07-26T00:00:00Z"),
+    );
+    database.recordSnapshot(
+      usage(15, previousResetAt),
+      Date.parse("2026-07-26T00:10:00Z"),
+    );
+    database.recordSnapshot(
       usage(1, currentResetAt),
       Date.parse("2026-07-26T01:00:00Z"),
     );
@@ -150,6 +158,10 @@ test("趋势只展示当前账号额度窗口所关心的 7 天", () => {
     database.recordSnapshot(
       usage(13, currentResetAt),
       Date.parse("2026-07-28T01:00:00Z"),
+    );
+    database.recordSnapshot(
+      usage(14, currentResetAt),
+      Date.parse("2026-07-30T01:00:00Z"),
     );
 
     const status = database.status(Date.parse("2026-07-28T02:00:00Z"));

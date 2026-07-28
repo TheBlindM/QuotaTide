@@ -8,6 +8,7 @@ import {
   evaluateDailyPolicy,
   isEpochChange,
   localDateParts,
+  RESET_AT_JITTER_TOLERANCE_SECONDS,
 } from "./policy.js";
 
 function addCalendarDays(date, days) {
@@ -15,6 +16,19 @@ function addCalendarDays(date, days) {
   return new Date(Date.UTC(year, month - 1, day + days))
     .toISOString()
     .slice(0, 10);
+}
+
+function snapshotFromRow(row) {
+  return {
+    capturedAt: row.captured_at,
+    usedPercent: row.used_percent,
+    remainingPercent: row.remaining_percent,
+    resetAt: row.reset_at,
+    windowSeconds: row.window_seconds,
+    planType: row.plan_type,
+    allowed: Boolean(row.allowed),
+    resetCredits: row.reset_credits,
+  };
 }
 
 export class QuotaDatabase {
@@ -82,18 +96,7 @@ export class QuotaDatabase {
     const row = this.db
       .prepare("SELECT * FROM snapshots ORDER BY captured_at DESC, id DESC LIMIT 1")
       .get();
-    return row
-      ? {
-          capturedAt: row.captured_at,
-          usedPercent: row.used_percent,
-          remainingPercent: row.remaining_percent,
-          resetAt: row.reset_at,
-          windowSeconds: row.window_seconds,
-          planType: row.plan_type,
-          allowed: Boolean(row.allowed),
-          resetCredits: row.reset_credits,
-        }
-      : null;
+    return row ? snapshotFromRow(row) : null;
   }
 
   dailyUsageMap() {
@@ -103,6 +106,46 @@ export class QuotaDatabase {
         .all()
         .map((row) => [row.local_date, row.used_percent]),
     );
+  }
+
+  currentWindowUsage(latest, windowStartAt, now) {
+    const snapshots = this.db
+      .prepare(
+        `SELECT captured_at, used_percent, remaining_percent, reset_at,
+                window_seconds, plan_type, allowed, reset_credits
+         FROM snapshots
+         WHERE captured_at <= ?
+         ORDER BY captured_at, id`,
+      )
+      .all(now)
+      .map(snapshotFromRow);
+    const usage = new Map();
+    const updatedAt = new Map();
+    let previous = null;
+
+    for (const current of snapshots) {
+      if (current.capturedAt < windowStartAt) {
+        previous = current;
+        continue;
+      }
+      const belongsToCurrentWindow =
+        Math.abs(current.resetAt - latest.resetAt) <=
+        RESET_AT_JITTER_TOLERANCE_SECONDS;
+      if (belongsToCurrentWindow) {
+        const { date } = localDateParts(
+          new Date(current.capturedAt),
+          this.timezone,
+        );
+        usage.set(
+          date,
+          (usage.get(date) || 0) + calculateDelta(previous, current),
+        );
+        updatedAt.set(date, current.capturedAt);
+      }
+      previous = current;
+    }
+
+    return { usage, updatedAt };
   }
 
   recordSnapshot(usage, capturedAt = Date.now()) {
@@ -335,25 +378,36 @@ export class QuotaDatabase {
           addCalendarDays(windowStartDate, index),
         )
       : [];
-    const historyRows = this.db
-      .prepare(
-        `SELECT local_date, used_percent, limit_percent, status, updated_at
-         FROM daily_usage
-         WHERE local_date BETWEEN ? AND ?
-         ORDER BY local_date`,
-      )
-      .all(windowDates[0] || "", windowDates.at(-1) || "");
-    const historyByDate = new Map(
-      historyRows.map((row) => [row.local_date, row]),
-    );
+    const windowStartAt = hasWeeklyWindow
+      ? (latest.resetAt - latest.windowSeconds) * 1000
+      : null;
+    const windowUsage = hasWeeklyWindow
+      ? this.currentWindowUsage(latest, windowStartAt, now)
+      : { usage: new Map(), updatedAt: new Map() };
     const history = windowDates.map((windowDate) => {
-      const row = historyByDate.get(windowDate);
+      const hasData =
+        windowDate <= date && windowUsage.usage.has(windowDate);
+      if (!hasData) {
+        return {
+          date: windowDate,
+          used: null,
+          limit: null,
+          status: "pending",
+          updatedAt: null,
+        };
+      }
+      const used = windowUsage.usage.get(windowDate);
+      const dayLimit = dynamicDailyLimitFor(
+        windowDate,
+        windowUsage.usage,
+      );
+      const policy = evaluateDailyPolicy(used, dayLimit);
       return {
         date: windowDate,
-        used: row ? row.used_percent : null,
-        limit: row ? row.limit_percent : null,
-        status: row?.status || "pending",
-        updatedAt: row?.updated_at || null,
+        used,
+        limit: dayLimit,
+        status: policy.status,
+        updatedAt: windowUsage.updatedAt.get(windowDate),
       };
     });
     const alerts = this.db

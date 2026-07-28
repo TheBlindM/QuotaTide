@@ -55,9 +55,7 @@ function serveStatic(request, response) {
   response.writeHead(200, {
     "Content-Type":
       mimeTypes[path.extname(filePath)] || "application/octet-stream",
-    "Cache-Control": filePath.endsWith(".html")
-      ? "no-cache"
-      : "public, max-age=300",
+    "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
     "Content-Security-Policy":
       "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'",
