@@ -30,10 +30,11 @@ Type: wayfinder:map
 - [验证 macOS 与 Windows 平台集成](./issues/02-verify-platform-integrations.md) — 托盘与系统能力走 Rust-side Tauri adapters；两端均有不透明视觉降级，macOS 完整毛玻璃使用 private API，不能默认承诺 App Store 兼容。
 - [审核 Codex 与重置雷达数据契约](./issues/03-audit-upstream-data-contracts.md) — `auth.json` 每轮只读重开；严格识别当前账号的 604800 秒窗口；账号 stream、quota epoch 与第三方雷达相互隔离；失败保留最后成功值，雷达预测不能确认账号重置。
 - [原型化紧凑托盘窗口](./issues/04-prototype-tray-window.md) — 选择 420×680 的 B — Weekly Ledger；概览把当前额度窗口七天作为主结构，设置分额度/账号/通知，原生毛玻璃配不透明降级，light/dark 与空、告警、过期状态均有固定行为。
+- [决定桌面应用架构与模块边界](./issues/05-choose-application-architecture.md) — 采用 `quota-core` 深模块、Tauri 生产适配层和轻量 Preact UI；刷新 actor、SQLite 事实与 outbox、独立 delivery worker 形成可测试事务边界，旧 Node 只保留行为契约并在开源前移除。
 
 ## Not yet specified
 
-- Tauri 2 已确认；仍需结合平台能力研究与 UI 原型明确模块边界、异步运行模型、资源预算、前端框架与数据库方案。
+- 仍需明确非秘密配置与事实表的精确 schema、凭证库 key、诊断导出、恢复和保留策略。
 - 发布链路研究后才能明确签名、公证、安装包、自动更新和贡献者发布流程。
 - 上述决策完成后，需要判断品牌命名、应用图标、本地化与 QA 矩阵是否仍阻碍 build-ready spec。
 
