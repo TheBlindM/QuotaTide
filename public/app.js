@@ -185,7 +185,8 @@ function render(data) {
         : prediction.chancePercent >= 40
           ? "medium"
           : "low";
-    $("predictionChance").textContent = `${formatNumber(prediction.chancePercent, 0)}%`;
+    $("predictionChance").textContent =
+      prediction.displayChance || "有信号";
     $("predictionWindow").textContent = `未来 ${prediction.windowHours} 小时`;
     $("predictionMeta").textContent =
       `${relativeTime(prediction.observedAt)}发现 · ` +

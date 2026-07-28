@@ -73,4 +73,4 @@ docker compose down
 
 如果文件中没有 `account_id`，服务会尝试从 access token 的 JWT claim 中读取。服务不会修改该文件。
 
-完整行为见 [服务规范](docs/spec.md)，上游接口依据见 [调研记录](docs/research/codex-quota-sources.md)。
+完整行为见 [服务规范](docs/spec.md)，上游接口依据见 [额度调研](docs/research/codex-quota-sources.md) 和 [重置预测调研](docs/research/codex-reset-prediction.md)。

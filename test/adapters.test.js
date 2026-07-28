@@ -97,6 +97,7 @@ test("重置雷达只保留展示所需的公开字段", () => {
   assert.deepEqual(radar.watch, {
     level: "strong",
     chancePercent: 75,
+    displayChance: ">70%",
     observedAt: "2026-07-28T00:27:37Z",
     expiresAt: "2026-07-29T00:27:37Z",
     windowHours: 24,
@@ -127,7 +128,17 @@ test("过期或无效的重置预测不进入页面状态", () => {
     },
     Date.parse("2026-07-28T01:00:00Z"),
   );
+  const missingObservedAt = normalizeRadar(
+    {
+      watch: {
+        reset_chance_24h: 75,
+        expires_at: "2026-07-29T00:27:37Z",
+      },
+    },
+    Date.parse("2026-07-28T01:00:00Z"),
+  );
 
   assert.equal(expired.watch, null);
   assert.equal(invalid.watch, null);
+  assert.equal(missingObservedAt.watch, null);
 });

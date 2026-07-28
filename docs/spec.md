@@ -40,7 +40,7 @@ Accept: application/json
 
 ### 3.2 重置雷达
 
-服务读取 `https://codex-resets.com/api/resets`，展示最近一次全局额外重置公告，以及当前有效的 24 小时重置概率预测。预测使用接口 `watch` 对象中的 `reset_chance_24h`、`observed_at`、`expires_at` 和来源推文；预测过期或概率不在 0–100 范围时不展示。
+服务读取 `https://codex-resets.com/api/resets`，展示最近一次全局额外重置公告，以及当前有效的 24 小时重置概率预测。预测使用接口 `watch` 对象中的 `reset_chance_24h`、`observed_at`、`expires_at` 和来源推文；预测过期、时间无效或概率不在 0–100 范围时不展示。页面遵循来源站的档位语义，将原始概率按十位向下取整显示（例如 75% 显示为 `>70%`）。
 
 重置概率是 Codex Resets 的第三方 AI 估算，不是 OpenAI 的额度承诺，不改变每日上限、账号额度、告警状态或计划重置时间。账号真实额度始终以 `/wham/usage` 为准。
 
