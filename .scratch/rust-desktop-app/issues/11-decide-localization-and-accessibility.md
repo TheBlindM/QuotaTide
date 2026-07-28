@@ -1,4 +1,4 @@
-Status: open
+Status: closed
 Type: wayfinder:grilling
 Parent: ../map.md
 Blocked by: ./04-prototype-tray-window.md, ./07-decide-config-state-security.md, ./09-decide-product-identity-and-repository.md
@@ -54,3 +54,13 @@ Assignee: codex
   `role="alert"`。Tab 顺序遵循视觉顺序，设置分类支持方向键；Escape
   返回/关闭，Cmd/Ctrl+, 打开设置，Cmd/Ctrl+R 刷新。禁止 hover-only 操作与
   无修饰单字母快捷键；图标、输入状态和图表均有本地化 accessible name。
+- 2026-07-28：用户确认可读性优先的视觉降级。Reduce Transparency 完全关闭
+  blur/vibrancy/Acrylic/Mica 并改用不透明 surface；high contrast/forced
+  colors 停用品牌渐变、半透明与彩色阴影，使用系统颜色和清晰边框，并原子
+  切换单色 tray；reduced motion 取消位移、旋转、补间和 spinner，使用静态
+  “刷新中”文本。系统偏好变化立即生效，不能改变结构、焦点或数据。
+- 2026-07-28：共同理解已达成，完整实施与 release gate 基线记录于
+  [`docs/research/localization-accessibility.md`](../../../docs/research/localization-accessibility.md)。
+  v1 双语、locale fallback、格式区域/策略时区分离、提醒语言快照、WCAG 2.2
+  AA、键盘/焦点/读屏语义及辅助显示降级均已固定；Ticket 12 可据此执行
+  双平台 release QA。
