@@ -46,3 +46,7 @@ Assignee: codex
   通过的版本提交能经手动 workflow 和 GitHub Environment 确认发布；贡献者
   PR 不接触 updater private key 或 Release 写权限，workflow、updater public
   key 和发布脚本为敏感路径。有第二位可信维护者后启用双人审批和禁止自审。
+- 2026-07-28：用户确认 Tauri updater key 使用密码保护；公钥与 fingerprint
+  提交仓库，private key/password 只进入受保护 GitHub Environment，并由
+  维护者保存两份离线加密备份。私钥不进入 Git 或安装包，正常轮换必须先用
+  旧 key 发布包含新公钥的 bridge release。
