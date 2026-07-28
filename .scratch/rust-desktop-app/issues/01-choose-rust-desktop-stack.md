@@ -2,7 +2,7 @@ Status: open
 Type: wayfinder:research
 Parent: ../map.md
 Blocked by: none
-Assignee: unassigned
+Assignee: codex
 
 # 选择 Rust 跨平台桌面技术栈
 
