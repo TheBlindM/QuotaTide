@@ -31,12 +31,13 @@ Type: wayfinder:map
 - [审核 Codex 与重置雷达数据契约](./issues/03-audit-upstream-data-contracts.md) — `auth.json` 每轮只读重开；严格识别当前账号的 604800 秒窗口；账号 stream、quota epoch 与第三方雷达相互隔离；失败保留最后成功值，雷达预测不能确认账号重置。
 - [原型化紧凑托盘窗口](./issues/04-prototype-tray-window.md) — 选择 420×680 的 B — Weekly Ledger；概览把当前额度窗口七天作为主结构，设置分额度/账号/通知，原生毛玻璃配不透明降级，light/dark 与空、告警、过期状态均有固定行为。
 - [决定桌面应用架构与模块边界](./issues/05-choose-application-architecture.md) — 采用 `quota-core` 深模块、Tauri 生产适配层和轻量 Preact UI；刷新 actor、SQLite 事实与 outbox、独立 delivery worker 形成可测试事务边界，旧 Node 只保留行为契约并在开源前移除。
+- [调研跨平台发布与更新链路](./issues/06-research-release-pipeline.md) — 采用 macOS universal Developer ID DMG、Windows x64 per-user NSIS 与条件式 Authenticode、GitHub protected immutable Releases 和强制 Tauri updater 签名；静态 endpoint 仅向前修复，发布凭证与 fork PR 严格隔离。
 
 ## Not yet specified
 
 - 仍需明确非秘密配置与事实表的精确 schema、凭证库 key、诊断导出、恢复和保留策略。
-- 发布链路研究后才能明确签名、公证、安装包、自动更新和贡献者发布流程。
-- 上述决策完成后，需要判断品牌命名、应用图标、本地化与 QA 矩阵是否仍阻碍 build-ready spec。
+- 仍需在发行策略票中正式确认支持矩阵、Windows 签名供应商、安装包、自动更新和贡献者发布权限。
+- 上述配置与发行策略完成后，需要判断品牌命名、应用图标、本地化与 QA 矩阵是否仍阻碍 build-ready spec。
 
 ## Out of scope
 
