@@ -475,10 +475,10 @@ failure streak generation。
 
 ## 系统凭证库模型
 
-service 固定为最终 bundle identifier 加 `.smtp`：
+service 固定为永久 bundle identifier 加 `.smtp`：
 
 ```text
-<bundle-id>.smtp
+dev.theblind.quotatide.smtp
 ```
 
 user 使用两个固定、不含身份信息的 slot：

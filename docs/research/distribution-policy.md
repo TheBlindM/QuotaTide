@@ -4,6 +4,8 @@
 >
 > 日期：2026-07-28
 >
+> 产品：QuotaTide (`dev.theblind.quotatide`)
+>
 > 关联：[发布链路研究](./release-pipeline.md) ·
 > [应用架构](./application-architecture.md) ·
 > [配置与安全模型](./config-state-security.md)
@@ -43,9 +45,9 @@ v1 是通过 GitHub Releases 直接分发的 `0.x` 未签名预览版：
 同一个 universal app 生成：
 
 ```text
-<product>_<version>_universal.dmg
-<product>.app.tar.gz
-<product>.app.tar.gz.sig
+QuotaTide_<version>_universal.dmg
+QuotaTide.app.tar.gz
+QuotaTide.app.tar.gz.sig
 ```
 
 当前没有 Developer ID 时，可以按 Tauri/macOS 构建要求使用 ad-hoc code
@@ -55,8 +57,8 @@ signature，但发布说明必须把它视为**没有受信发布者身份、没
 ### Windows 产物
 
 ```text
-<product>_<version>_x64-setup.exe
-<product>_<version>_x64-setup.exe.sig
+QuotaTide_<version>_x64-setup.exe
+QuotaTide_<version>_x64-setup.exe.sig
 ```
 
 NSIS 使用 per-user 模式，默认安装到 `%LOCALAPPDATA%`，不要求管理员权限。

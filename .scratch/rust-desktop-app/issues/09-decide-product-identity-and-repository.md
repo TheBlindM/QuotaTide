@@ -1,4 +1,4 @@
-Status: in_progress
+Status: closed
 Type: wayfinder:grilling
 Parent: ../map.md
 Blocked by: ./08-decide-distribution-policy.md
@@ -40,3 +40,8 @@ OpenAI 官方产品，也不能在首次公开 Release 后随意改变持久身�
 - 2026-07-28：用户确认永久应用标识为 `dev.theblind.quotatide`，用于
   macOS bundle identifier、Windows 应用身份、系统凭证库 service 和应用
   数据归属。它与 GitHub 仓库地址解耦，首次公开版本后不得更改。
+- 2026-07-28：共同理解已确认，实施基线记录于
+  [`docs/research/product-identity.md`](../../../docs/research/product-identity.md)。
+  QuotaTide、TheBlind、`dev.theblind.quotatide`、本地/安装包命名、MIT
+  copyright、独立项目声明和安全渠道均已固定。GitHub `owner/repo` 按用户
+  要求拆为单独发布前绑定任务，不阻塞其余本地设计。

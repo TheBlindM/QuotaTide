@@ -201,8 +201,8 @@ Rust `keyring` 4.1.5 默认 `v1` feature 已按 target 使用 `apple-native-keyr
 
 ### v1 凭证模型
 
-- service：稳定应用标识，例如 `io.github.<owner>.codex-quota-assistant.smtp`
-- user：固定为 `default-sender`
+- service：永久应用标识 `dev.theblind.quotatide.smtp`
+- user：由后续配置模型固定为 `sender-slot-a` / `sender-slot-b`
 - secret：SMTP 密码或应用专用密码
 - 普通配置只保存：
   - `credential_ref`
@@ -210,6 +210,9 @@ Rust `keyring` 4.1.5 默认 `v1` feature 已按 target 使用 `apple-native-keyr
   - sender address
   - recipient addresses
 - `credential_ref` 不是密码，也不能包含密码片段。
+
+最终双 slot 更新与崩溃恢复语义见
+[配置、状态与本地安全模型](./config-state-security.md)。
 
 ### 错误与降级
 
@@ -269,4 +272,3 @@ Rust commands 完成验证、授权和系统调用。这样即使 WebView 出现
 - 窗口任何时候都不会完全落在可视屏幕外。
 - 拒绝通知、开机启动或凭证权限不会让应用崩溃，也不会泄露秘密。
 - WebView 无权直接执行上述平台操作。
-
