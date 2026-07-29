@@ -133,7 +133,7 @@ const tonePresentations: Record<ConfiguredTone, TonePresentation> = {
     chip: "预警",
     banner: {
       title: "接近今日额度",
-      detail: "已达到今日实际上限的 84%，完整七日数据仍保留。",
+      detail: "已接近今日实际上限，完整七日数据仍保留。",
       action: "today",
     },
   },
