@@ -21,7 +21,7 @@ tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
 quotatide-core = { path = "../crates/quotatide-core", version = "=0.1.0" }
-tauri = { version = "=2.11.5", features = ["image-png", "tray-icon"] }
+tauri = { version = "=2.11.5", features = ["image-png", "macos-private-api", "tray-icon"] }
 
 [lints]
 workspace = true

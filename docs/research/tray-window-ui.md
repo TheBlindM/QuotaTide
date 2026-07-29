@@ -181,3 +181,16 @@
 - `prefers-reduced-motion`、focus-visible、语义按钮/表单标签已加入原型。
 
 真实 macOS vibrancy、Windows Acrylic/Mica、系统字体缩放、屏幕边缘定位和辅助技术仍必须在 Tauri 实现票中做两端真机验收；它们是实现 gate，不再是信息架构未知项。
+
+## Ticket 15 implementation evidence
+
+2026-07-29 已在实际 Preact 实现中以固定 420×680 viewport 复验 B — Weekly
+Ledger。验证包含完整七日表格、设置返回路径、未配置隐私态，以及深色不透明
+预警降级；页面宽高均与 viewport 一致且无横向溢出。原生 macOS `.app` 同时完成
+release bundle 与隐藏常驻进程 smoke。
+
+![Weekly Ledger 浅色实现](./assets/tray-window/ticket-15/weekly-ledger-light.png)
+
+![Weekly Ledger 深色不透明预警实现](./assets/tray-window/ticket-15/warning-dark-opaque.png)
+
+![Weekly Ledger 未配置实现](./assets/tray-window/ticket-15/unconfigured-light.png)

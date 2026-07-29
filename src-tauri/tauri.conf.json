@@ -11,6 +11,7 @@
     "frontendDist": "../ui/dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "withGlobalTauri": false,
     "windows": [
       {
@@ -27,6 +28,9 @@
         "resizable": false,
         "maximizable": false,
         "minimizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
         "skipTaskbar": true
       }
     ],
@@ -34,6 +38,7 @@
       "id": "main",
       "iconPath": "icons/tray/tray-template.png",
       "iconAsTemplate": true,
+      "showMenuOnLeftClick": false,
       "tooltip": "QuotaTide"
     },
     "security": {

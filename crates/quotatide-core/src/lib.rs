@@ -3,6 +3,13 @@
 use serde::Serialize;
 use ts_rs::TS;
 
+mod tray_shell;
+
+pub use tray_shell::{
+    PhysicalPoint, PhysicalRect, PhysicalSize, ShellEffect, ShellEvent, TrayShell,
+    place_tray_window,
+};
+
 /// Public, non-secret metadata exposed by the desktop shell.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
