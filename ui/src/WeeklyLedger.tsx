@@ -51,7 +51,7 @@ const freshFixture: LedgerFixture = {
   weeklyUsed: "42%",
   weeklyRemaining: "58%",
   todayAvailable: "5.4%",
-  todayLimit: "16.8%",
+  todayLimit: "基础 16% + 结转 0.8% = 实际 16.8%",
   sourceHealth: "Codex 额度 · 正常",
   windowLabel: "07/24 至 07/30",
   lastSuccess: "上次成功 10:34",
