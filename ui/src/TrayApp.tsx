@@ -5,7 +5,7 @@ import { WeeklyLedger, type LedgerFixture } from "./WeeklyLedger";
 type TrayAppProps = {
   fixture: LedgerFixture;
   onHide: () => void;
-  onRefresh: () => void | Promise<void>;
+  onRefresh: () => unknown;
 };
 
 function SettingsView({ onBack }: { onBack: () => void }) {
@@ -71,7 +71,7 @@ function SettingsView({ onBack }: { onBack: () => void }) {
           <section aria-labelledby="quota-settings">
             <div class="settings-section__heading">
               <span>额度</span>
-              <h2 id="quota-settings">当前七日策略</h2>
+              <h2 id="quota-settings">当前七日策略模板</h2>
             </div>
             <p class="settings-description">
               工作日未用完的额度会平分到本窗口后续工作日。
@@ -129,7 +129,7 @@ export function TrayApp({ fixture, onHide, onRefresh }: TrayAppProps) {
 
     refreshingRef.current = true;
     setRefreshing(true);
-    let refreshResult: void | Promise<void>;
+    let refreshResult: unknown;
     try {
       refreshResult = onRefresh();
     } catch {
@@ -137,16 +137,18 @@ export function TrayApp({ fixture, onHide, onRefresh }: TrayAppProps) {
     }
     void Promise.resolve(refreshResult)
       .catch(() => undefined)
-      .finally(() => {
+      .then((cooldownMs) => {
         refreshingRef.current = false;
-        coolingDownRef.current = true;
         setRefreshing(false);
-        setCoolingDown(true);
-        cooldownTimerRef.current = window.setTimeout(() => {
-          coolingDownRef.current = false;
-          setCoolingDown(false);
-          cooldownTimerRef.current = undefined;
-        }, 30_000);
+        if (typeof cooldownMs === "number" && cooldownMs > 0) {
+          coolingDownRef.current = true;
+          setCoolingDown(true);
+          cooldownTimerRef.current = window.setTimeout(() => {
+            coolingDownRef.current = false;
+            setCoolingDown(false);
+            cooldownTimerRef.current = undefined;
+          }, cooldownMs);
+        }
       });
   }, [onRefresh]);
 

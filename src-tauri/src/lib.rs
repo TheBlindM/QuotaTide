@@ -62,8 +62,13 @@ fn hide_main_window(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
-fn request_manual_refresh(app: AppHandle) -> Result<(), String> {
-    dispatch_shell_event(&app, ShellEvent::RefreshRequested, None)
+fn request_manual_refresh(app: AppHandle) -> Result<u64, String> {
+    dispatch_shell_event(&app, ShellEvent::RefreshRequested, None)?;
+    Ok(manual_refresh_cooldown_ms())
+}
+
+fn manual_refresh_cooldown_ms() -> u64 {
+    u64::try_from(MANUAL_REFRESH_COOLDOWN.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[tauri::command]
@@ -341,7 +346,7 @@ mod tests {
 
     use quotatide_core::ShellEvent;
 
-    use super::{RefreshGate, get_build_info, menu_event_for_id};
+    use super::{RefreshGate, get_build_info, manual_refresh_cooldown_ms, menu_event_for_id};
 
     #[test]
     fn command_returns_the_public_core_contract() {
@@ -371,5 +376,6 @@ mod tests {
         assert!(gate.try_start(now));
         assert!(!gate.try_start(now + Duration::from_secs(29)));
         assert!(gate.try_start(now + Duration::from_secs(30)));
+        assert_eq!(manual_refresh_cooldown_ms(), 30_000);
     }
 }

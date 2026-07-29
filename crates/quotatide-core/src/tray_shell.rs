@@ -129,22 +129,25 @@ pub fn place_tray_window(
     let centered_y = tray.origin.y + (tray.size.height - window.height) / 2.0;
     let max_x = work_area.origin.x + work_area.size.width - window.width;
     let max_y = work_area.origin.y + work_area.size.height - window.height;
-    let distances = [
-        (tray.origin.y - work_area.origin.y).abs(),
-        (work_area.origin.y + work_area.size.height - tray.origin.y - tray.size.height).abs(),
-        (tray.origin.x - work_area.origin.x).abs(),
-        (work_area.origin.x + work_area.size.width - tray.origin.x - tray.size.width).abs(),
+    let edge_distances = [
+        (DisplayEdge::Top, (tray.origin.y - work_area.origin.y).abs()),
+        (
+            DisplayEdge::Bottom,
+            (work_area.origin.y + work_area.size.height - tray.origin.y - tray.size.height).abs(),
+        ),
+        (
+            DisplayEdge::Left,
+            (tray.origin.x - work_area.origin.x).abs(),
+        ),
+        (
+            DisplayEdge::Right,
+            (work_area.origin.x + work_area.size.width - tray.origin.x - tray.size.width).abs(),
+        ),
     ];
-    let closest_edge = distances
+    let closest_edge = edge_distances
         .iter()
-        .enumerate()
         .min_by(|(_, left), (_, right)| left.total_cmp(right))
-        .map_or(DisplayEdge::Top, |(index, _)| match index {
-            0 => DisplayEdge::Top,
-            1 => DisplayEdge::Bottom,
-            2 => DisplayEdge::Left,
-            _ => DisplayEdge::Right,
-        });
+        .map_or(DisplayEdge::Top, |(edge, _)| *edge);
     let (x, y) = match closest_edge {
         DisplayEdge::Top => (centered_x, tray.origin.y + tray.size.height + gap),
         DisplayEdge::Bottom => (centered_x, tray.origin.y - window.height - gap),

@@ -99,7 +99,7 @@ export const ledgerFixtures: Record<LedgerTone, LedgerFixture> = {
 type WeeklyLedgerProps = {
   fixture: LedgerFixture;
   onOpenSettings: () => void;
-  onRefresh: () => void | Promise<void>;
+  onRefresh: () => unknown;
   refreshing?: boolean;
   refreshDisabled?: boolean;
 };
@@ -181,7 +181,7 @@ export function WeeklyLedger({
   const requestRefresh = () => {
     try {
       const refreshResult = onRefresh();
-      if (refreshResult !== undefined) {
+      if (refreshResult instanceof Promise) {
         void refreshResult.catch(() => undefined);
       }
     } catch {

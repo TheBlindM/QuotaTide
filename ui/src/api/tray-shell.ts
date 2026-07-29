@@ -4,8 +4,8 @@ export async function hideMainWindow(): Promise<void> {
   await invoke("hide_main_window");
 }
 
-export async function requestManualRefresh(): Promise<void> {
-  await invoke("request_manual_refresh");
+export async function requestManualRefresh(): Promise<number> {
+  return await invoke<number>("request_manual_refresh");
 }
 
 export async function beginExternalDialog(): Promise<void> {
