@@ -42,6 +42,7 @@ Type: wayfinder:map
 - [打通 Weekly Ledger 托盘窗口](./issues/15-build-weekly-ledger-tray-shell.md) — 已交付单实例 420×680 托盘弹层、跨显示器物理定位、双平台毛玻璃与不透明降级、完整七日静态状态、设置/键盘交互，以及刷新冷却和系统对话框失焦 seams。
 - [完成当前账号配置流程](./issues/16-configure-current-account.md) — 已交付原生单文件选择、严格只读认证验证、版本化 SQLite 设置、稳定账号流 identity、乐观 revision 冲突处理及端到端秘密 canary 边界测试。
 - [接入当前账号真实额度](./issues/17-fetch-live-current-quota.md) — 已交付严格 WHAM 当前七日窗口适配、core-owned single-flight/冷却/token rotation、启动与每小时调度、事务化 last-known-good/来源健康，以及 revision 驱动的实时概览状态。
+- [建立当前七日额度账本](./issues/18-build-current-seven-day-ledger.md) — 已交付整数高水位账本、双事实重置与 schedule 修正确认、IANA/DST 自然日归属、不可变 SQLite v4 事实和旧数据隔离迁移，以及严格当前 epoch 的七日语义投影。
 
 ## Not yet specified
 
