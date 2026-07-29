@@ -24,7 +24,12 @@ function ledgerDay(
   localDate: string,
   usedMicropoints: number | null,
   isToday: boolean,
-  status: "unknown" | "normal" | "finalized" = "unknown",
+  status:
+    | "unknown"
+    | "normal"
+    | "warning"
+    | "exceeded"
+    | "finalized" = "unknown",
 ) {
   return {
     localDate,
@@ -79,6 +84,10 @@ vi.mock("./api/live-quota", () => ({
       consecutiveFailures: 0,
       sourceStatus: "fresh",
       publicError: null,
+      todayBaseMicropoints: 16_000_000,
+      todayCarryMicropoints: 0,
+      todayLimitMicropoints: 16_000_000,
+      todayAvailableMicropoints: 15_000_000,
       ledgerDays: [
         ledgerDay("2026-07-24", null, false),
         ledgerDay("2026-07-25", null, false),
@@ -188,6 +197,10 @@ describe("QuotaTide tray app", () => {
         consecutiveFailures: 1,
         sourceStatus: "stale_after_failure",
         publicError: "timeout",
+        todayBaseMicropoints: 16_000_000,
+        todayCarryMicropoints: 0,
+        todayLimitMicropoints: 16_000_000,
+        todayAvailableMicropoints: 15_000_000,
         ledgerDays: [
           ledgerDay("2026-07-24", null, false),
           ledgerDay("2026-07-25", null, false),
@@ -212,5 +225,50 @@ describe("QuotaTide tray app", () => {
     });
     expect(fixture.sourceHealth).toBe("Codex 额度 · 连续 1 次失败（请求超时）");
     expect(fixture.lastSuccess).toContain("上次成功");
+  });
+
+  it.each([
+    ["warning", "warning"],
+    ["exceeded", "over"],
+  ] as const)("uses the real current-day %s status for the dashboard tone", (status, tone) => {
+    const fixture = projectLiveFixture(
+      {
+        settingsRevision: 1,
+        configured: true,
+        pathSummary: "…/auth.json",
+        accountLabel: "账号 • 21B8",
+        quotaPolicy,
+      },
+      {
+        usedMicropoints: 45_000_000,
+        remainingMicropoints: 55_000_000,
+        capturedAtUnixMs: 1_785_000_000_000,
+        resetsAtUnixS: 1_786_000_000,
+        windowStartsAtUnixS: 1_785_395_200,
+        windowEndsAtUnixS: 1_785_999_999,
+        planType: "plus",
+        allowed: true,
+        lastAttemptAtUnixMs: 1_785_000_000_000,
+        lastSuccessAtUnixMs: 1_785_000_000_000,
+        consecutiveFailures: 0,
+        sourceStatus: "fresh",
+        publicError: null,
+        todayBaseMicropoints: 16_000_000,
+        todayCarryMicropoints: 800_000,
+        todayLimitMicropoints: 16_800_000,
+        todayAvailableMicropoints: status === "warning" ? 2_600_000 : 0,
+        ledgerDays: [
+          ledgerDay(
+            "2026-07-28",
+            status === "warning" ? 14_200_000 : 18_200_000,
+            true,
+            status,
+          ),
+        ],
+      },
+    );
+
+    expect(fixture.tone).toBe(tone);
+    expect(fixture.todayLimit).toContain("16.8%");
   });
 });

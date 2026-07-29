@@ -26,10 +26,6 @@ pub use quota_ledger::{
     DailyUsageFact, LedgerApplyKind, LedgerError, LedgerProjection, LedgerState, LedgerTransition,
     QuotaLedger,
 };
-pub use quota_policy::{
-    DailyLimitSnapshot, DailyPolicyStatus, PolicyDayFact, PolicyDayProjection, PolicyError,
-    QuotaPolicy, ThresholdTransition,
-};
 pub use tray_shell::{
     PhysicalPoint, PhysicalRect, PhysicalSize, ShellEffect, ShellEvent, TrayShell,
     place_tray_window,

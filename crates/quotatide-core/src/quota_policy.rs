@@ -270,9 +270,10 @@ impl QuotaPolicy {
                 };
             let limit = base.saturating_add(carry);
             let status = daily_status(fact.used_micropoints, limit, finalized);
-            let threshold_transition = fact
-                .previous_status
-                .and_then(|previous| Self::threshold_transition(previous, status));
+            let threshold_transition = Self::threshold_transition(
+                fact.previous_status.unwrap_or(DailyPolicyStatus::Unknown),
+                status,
+            );
             projections.push(PolicyDayProjection {
                 local_date: fact.local_date,
                 policy_revision_id: revision,
@@ -318,5 +319,169 @@ fn daily_status(
         DailyPolicyStatus::Warning
     } else {
         DailyPolicyStatus::Normal
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{Days, NaiveDate};
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn monday() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 7, 27).expect("valid Monday")
+    }
+
+    #[test]
+    fn default_policy_is_the_confirmed_seven_day_template() {
+        let policy = QuotaPolicy::default_for_timezone("Asia/Shanghai").expect("default policy");
+
+        assert_eq!(policy.base_micropoints(), DEFAULT_BASE_MICROPOINTS);
+        assert!(policy.carry_workdays_enabled());
+        assert_eq!(policy.policy_timezone().name(), "Asia/Shanghai");
+    }
+
+    #[test]
+    fn threshold_notifications_only_fire_when_a_boundary_is_crossed() {
+        assert_eq!(
+            QuotaPolicy::threshold_transition(
+                DailyPolicyStatus::Normal,
+                DailyPolicyStatus::Warning,
+            ),
+            Some(ThresholdTransition::Warning),
+        );
+        assert_eq!(
+            QuotaPolicy::threshold_transition(
+                DailyPolicyStatus::Warning,
+                DailyPolicyStatus::Warning,
+            ),
+            None,
+        );
+        assert_eq!(
+            QuotaPolicy::threshold_transition(
+                DailyPolicyStatus::Warning,
+                DailyPolicyStatus::Exceeded,
+            ),
+            Some(ThresholdTransition::Exceeded),
+        );
+        assert_eq!(
+            QuotaPolicy::threshold_transition(
+                DailyPolicyStatus::Exceeded,
+                DailyPolicyStatus::Exceeded,
+            ),
+            None,
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn validation_accepts_exactly_the_bounded_weekly_domain(
+            bases in prop::array::uniform7(0_i64..=100_000_001_i64),
+        ) {
+            let result = QuotaPolicy::new(bases, true, "Asia/Shanghai");
+            let expected_valid = bases.iter().all(|value| *value <= 100_000_000)
+                && bases.iter().sum::<i64>() <= 100_000_000;
+            prop_assert_eq!(result.is_ok(), expected_valid);
+        }
+
+        #[test]
+        fn confirmed_monday_unused_quota_is_conserved_across_later_workdays(
+            monday_used in 0_i64..=16_000_000_i64,
+        ) {
+            let policy = QuotaPolicy::default_for_timezone("Asia/Shanghai")
+                .expect("valid default policy");
+            let monday = monday();
+            let facts = (0_u64..5)
+                .map(|offset| {
+                    PolicyDayFact::new(
+                        monday.checked_add_days(Days::new(offset)).expect("date in range"),
+                        (offset == 0).then_some(monday_used),
+                        offset == 0,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let projected = policy
+                .project_days(&facts, monday.succ_opt().expect("Tuesday"), 1)
+                .expect("valid projection");
+            let allocated = projected[1..]
+                .iter()
+                .map(|day| day.carry_micropoints)
+                .sum::<i64>();
+
+            prop_assert_eq!(allocated, 16_000_000 - monday_used);
+        }
+
+        #[test]
+        fn completed_snapshot_is_stable_across_policy_and_timezone_edits(
+            used in 0_i64..=100_000_000_i64,
+            snapshot_base in 0_i64..=100_000_000_i64,
+            snapshot_carry in 0_i64..=100_000_000_i64,
+        ) {
+            let active = QuotaPolicy::new(
+                [20_000_000, 20_000_000, 20_000_000, 20_000_000, 0, 10_000_000, 10_000_000],
+                true,
+                "America/New_York",
+            )
+            .expect("valid active policy");
+            let monday = monday();
+            let snapshot = DailyLimitSnapshot::new(
+                7,
+                "Asia/Shanghai",
+                snapshot_base,
+                snapshot_carry,
+            )
+            .expect("valid snapshot");
+            let projected = active
+                .project_days(
+                    &[PolicyDayFact::with_snapshot(monday, Some(used), snapshot)],
+                    monday.succ_opt().expect("Tuesday"),
+                    8,
+                )
+                .expect("valid projection");
+
+            prop_assert_eq!(projected[0].policy_revision_id, 7);
+            prop_assert_eq!(projected[0].policy_timezone.name(), "Asia/Shanghai");
+            prop_assert_eq!(projected[0].base_micropoints, snapshot_base);
+            prop_assert_eq!(projected[0].carry_micropoints, snapshot_carry);
+        }
+
+        #[test]
+        fn unknown_overuse_weekends_and_new_weeks_never_mint_carry(
+            overuse in 16_000_000_i64..=100_000_000_i64,
+        ) {
+            let policy = QuotaPolicy::default_for_timezone("Asia/Shanghai")
+                .expect("valid policy");
+            let monday = monday();
+            let facts = [
+                PolicyDayFact::new(monday, Some(overuse), true),
+                PolicyDayFact::new(
+                    monday.checked_add_days(Days::new(1)).expect("Tuesday"),
+                    None,
+                    true,
+                ),
+                PolicyDayFact::new(
+                    monday.checked_add_days(Days::new(5)).expect("Saturday"),
+                    Some(0),
+                    true,
+                ),
+                PolicyDayFact::new(
+                    monday.checked_add_days(Days::new(7)).expect("next Monday"),
+                    None,
+                    false,
+                ),
+            ];
+            let projected = policy
+                .project_days(
+                    &facts,
+                    monday.checked_add_days(Days::new(7)).expect("next Monday"),
+                    1,
+                )
+                .expect("valid projection");
+
+            prop_assert_eq!(projected[1].carry_micropoints, 0);
+            prop_assert_eq!(projected[2].carry_micropoints, 0);
+            prop_assert_eq!(projected[3].carry_micropoints, 0);
+        }
     }
 }

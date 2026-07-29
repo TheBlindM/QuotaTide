@@ -238,7 +238,7 @@ WebView 只调用本项目定义的 DTO commands，例如：
 
 - `get_dashboard`
 - `get_settings`
-- `update_quota_policy`
+- `save_settings`
 - `select_auth_file`
 - `update_mail_settings`
 - `set_notification_preference`

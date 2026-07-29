@@ -15,11 +15,11 @@ export async function selectAuthFile(
   });
 }
 
-export async function updateQuotaPolicy(
+export async function saveSettings(
   expectedSettingsRevision: number,
   draft: QuotaPolicyDraft,
 ): Promise<PublicAccountSettings> {
-  return await invoke<PublicAccountSettings>("update_quota_policy", {
+  return await invoke<PublicAccountSettings>("save_settings", {
     expectedSettingsRevision,
     draft,
   });

@@ -6,6 +6,97 @@ const CANARY_ACCOUNT_ID: &str = "user-ticket16-account-canary";
 const CANARY_PATH: &str = "/private/canary/home/.codex/auth.json";
 
 #[tokio::test]
+async fn version_five_policy_facts_are_constrained_and_immutable() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open settings store");
+    store
+        .configure_account(0, CANARY_PATH, CANARY_ACCOUNT_ID)
+        .await
+        .expect("configure account");
+    drop(store);
+
+    let connection = rusqlite::Connection::open(&database).expect("inspect version five");
+    let active_policy_not_null: i64 = connection
+        .query_row(
+            "SELECT [notnull] FROM pragma_table_info('app_settings')
+             WHERE name = 'active_policy_revision_id'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("active policy column");
+    assert_eq!(active_policy_not_null, 1);
+    for column in [
+        "policy_revision_id",
+        "base_micropoints",
+        "carry_micropoints",
+        "policy_status",
+    ] {
+        let not_null: i64 = connection
+            .query_row(
+                "SELECT [notnull] FROM pragma_table_info('daily_ledgers')
+                 WHERE name = ?1",
+                [column],
+                |row| row.get(0),
+            )
+            .expect("daily policy fact column");
+        assert_eq!(not_null, 1, "{column} must be required");
+    }
+
+    let (stream_id, revision_id): (i64, i64) = connection
+        .query_row(
+            "SELECT configured_account_stream_id, active_policy_revision_id
+             FROM app_settings WHERE singleton_id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("active stream and policy");
+    assert!(
+        connection
+            .execute(
+                "UPDATE policy_revisions SET policy_timezone = 'UTC' WHERE id = ?1",
+                [revision_id],
+            )
+            .is_err()
+    );
+    connection
+        .execute(
+            "INSERT INTO daily_ledgers
+             (account_stream_id, local_date, policy_timezone, used_micropoints,
+              policy_revision_id, base_micropoints, carry_micropoints,
+              policy_status, finalized_at_ms, updated_at_ms)
+             VALUES (?1, '2026-07-28', 'Asia/Shanghai', 1000000,
+                     ?2, 16000000, 0, 'finalized', 1785200000000, 1785200000000)",
+            rusqlite::params![stream_id, revision_id],
+        )
+        .expect("insert finalized fact");
+    assert!(
+        connection
+            .execute(
+                "UPDATE daily_ledgers SET used_micropoints = 2000000
+                 WHERE account_stream_id = ?1",
+                [stream_id],
+            )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO daily_ledgers
+                 (account_stream_id, local_date, policy_timezone, used_micropoints,
+                  policy_revision_id, base_micropoints, carry_micropoints,
+                  policy_status, updated_at_ms)
+                 VALUES (?1, '2026-07-29', 'Asia/Shanghai', 0,
+                         ?2, 16000000, 0, 'invalid', 1785286400000)",
+                rusqlite::params![stream_id, revision_id],
+            )
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn account_configuration_is_atomic_persistent_and_secret_free() {
     let directory = tempdir().expect("temporary directory");
     let database = directory.path().join("state.sqlite3");

@@ -236,6 +236,146 @@ async fn dashboard_projects_confirmed_weekday_carry_from_the_active_policy() {
     assert_eq!(tuesday.status, quotatide_core::LedgerDayStatus::Normal);
 }
 
+#[tokio::test]
+async fn warning_and_exceeded_threshold_candidates_are_durable_and_deduplicated() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open_with_policy_timezone(&database, "Asia/Shanghai")
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let account = binding(1, "/chosen/auth.json", "account-one");
+    let reset = timestamp_ms("2026-08-03T00:00:00Z") / 1000;
+    for (captured, used) in [
+        ("2026-07-29T01:00:00Z", 0),
+        ("2026-07-29T02:00:00Z", 13_000_000),
+        ("2026-07-29T03:00:00Z", 14_000_000),
+        ("2026-07-29T04:00:00Z", 17_000_000),
+        ("2026-07-29T05:00:00Z", 18_000_000),
+    ] {
+        store
+            .record_usage_success(
+                &account,
+                observation_with_reset(timestamp_ms(captured), used, reset),
+            )
+            .await
+            .expect("record threshold sample");
+    }
+    drop(store);
+
+    let connection =
+        tokio_rusqlite::rusqlite::Connection::open(database).expect("inspect candidates");
+    let candidates = connection
+        .prepare(
+            "SELECT transition_kind, COUNT(*)
+             FROM daily_threshold_transitions
+             GROUP BY transition_kind ORDER BY transition_kind",
+        )
+        .expect("prepare candidate query")
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .expect("query candidates")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect candidates");
+    let persisted_status: (String, Option<i64>, i64, i64) = connection
+        .query_row(
+            "SELECT policy_status, used_micropoints, base_micropoints, carry_micropoints
+             FROM daily_ledgers
+             WHERE local_date = '2026-07-29'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("persisted current-day status");
+    assert_eq!(persisted_status.0, "exceeded", "{persisted_status:?}");
+    assert_eq!(
+        candidates,
+        vec![("exceeded".to_owned(), 1), ("warning".to_owned(), 1)]
+    );
+}
+
+#[tokio::test]
+async fn changing_timezone_does_not_repartition_completed_usage() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open_with_policy_timezone(&database, "Asia/Shanghai")
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let account = binding(1, "/chosen/auth.json", "account-one");
+    let reset = timestamp_ms("2026-08-03T00:00:00Z") / 1000;
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(timestamp_ms("2026-07-27T23:30:00Z"), 40_000_000, reset),
+        )
+        .await
+        .expect("baseline");
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(timestamp_ms("2026-07-28T00:30:00Z"), 41_000_000, reset),
+        )
+        .await
+        .expect("increase");
+    let before = store
+        .public_live_quota(timestamp_ms("2026-07-29T04:00:00Z"))
+        .await
+        .expect("before edit")
+        .expect("quota");
+    assert_eq!(
+        before
+            .ledger_days
+            .iter()
+            .find(|day| day.local_date == "2026-07-28")
+            .and_then(|day| day.used_micropoints),
+        Some(1_000_000)
+    );
+
+    let settings = store.public_settings().await.expect("settings");
+    store
+        .update_quota_policy(
+            settings.settings_revision,
+            quotatide_core::QuotaPolicyDraft {
+                policy_timezone: "America/New_York".to_owned(),
+                carry_workdays_enabled: true,
+                base_micropoints: vec![
+                    16_000_000, 16_000_000, 16_000_000, 16_000_000, 16_000_000, 10_000_000,
+                    10_000_000,
+                ],
+            },
+        )
+        .await
+        .expect("edit timezone");
+    let after = store
+        .public_live_quota(timestamp_ms("2026-07-29T04:00:00Z"))
+        .await
+        .expect("after edit")
+        .expect("quota");
+
+    assert_eq!(
+        after
+            .ledger_days
+            .iter()
+            .find(|day| day.local_date == "2026-07-28")
+            .and_then(|day| day.used_micropoints),
+        Some(1_000_000)
+    );
+    assert!(
+        after
+            .ledger_days
+            .iter()
+            .find(|day| day.local_date == "2026-07-27")
+            .is_none_or(|day| day.used_micropoints.is_none())
+    );
+}
+
 fn remove_derived_state_after_asserting_atomic_facts(database: &std::path::Path) {
     let connection =
         tokio_rusqlite::rusqlite::Connection::open(database).expect("remove derived state");
@@ -264,9 +404,9 @@ fn remove_derived_state_after_asserting_atomic_facts(database: &std::path::Path)
     connection
         .execute_batch(
             "PRAGMA foreign_keys = ON;
-             DELETE FROM daily_ledgers;",
+             DELETE FROM daily_ledgers WHERE finalized_at_ms IS NULL;",
         )
-        .expect("retain immutable observations only");
+        .expect("retain immutable observations and finalized policy facts");
     assert!(
         connection
             .execute("UPDATE usage_observations SET used_micropoints = 0", [])

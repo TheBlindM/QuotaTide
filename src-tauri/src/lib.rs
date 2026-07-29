@@ -26,6 +26,7 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const MAIN_TRAY_ID: &str = "main";
 const WINDOW_GAP: f64 = 8.0;
 const DASHBOARD_CHANGED_EVENT: &str = "quotatide://dashboard-changed";
+const SETTINGS_CHANGED_EVENT: &str = "quotatide://settings-changed";
 
 #[derive(Debug, Default)]
 struct DesktopShell {
@@ -106,7 +107,7 @@ async fn get_live_quota(
 }
 
 #[tauri::command]
-async fn update_quota_policy(
+async fn save_settings(
     app: AppHandle,
     application: tauri::State<'_, LiveApplication>,
     expected_settings_revision: u32,
@@ -116,10 +117,16 @@ async fn update_quota_policy(
         .update_quota_policy(expected_settings_revision, draft)
         .await
         .map_err(|error| error.public::<AuthFileReader>())?;
+    let dashboard_revision = application
+        .live_quota(SystemClock.now_unix_ms())
+        .await
+        .map_err(|error| error.public::<AuthFileReader>())?
+        .dashboard_revision;
+    let _ = app.emit(SETTINGS_CHANGED_EVENT, settings.clone());
     let _ = app.emit(
         DASHBOARD_CHANGED_EVENT,
         DashboardChanged {
-            revision: u64::from(settings.settings_revision),
+            revision: dashboard_revision,
         },
     );
     Ok(settings)
@@ -490,7 +497,7 @@ pub fn run() {
             get_account_settings,
             get_live_quota,
             select_auth_file,
-            update_quota_policy
+            save_settings
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the QuotaTide desktop shell");

@@ -8,7 +8,7 @@ import type { UsageSourceErrorCode } from "./bindings/UsageSourceErrorCode";
 import {
   getAccountSettings,
   selectAuthFile,
-  updateQuotaPolicy,
+  saveSettings,
 } from "./api/account-settings";
 import { loadBuildInfo } from "./api/build-info";
 import { getLiveQuota, onDashboardChanged } from "./api/live-quota";
@@ -213,7 +213,7 @@ export function App() {
       }}
       onReloadAccount={getAccountSettings}
       onUpdatePolicy={async (revision, draft) => {
-        const accountSettings = await updateQuotaPolicy(revision, draft);
+        const accountSettings = await saveSettings(revision, draft);
         const liveQuotaState = await getLiveQuota();
         setState((current) =>
           current.kind === "ready"
@@ -263,22 +263,26 @@ export function projectLiveFixture(
   const sourceHealth = sourceHealthLabel(live);
   const days = live.ledgerDays.map(projectLedgerDay);
   const today = live.ledgerDays.find((day) => day.isToday);
-  const todayUsed = today?.usedMicropoints ?? null;
-  const todayAvailable =
-    today === undefined || todayUsed === null
-      ? ""
-      : formatMicropoints(
-          Math.max(today.limitMicropoints - todayUsed, 0),
-        );
+  const todayAvailable = formatMicropoints(live.todayAvailableMicropoints);
   const todayLimit =
-    today === undefined
+    live.todayLimitMicropoints === null ||
+    live.todayBaseMicropoints === null ||
+    live.todayCarryMicropoints === null
       ? ""
-      : today.carryMicropoints > 0
-        ? `${formatMicropoints(today.limitMicropoints)}（${formatMicropoints(today.baseMicropoints)} + ${formatMicropoints(today.carryMicropoints)} 动态）`
-        : formatMicropoints(today.limitMicropoints);
+      : live.todayCarryMicropoints > 0
+        ? `${formatMicropoints(live.todayLimitMicropoints)}（${formatMicropoints(live.todayBaseMicropoints)} + ${formatMicropoints(live.todayCarryMicropoints)} 动态）`
+        : formatMicropoints(live.todayLimitMicropoints);
+  const tone =
+    live.sourceStatus !== "fresh"
+      ? "stale"
+      : today?.status === "exceeded"
+        ? "over"
+        : today?.status === "warning"
+          ? "warning"
+          : "fresh";
   return {
     ...base,
-    tone: live.sourceStatus === "fresh" ? "fresh" : "stale",
+    tone,
     weeklyUsed: used,
     weeklyRemaining: remaining,
     sourceHealth,

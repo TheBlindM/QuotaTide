@@ -11,10 +11,13 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::quota_ledger::PersistedLedgerEpoch;
+use crate::quota_policy::{
+    DailyLimitSnapshot, DailyPolicyStatus, PolicyDayFact, PolicyDayProjection, PolicyError,
+    QuotaPolicy, ThresholdTransition,
+};
 use crate::{
-    DailyLimitSnapshot, DailyPolicyStatus, LedgerApplyKind, LedgerDayStatus, PolicyDayFact,
-    PolicyError, PublicLedgerDay, PublicLiveQuota, QuotaLedger, QuotaPolicy, RefreshAccountBinding,
-    SourceStatus, UsageSourceErrorCode, WeeklyUsageObservation,
+    LedgerApplyKind, LedgerDayStatus, PublicLedgerDay, PublicLiveQuota, QuotaLedger,
+    RefreshAccountBinding, SourceStatus, UsageSourceErrorCode, WeeklyUsageObservation,
 };
 
 const SCHEMA_VERSION: i64 = 5;
@@ -736,36 +739,21 @@ fn migrate_daily_policy_v5(
              CHECK (base_micropoints BETWEEN 0 AND 100000000),
            PRIMARY KEY(policy_revision_id, iso_weekday)
          );
-         ALTER TABLE app_settings
-           ADD COLUMN active_policy_revision_id INTEGER
-             REFERENCES policy_revisions(id);
-         ALTER TABLE daily_ledgers
-           ADD COLUMN policy_revision_id INTEGER
-             REFERENCES policy_revisions(id);
-         ALTER TABLE daily_ledgers
-           ADD COLUMN base_micropoints INTEGER
-             CHECK (base_micropoints >= 0);
-         ALTER TABLE daily_ledgers
-           ADD COLUMN carry_micropoints INTEGER
-             CHECK (carry_micropoints >= 0);
-         ALTER TABLE daily_ledgers
-           ADD COLUMN policy_status TEXT;
-         ALTER TABLE daily_ledgers
-           ADD COLUMN finalized_at_ms INTEGER;",
-    )?;
-    transaction.execute_batch(
-        "ALTER TABLE daily_ledgers
-           ADD COLUMN usage_known INTEGER NOT NULL DEFAULT 1
-             CHECK (usage_known IN (0, 1));",
+         CREATE TABLE daily_threshold_transitions (
+           id INTEGER PRIMARY KEY,
+           account_stream_id INTEGER NOT NULL REFERENCES account_streams(id),
+           local_date TEXT NOT NULL,
+           policy_revision_id INTEGER NOT NULL REFERENCES policy_revisions(id),
+           transition_kind TEXT NOT NULL
+             CHECK (transition_kind IN ('warning', 'exceeded')),
+           created_at_ms INTEGER NOT NULL,
+           UNIQUE(account_stream_id, local_date, policy_revision_id, transition_kind)
+         );",
     )?;
     let revision_id = insert_default_policy_revision(&transaction, now, policy_timezone.name())?;
-    transaction.execute(
-        "UPDATE app_settings
-         SET active_policy_revision_id = ?1, policy_timezone = ?2
-         WHERE singleton_id = 1",
-        rusqlite::params![revision_id, policy_timezone.name()],
-    )?;
-    backfill_daily_policy_v5(&transaction, revision_id, &today, now)?;
+    rebuild_policy_settings_v5(&transaction, revision_id, policy_timezone.name())?;
+    rebuild_daily_ledgers_v5(&transaction, revision_id, &today, now)?;
+    create_policy_immutability_triggers_v5(&transaction)?;
     transaction.execute(
         "INSERT INTO schema_migrations
          (version, applied_at_ms, app_version, checksum)
@@ -789,18 +777,9 @@ fn insert_default_policy_revision(
         rusqlite::params![Uuid::now_v7().to_string(), now, policy_timezone],
     )?;
     let revision_id = transaction.last_insert_rowid();
-    for (index, base) in [
-        16_000_000_i64,
-        16_000_000,
-        16_000_000,
-        16_000_000,
-        16_000_000,
-        10_000_000,
-        10_000_000,
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    let policy =
+        QuotaLedger::default_policy(policy_timezone).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    for (index, base) in policy.base_micropoints().into_iter().enumerate() {
         transaction.execute(
             "INSERT INTO policy_day_limits
              (policy_revision_id, iso_weekday, base_micropoints)
@@ -811,22 +790,80 @@ fn insert_default_policy_revision(
     Ok(revision_id)
 }
 
-fn backfill_daily_policy_v5(
+fn rebuild_policy_settings_v5(
+    transaction: &rusqlite::Transaction<'_>,
+    revision_id: i64,
+    policy_timezone: &str,
+) -> rusqlite::Result<()> {
+    transaction.execute_batch(
+        "CREATE TABLE app_settings_v5 (
+           singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+           auth_path TEXT,
+           configured_account_stream_id INTEGER REFERENCES account_streams(id),
+           active_account_stream_id INTEGER REFERENCES account_streams(id),
+           created_at_ms INTEGER NOT NULL,
+           updated_at_ms INTEGER NOT NULL,
+           policy_timezone TEXT NOT NULL,
+           active_policy_revision_id INTEGER NOT NULL
+             REFERENCES policy_revisions(id)
+         );",
+    )?;
+    transaction.execute(
+        "INSERT INTO app_settings_v5
+         (singleton_id, auth_path, configured_account_stream_id,
+          active_account_stream_id, created_at_ms, updated_at_ms,
+          policy_timezone, active_policy_revision_id)
+         SELECT singleton_id, auth_path, configured_account_stream_id,
+                active_account_stream_id, created_at_ms, updated_at_ms,
+                ?1, ?2
+         FROM app_settings",
+        rusqlite::params![policy_timezone, revision_id],
+    )?;
+    transaction.execute_batch(
+        "DROP TABLE app_settings;
+         ALTER TABLE app_settings_v5 RENAME TO app_settings;",
+    )
+}
+
+fn rebuild_daily_ledgers_v5(
     transaction: &rusqlite::Transaction<'_>,
     revision_id: i64,
     today: &str,
     now: i64,
 ) -> rusqlite::Result<()> {
+    transaction.execute_batch(
+        "CREATE TABLE daily_ledgers_v5 (
+           id INTEGER PRIMARY KEY,
+           account_stream_id INTEGER NOT NULL REFERENCES account_streams(id),
+           local_date TEXT NOT NULL,
+           policy_timezone TEXT NOT NULL,
+           used_micropoints INTEGER CHECK (
+             used_micropoints IS NULL OR used_micropoints >= 0
+           ),
+           policy_revision_id INTEGER NOT NULL REFERENCES policy_revisions(id),
+           base_micropoints INTEGER NOT NULL CHECK (base_micropoints >= 0),
+           carry_micropoints INTEGER NOT NULL CHECK (carry_micropoints >= 0),
+           policy_status TEXT NOT NULL CHECK (
+             policy_status IN ('unknown', 'normal', 'warning', 'exceeded', 'finalized')
+           ),
+           finalized_at_ms INTEGER,
+           updated_at_ms INTEGER NOT NULL,
+           UNIQUE(account_stream_id, local_date, policy_timezone)
+         );",
+    )?;
     transaction.execute(
-        "UPDATE daily_ledgers
-         SET policy_revision_id = ?1,
-             base_micropoints = CASE CAST(strftime('%w', local_date) AS INTEGER)
+        "INSERT INTO daily_ledgers_v5
+         (id, account_stream_id, local_date, policy_timezone,
+          used_micropoints, policy_revision_id, base_micropoints,
+          carry_micropoints, policy_status, finalized_at_ms, updated_at_ms)
+         SELECT id, account_stream_id, local_date, policy_timezone,
+                used_micropoints, ?1,
+                CASE CAST(strftime('%w', local_date) AS INTEGER)
                WHEN 0 THEN 10000000
                WHEN 6 THEN 10000000
                ELSE 16000000
-             END,
-             carry_micropoints = 0,
-             policy_status = CASE
+             END, 0,
+             CASE
                WHEN local_date < ?2 THEN 'finalized'
                WHEN used_micropoints >=
                     CASE CAST(strftime('%w', local_date) AS INTEGER)
@@ -842,10 +879,58 @@ fn backfill_daily_policy_v5(
                     END * 4 THEN 'warning'
                ELSE 'normal'
              END,
-             finalized_at_ms = CASE WHEN local_date < ?2 THEN ?3 ELSE NULL END",
+             CASE WHEN local_date < ?2 THEN ?3 ELSE NULL END,
+             updated_at_ms
+         FROM daily_ledgers",
         rusqlite::params![revision_id, today, now],
     )?;
-    Ok(())
+    transaction.execute_batch(
+        "DROP TABLE daily_ledgers;
+         ALTER TABLE daily_ledgers_v5 RENAME TO daily_ledgers;",
+    )
+}
+
+fn create_policy_immutability_triggers_v5(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<()> {
+    transaction.execute_batch(
+        "CREATE TRIGGER policy_revisions_are_immutable_update
+           BEFORE UPDATE ON policy_revisions BEGIN
+             SELECT RAISE(ABORT, 'policy revisions are immutable');
+           END;
+         CREATE TRIGGER policy_revisions_are_immutable_delete
+           BEFORE DELETE ON policy_revisions BEGIN
+             SELECT RAISE(ABORT, 'policy revisions are immutable');
+           END;
+         CREATE TRIGGER policy_day_limits_are_immutable_update
+           BEFORE UPDATE ON policy_day_limits BEGIN
+             SELECT RAISE(ABORT, 'policy day limits are immutable');
+           END;
+         CREATE TRIGGER policy_day_limits_are_immutable_delete
+           BEFORE DELETE ON policy_day_limits BEGIN
+             SELECT RAISE(ABORT, 'policy day limits are immutable');
+           END;
+         CREATE TRIGGER finalized_daily_ledgers_are_immutable_update
+           BEFORE UPDATE ON daily_ledgers
+           WHEN OLD.finalized_at_ms IS NOT NULL AND (
+             NEW.account_stream_id IS NOT OLD.account_stream_id OR
+             NEW.local_date IS NOT OLD.local_date OR
+             NEW.policy_timezone IS NOT OLD.policy_timezone OR
+             NEW.used_micropoints IS NOT OLD.used_micropoints OR
+             NEW.policy_revision_id IS NOT OLD.policy_revision_id OR
+             NEW.base_micropoints IS NOT OLD.base_micropoints OR
+             NEW.carry_micropoints IS NOT OLD.carry_micropoints OR
+             NEW.policy_status IS NOT OLD.policy_status OR
+             NEW.finalized_at_ms IS NOT OLD.finalized_at_ms
+           ) BEGIN
+             SELECT RAISE(ABORT, 'finalized daily ledgers are immutable');
+           END;
+         CREATE TRIGGER finalized_daily_ledgers_are_immutable_delete
+           BEFORE DELETE ON daily_ledgers
+           WHEN OLD.finalized_at_ms IS NOT NULL BEGIN
+             SELECT RAISE(ABORT, 'finalized daily ledgers are immutable');
+           END;",
+    )
 }
 
 fn validate_migration(
@@ -1066,7 +1151,7 @@ impl AccountSettingsStore {
             .base_micropoints
             .try_into()
             .map_err(|_| PolicyError::InvalidDayCount)?;
-        let policy = QuotaPolicy::new(
+        let policy = QuotaLedger::validate_policy(
             base_micropoints,
             draft.carry_workdays_enabled,
             &draft.policy_timezone,
@@ -1389,13 +1474,7 @@ fn record_usage_success_transaction(
         transaction.commit()?;
         return Ok(UsageCommitDisposition::Committed);
     }
-    persist_success_observation(
-        &transaction,
-        stream_id,
-        observation,
-        &transition,
-        context.policy_timezone,
-    )?;
+    persist_success_observation(&transaction, stream_id, observation, &transition)?;
     persist_daily_policy_snapshots(&transaction, stream_id, observation.captured_at_unix_ms)?;
     persist_success_projection(
         &transaction,
@@ -1419,53 +1498,62 @@ fn persist_daily_policy_snapshots(
         |row| row.get(0),
     )?;
     let timezone = parse_policy_timezone(&timezone)?;
-    for day in project_public_ledger_days(transaction, stream_id, timezone, now_unix_ms)? {
+    for day in project_policy_days(transaction, stream_id, timezone, now_unix_ms)? {
         let status = match day.status {
-            LedgerDayStatus::Unknown => "unknown",
-            LedgerDayStatus::Normal => "normal",
-            LedgerDayStatus::Warning => "warning",
-            LedgerDayStatus::Exceeded => "exceeded",
-            LedgerDayStatus::Finalized => "finalized",
+            DailyPolicyStatus::Unknown => "unknown",
+            DailyPolicyStatus::Normal => "normal",
+            DailyPolicyStatus::Warning => "warning",
+            DailyPolicyStatus::Exceeded => "exceeded",
+            DailyPolicyStatus::Finalized => "finalized",
         };
         let finalized_at = day.finalized.then_some(now_unix_ms);
         transaction.execute(
             "INSERT INTO daily_ledgers
              (account_stream_id, local_date, policy_timezone,
-              used_micropoints, updated_at_ms, usage_known,
-              policy_revision_id, base_micropoints, carry_micropoints,
-              policy_status, finalized_at_ms)
-             VALUES (?8, ?9, ?2, ?10, ?7, ?11, ?1, ?3, ?4, ?5, ?6)
+              used_micropoints, policy_revision_id, base_micropoints,
+              carry_micropoints, policy_status, finalized_at_ms, updated_at_ms)
+             VALUES (?8, ?9, ?2, ?10, ?1, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(account_stream_id, local_date, policy_timezone)
              DO UPDATE SET
-                 used_micropoints = CASE
-                   WHEN excluded.usage_known = 1 THEN excluded.used_micropoints
-                   ELSE daily_ledgers.used_micropoints
-                 END,
-                 usage_known = MAX(daily_ledgers.usage_known, excluded.usage_known),
+                 used_micropoints = COALESCE(
+                   excluded.used_micropoints, daily_ledgers.used_micropoints
+                 ),
                  policy_revision_id = excluded.policy_revision_id,
                  base_micropoints = excluded.base_micropoints,
                  carry_micropoints = excluded.carry_micropoints,
                  policy_status = excluded.policy_status,
-                 finalized_at_ms = CASE
-                   WHEN daily_ledgers.finalized_at_ms IS NOT NULL
-                     THEN daily_ledgers.finalized_at_ms
-                   ELSE excluded.finalized_at_ms
-                 END,
-                 updated_at_ms = MAX(daily_ledgers.updated_at_ms, excluded.updated_at_ms)",
+                 finalized_at_ms = excluded.finalized_at_ms,
+                 updated_at_ms = MAX(daily_ledgers.updated_at_ms, excluded.updated_at_ms)
+             WHERE daily_ledgers.finalized_at_ms IS NULL",
             rusqlite::params![
-                i64::try_from(day.policy_revision).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                day.policy_timezone,
-                i64::from(day.base_micropoints),
-                i64::from(day.carry_micropoints),
+                i64::try_from(day.policy_revision_id).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                day.policy_timezone.name(),
+                day.base_micropoints,
+                day.carry_micropoints,
                 status,
                 finalized_at,
                 now_unix_ms,
                 stream_id,
-                day.local_date,
-                day.used_micropoints.unwrap_or(0),
-                i64::from(day.used_micropoints.is_some())
+                day.local_date.to_string(),
+                day.used_micropoints,
             ],
         )?;
+        if let Some(transition) = day.threshold_transition {
+            transaction.execute(
+                "INSERT OR IGNORE INTO daily_threshold_transitions
+                 (account_stream_id, local_date, policy_revision_id,
+                  transition_kind, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    stream_id,
+                    day.local_date.to_string(),
+                    i64::try_from(day.policy_revision_id)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    threshold_transition_key(transition),
+                    now_unix_ms,
+                ],
+            )?;
+        }
     }
     Ok(())
 }
@@ -1520,7 +1608,6 @@ fn persist_success_observation(
     stream_id: i64,
     observation: &WeeklyUsageObservation,
     transition: &crate::LedgerTransition,
-    policy_timezone: chrono_tz::Tz,
 ) -> rusqlite::Result<()> {
     let persisted_epoch =
         QuotaLedger::persisted_epoch(&transition.state).ok_or(rusqlite::Error::InvalidQuery)?;
@@ -1547,28 +1634,6 @@ fn persist_success_observation(
             quota_epoch_id,
         ],
     )?;
-    if let Some(local_date) = transition.assigned_local_date.as_deref() {
-        let used = QuotaLedger::daily_used(&transition.state, local_date)
-            .ok_or(rusqlite::Error::InvalidQuery)?;
-        transaction.execute(
-            "INSERT INTO daily_ledgers
-             (account_stream_id, local_date, policy_timezone,
-              used_micropoints, updated_at_ms, usage_known)
-             VALUES (?1, ?2, ?3, ?4, ?5, 1)
-             ON CONFLICT(account_stream_id, local_date, policy_timezone)
-             DO UPDATE SET
-               used_micropoints = excluded.used_micropoints,
-               usage_known = 1,
-               updated_at_ms = excluded.updated_at_ms",
-            rusqlite::params![
-                stream_id,
-                local_date,
-                policy_timezone.name(),
-                used,
-                observation.captured_at_unix_ms
-            ],
-        )?;
-    }
     Ok(())
 }
 
@@ -1670,12 +1735,12 @@ fn query_live_quota_row(
         .optional()
 }
 
-fn project_public_ledger_days(
+fn project_policy_days(
     transaction: &rusqlite::Transaction<'_>,
     stream_id: i64,
     policy_timezone: chrono_tz::Tz,
     now_unix_ms: i64,
-) -> rusqlite::Result<Vec<PublicLedgerDay>> {
+) -> rusqlite::Result<Vec<PolicyDayProjection>> {
     let Some(projection) = QuotaLedger::project(
         &load_ledger_state(transaction, stream_id, policy_timezone)?,
         policy_timezone,
@@ -1710,18 +1775,19 @@ fn project_public_ledger_days(
         .into_iter()
         .map(|day| (day.local_date, day.used_micropoints))
         .collect::<BTreeMap<_, _>>();
+    let today = chrono::DateTime::from_timestamp_millis(now_unix_ms)
+        .ok_or(rusqlite::Error::InvalidQuery)?
+        .with_timezone(&policy.policy_timezone())
+        .date_naive();
     let (mut snapshots, mut previous_statuses) = load_stored_policy_facts(
         transaction,
         stream_id,
         anchor,
         last,
+        today,
         policy.policy_timezone(),
         &mut usage,
     )?;
-    let today = chrono::DateTime::from_timestamp_millis(now_unix_ms)
-        .ok_or(rusqlite::Error::InvalidQuery)?
-        .with_timezone(&policy.policy_timezone())
-        .date_naive();
     let facts = build_policy_day_facts(
         anchor,
         last,
@@ -1730,12 +1796,28 @@ fn project_public_ledger_days(
         &mut snapshots,
         &mut previous_statuses,
     )?;
-    policy
-        .project_days(&facts, today, policy_revision_id)
-        .map_err(|_| rusqlite::Error::InvalidQuery)?
-        .into_iter()
-        .filter(|day| current_dates.contains(&day.local_date.to_string()))
-        .map(|day| public_ledger_day(&day, today))
+    Ok(
+        QuotaLedger::project_policy_days(&policy, &facts, today, policy_revision_id)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?
+            .into_iter()
+            .filter(|day| current_dates.contains(&day.local_date.to_string()))
+            .collect(),
+    )
+}
+
+fn project_public_ledger_days(
+    transaction: &rusqlite::Transaction<'_>,
+    stream_id: i64,
+    policy_timezone: chrono_tz::Tz,
+    now_unix_ms: i64,
+) -> rusqlite::Result<Vec<PublicLedgerDay>> {
+    let today = chrono::DateTime::from_timestamp_millis(now_unix_ms)
+        .ok_or(rusqlite::Error::InvalidQuery)?
+        .with_timezone(&policy_timezone)
+        .date_naive();
+    project_policy_days(transaction, stream_id, policy_timezone, now_unix_ms)?
+        .iter()
+        .map(|day| public_ledger_day(day, today))
         .collect()
 }
 
@@ -1744,6 +1826,7 @@ fn load_stored_policy_facts(
     stream_id: i64,
     anchor: chrono::NaiveDate,
     last: chrono::NaiveDate,
+    today: chrono::NaiveDate,
     policy_timezone: chrono_tz::Tz,
     usage: &mut BTreeMap<String, Option<i64>>,
 ) -> rusqlite::Result<(
@@ -1753,7 +1836,7 @@ fn load_stored_policy_facts(
     let mut snapshots = BTreeMap::new();
     let mut previous_statuses = BTreeMap::new();
     let mut statement = transaction.prepare(
-        "SELECT local_date, used_micropoints, usage_known, policy_revision_id,
+        "SELECT local_date, used_micropoints, policy_revision_id,
                 policy_timezone, base_micropoints, carry_micropoints,
                 finalized_at_ms, policy_status
          FROM daily_ledgers
@@ -1761,63 +1844,54 @@ fn load_stored_policy_facts(
            AND local_date BETWEEN ?2 AND ?3
            AND (finalized_at_ms IS NOT NULL OR policy_timezone = ?4)",
     )?;
-    let rows = statement.query_map(
-        rusqlite::params![
-            stream_id,
-            anchor.to_string(),
-            last.to_string(),
-            policy_timezone.name()
-        ],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, Option<i64>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-                row.get::<_, Option<i64>>(7)?,
-                row.get::<_, Option<String>>(8)?,
-            ))
-        },
-    )?;
-    for row in rows {
-        let (
-            date,
-            used,
-            usage_known,
-            revision,
-            timezone,
-            base,
-            carry,
-            finalized_at,
-            previous_status,
-        ) = row?;
-        usage
-            .entry(date.clone())
-            .or_insert((usage_known != 0).then_some(used));
-        if let Some(status) = previous_status
-            .as_deref()
-            .and_then(parse_daily_policy_status)
-        {
+    let rows = statement
+        .query_map(
+            rusqlite::params![
+                stream_id,
+                anchor.to_string(),
+                last.to_string(),
+                policy_timezone.name()
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if rows
+        .iter()
+        .any(|row| row.6.is_some() && row.3 != policy_timezone.name())
+    {
+        usage.retain(|date, _| {
+            chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok_and(|date| date >= today)
+        });
+    }
+    for (date, used, revision, timezone, base, carry, finalized_at, previous_status) in rows {
+        if finalized_at.is_some() {
+            usage.insert(date.clone(), used);
+        }
+        if let Some(status) = parse_daily_policy_status(&previous_status) {
             previous_statuses.insert(date.clone(), status);
         }
         if finalized_at.is_some() {
-            if let (Some(revision), Some(timezone), Some(base), Some(carry)) =
-                (revision, timezone, base, carry)
-            {
-                snapshots.insert(
-                    date,
-                    DailyLimitSnapshot::new(
-                        u64::try_from(revision).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        &timezone,
-                        base,
-                        carry,
-                    )
-                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                );
-            }
+            snapshots.insert(
+                date,
+                DailyLimitSnapshot::new(
+                    u64::try_from(revision).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    &timezone,
+                    base,
+                    carry,
+                )
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            );
         }
     }
     Ok((snapshots, previous_statuses))
@@ -1855,7 +1929,7 @@ fn build_policy_day_facts(
 }
 
 fn public_ledger_day(
-    day: &crate::PolicyDayProjection,
+    day: &PolicyDayProjection,
     today: chrono::NaiveDate,
 ) -> rusqlite::Result<PublicLedgerDay> {
     Ok(PublicLedgerDay {
@@ -1892,6 +1966,13 @@ fn parse_daily_policy_status(value: &str) -> Option<DailyPolicyStatus> {
     }
 }
 
+const fn threshold_transition_key(transition: ThresholdTransition) -> &'static str {
+    match transition {
+        ThresholdTransition::Warning => "warning",
+        ThresholdTransition::Exceeded => "exceeded",
+    }
+}
+
 fn load_active_quota_policy(
     database: &rusqlite::Connection,
 ) -> rusqlite::Result<(u64, QuotaPolicy)> {
@@ -1903,7 +1984,7 @@ fn load_active_quota_policy(
         .collect::<Vec<_>>()
         .try_into()
         .map_err(|_| rusqlite::Error::InvalidQuery)?;
-    let policy = QuotaPolicy::new(
+    let policy = QuotaLedger::validate_policy(
         bases,
         public.carry_workdays_enabled,
         &public.policy_timezone,
@@ -1942,6 +2023,17 @@ fn build_public_live_quota(
     } else {
         SourceStatus::StaleByAge
     };
+    let today = ledger_days.iter().find(|day| day.is_today);
+    let today_base_micropoints = today.map(|day| day.base_micropoints);
+    let today_carry_micropoints = today.map(|day| day.carry_micropoints);
+    let today_limit_micropoints = today.map(|day| day.limit_micropoints);
+    let today_available_micropoints = today.and_then(|day| {
+        day.used_micropoints.and_then(|used| {
+            u32::try_from(used)
+                .ok()
+                .map(|used| day.limit_micropoints.saturating_sub(used))
+        })
+    });
     Ok(PublicLiveQuota {
         used_micropoints: used,
         remaining_micropoints: used.map(|value| 100_000_000_u32.saturating_sub(value)),
@@ -1958,6 +2050,10 @@ fn build_public_live_quota(
         consecutive_failures: failures,
         source_status,
         public_error,
+        today_base_micropoints,
+        today_carry_micropoints,
+        today_limit_micropoints,
+        today_available_micropoints,
         ledger_days,
     })
 }

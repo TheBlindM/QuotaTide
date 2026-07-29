@@ -208,6 +208,10 @@ pub struct PublicLiveQuota {
     pub consecutive_failures: u32,
     pub source_status: SourceStatus,
     pub public_error: Option<UsageSourceErrorCode>,
+    pub today_base_micropoints: Option<u32>,
+    pub today_carry_micropoints: Option<u32>,
+    pub today_limit_micropoints: Option<u32>,
+    pub today_available_micropoints: Option<u32>,
     pub ledger_days: Vec<PublicLedgerDay>,
 }
 
