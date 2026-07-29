@@ -107,6 +107,52 @@ describe("tray-window navigation", () => {
     }
   });
 
+  it("reloads the public revision after a settings conflict before retrying", async () => {
+    const onSelectAuth = vi
+      .fn()
+      .mockRejectedValueOnce({
+        code: "settings_conflict",
+        messageKey: "settings.revision_conflict",
+        safeContext: { maxBytes: null },
+      })
+      .mockResolvedValueOnce({
+        settingsRevision: 6,
+        configured: true,
+        pathSummary: "…/auth.json",
+        accountLabel: "账号 • 66AA",
+      });
+    const onReloadAccount = vi.fn().mockResolvedValue({
+      settingsRevision: 5,
+      configured: true,
+      pathSummary: "…/auth.json",
+      accountLabel: "账号 • 55AA",
+    });
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        accountSettings={{
+          settingsRevision: 4,
+          configured: true,
+          pathSummary: "…/auth.json",
+          accountLabel: "账号 • 44AA",
+        }}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+        onSelectAuth={onSelectAuth}
+        onReloadAccount={onReloadAccount}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "更换 auth.json" }));
+    expect(await screen.findByText("账号 • 55AA")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "更换 auth.json" }));
+    expect(await screen.findByText("账号 • 66AA")).toBeInTheDocument();
+    expect(onSelectAuth).toHaveBeenNthCalledWith(1, 4);
+    expect(onSelectAuth).toHaveBeenNthCalledWith(2, 5);
+  });
+
   it("supports platform keyboard shortcuts without opening another window", () => {
     const onHide = vi.fn();
     const onRefresh = vi.fn();

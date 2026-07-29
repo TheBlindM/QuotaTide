@@ -18,6 +18,7 @@ type TrayAppProps = {
   onSelectAuth?: (
     expectedSettingsRevision: number,
   ) => Promise<PublicAccountSettings>;
+  onReloadAccount?: () => Promise<PublicAccountSettings>;
 };
 
 function SettingsView({
@@ -166,6 +167,7 @@ export function TrayApp({
   onHide,
   onRefresh,
   onSelectAuth,
+  onReloadAccount,
 }: TrayAppProps) {
   const [view, setView] = useState<"ledger" | "settings">("ledger");
   const [currentAccount, setCurrentAccount] = useState(accountSettings);
@@ -259,9 +261,16 @@ export function TrayApp({
         }}
         onSelectAuth={async () => {
           if (onSelectAuth) {
-            setCurrentAccount(
-              await onSelectAuth(currentAccount.settingsRevision),
-            );
+            try {
+              setCurrentAccount(
+                await onSelectAuth(currentAccount.settingsRevision),
+              );
+            } catch (error) {
+              if (isSettingsConflict(error) && onReloadAccount) {
+                setCurrentAccount(await onReloadAccount());
+              }
+              throw error;
+            }
           }
         }}
       />
@@ -278,5 +287,14 @@ export function TrayApp({
       refreshing={refreshing}
       refreshDisabled={refreshing || coolingDown}
     />
+  );
+}
+
+function isSettingsConflict(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "settings_conflict"
   );
 }

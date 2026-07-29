@@ -31,6 +31,7 @@ pub enum PublicErrorCode {
     InvalidPath,
     AuthNotFound,
     AuthPermissionDenied,
+    AuthIo,
     AuthNotRegularFile,
     AuthTooLarge,
     AuthInvalidUtf8,
@@ -41,6 +42,7 @@ pub enum PublicErrorCode {
     AuthInvalidAccountId,
     SettingsConflict,
     StorageUnavailable,
+    NativeDialogUnavailable,
 }
 
 /// Deliberately narrow context whose fields are safe to serialize.
@@ -268,6 +270,11 @@ impl AccountSettingsStore {
         let now = unix_time_ms();
         connection
             .call(move |database| {
+                let current_version: i64 =
+                    database.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                if current_version > SCHEMA_VERSION {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
                 database.execute_batch(
                     "PRAGMA foreign_keys = ON;
                      PRAGMA journal_mode = WAL;
@@ -275,11 +282,6 @@ impl AccountSettingsStore {
                      PRAGMA busy_timeout = 5000;
                      PRAGMA trusted_schema = OFF;",
                 )?;
-                let current_version: i64 =
-                    database.pragma_query_value(None, "user_version", |row| row.get(0))?;
-                if current_version > SCHEMA_VERSION {
-                    return Err(rusqlite::Error::InvalidQuery);
-                }
                 if current_version == 0 {
                     let transaction = database
                         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;

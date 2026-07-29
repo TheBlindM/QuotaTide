@@ -21,6 +21,7 @@ const TRANSIENT_RETRY_DELAY: Duration = Duration::from_millis(250);
 pub enum AuthFileErrorCode {
     NotFound,
     PermissionDenied,
+    Io,
     NotRegularFile,
     TooLarge,
     InvalidUtf8,
@@ -52,6 +53,7 @@ impl AuthFileError {
                 PublicErrorCode::AuthPermissionDenied,
                 "auth.path.permission_denied",
             ),
+            AuthFileErrorCode::Io => (PublicErrorCode::AuthIo, "auth.path.io_error"),
             AuthFileErrorCode::NotRegularFile => (
                 PublicErrorCode::AuthNotRegularFile,
                 "auth.path.not_regular_file",
@@ -281,7 +283,7 @@ fn map_io_error(source: std::io::Error) -> AuthFileError {
     let code = match source.kind() {
         std::io::ErrorKind::NotFound => AuthFileErrorCode::NotFound,
         std::io::ErrorKind::PermissionDenied => AuthFileErrorCode::PermissionDenied,
-        _ => AuthFileErrorCode::NotRegularFile,
+        _ => AuthFileErrorCode::Io,
     };
     error_with_source(code, source)
 }

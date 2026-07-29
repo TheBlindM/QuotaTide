@@ -108,8 +108,17 @@ async fn newer_schema_is_rejected_without_downgrade() {
             .pragma_update(None, "user_version", 2)
             .expect("seed newer schema");
     }
+    let before = std::fs::read(&database).expect("snapshot newer database");
 
     assert!(AccountSettingsStore::open(&database).await.is_err());
+    assert_eq!(
+        std::fs::read(&database).expect("re-read newer database"),
+        before
+    );
+    let artifacts = std::fs::read_dir(directory.path())
+        .expect("list newer database artifacts")
+        .count();
+    assert_eq!(artifacts, 1);
 
     let connection =
         tokio_rusqlite::rusqlite::Connection::open(database).expect("inspect database");

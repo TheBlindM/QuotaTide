@@ -119,6 +119,7 @@ export function App() {
         return requestManualRefresh().catch(() => undefined);
       }}
       onSelectAuth={selectAuthFile}
+      onReloadAccount={getAccountSettings}
     />
   );
 }

@@ -112,8 +112,8 @@ async fn select_auth_file(
 ) -> Result<PublicAccountSettings, PublicError> {
     dispatch_shell_event(&app, ShellEvent::ExternalDialogOpened, None).map_err(|_| {
         PublicError::new(
-            PublicErrorCode::StorageUnavailable,
-            "settings.storage_unavailable",
+            PublicErrorCode::NativeDialogUnavailable,
+            "dialog.native_unavailable",
         )
     })?;
     let selection = app
@@ -124,8 +124,8 @@ async fn select_auth_file(
         .blocking_pick_file();
     dispatch_shell_event(&app, ShellEvent::ExternalDialogClosed, None).map_err(|_| {
         PublicError::new(
-            PublicErrorCode::StorageUnavailable,
-            "settings.storage_unavailable",
+            PublicErrorCode::NativeDialogUnavailable,
+            "dialog.native_unavailable",
         )
     })?;
 
@@ -531,36 +531,66 @@ fn reject_symlink_or_wrong_kind(path: &std::path::Path, directory: bool) -> std:
 fn apply_windows_dacl(path: &std::path::Path, directory: bool) -> std::io::Result<()> {
     use std::process::Command;
 
-    let identity = Command::new("whoami")
-        .args(["/user", "/fo", "csv", "/nh"])
-        .output()?;
-    if !identity.status.success() {
-        return Err(std::io::Error::other("could not resolve current user SID"));
-    }
-    let output = String::from_utf8(identity.stdout)
-        .map_err(|_| std::io::Error::other("current user SID was not UTF-8"))?;
-    let current_sid = output
-        .trim()
-        .split(',')
-        .nth(1)
-        .map(|value| value.trim().trim_matches('"'))
-        .filter(|value| value.starts_with("S-1-"))
-        .ok_or_else(|| std::io::Error::other("could not parse current user SID"))?;
-    let permission = if directory { "(OI)(CI)F" } else { "F" };
-    let grants = [
-        format!("{current_sid}:{permission}"),
-        format!("*S-1-5-18:{permission}"),
-        format!("*S-1-5-32-544:{permission}"),
-    ];
-    let status = Command::new("icacls")
+    // Windows PowerShell exposes the managed Windows ACL APIs without requiring
+    // unsafe FFI in this crate. Start from an empty ACL, disable inheritance,
+    // add the exact allowlist, apply it, and then fail closed unless a read-back
+    // proves the DACL is protected and contains exactly those three SIDs.
+    const ACL_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$target = $args[0]
+$isDirectory = $args[1] -eq 'directory'
+$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$administrators = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+$expected = @($current, $system, $administrators)
+if ($isDirectory) {
+  $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+  $inheritance = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+} else {
+  $acl = [System.Security.AccessControl.FileSecurity]::new()
+  $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
+}
+$acl.SetOwner($current)
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($sid in $expected) {
+  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+    $sid,
+    [System.Security.AccessControl.FileSystemRights]::FullControl,
+    $inheritance,
+    [System.Security.AccessControl.PropagationFlags]::None,
+    [System.Security.AccessControl.AccessControlType]::Allow
+  )
+  [void]$acl.AddAccessRule($rule)
+}
+Set-Acl -LiteralPath $target -AclObject $acl
+$actual = Get-Acl -LiteralPath $target
+if (-not $actual.AreAccessRulesProtected) { exit 31 }
+if ($actual.Owner -ne $current.Translate([System.Security.Principal.NTAccount]).Value) { exit 32 }
+$rules = @($actual.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))
+if ($rules.Count -ne 3) { exit 33 }
+foreach ($rule in $rules) {
+  if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { exit 34 }
+  if (($expected.Value -notcontains $rule.IdentityReference.Value)) { exit 35 }
+  if (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { exit 36 }
+}
+"#;
+    let kind = if directory { "directory" } else { "file" };
+    let status = Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            ACL_SCRIPT,
+        ])
         .arg(path)
-        .arg("/inheritance:r")
-        .arg("/grant:r")
-        .args(grants)
+        .arg(kind)
         .status()?;
     if !status.success() {
         return Err(std::io::Error::other(
-            "could not apply the protected application DACL",
+            "could not apply and verify the protected application DACL",
         ));
     }
     Ok(())
