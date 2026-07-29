@@ -128,11 +128,12 @@ async fn ledger_survives_restart_and_only_projects_the_current_epoch_dates() {
     let reopened = AccountSettingsStore::open(&database)
         .await
         .expect("reopen store");
-    let after_restart = reopened
-        .public_live_quota(1_785_003_600_000)
+    let (after_restart_revision, after_restart) = reopened
+        .public_live_quota_snapshot(1_785_003_600_000)
         .await
-        .expect("rebuilt projection")
-        .expect("quota");
+        .expect("rebuilt projection");
+    let after_restart = after_restart.expect("quota");
+    assert_eq!(after_restart_revision, 3);
     assert_eq!(after_restart, before_restart);
 
     reopened
@@ -181,15 +182,34 @@ fn remove_derived_state_after_asserting_atomic_facts(database: &std::path::Path)
             },
         )
         .expect("atomic ledger facts");
-    assert_eq!(facts, (2, 2, 2, 1, 1));
+    assert_eq!(facts, (3, 2, 2, 1, 1));
     connection
         .execute_batch(
             "PRAGMA foreign_keys = ON;
-             UPDATE usage_observations SET quota_epoch_id = NULL;
-             DELETE FROM daily_ledgers;
-             DELETE FROM quota_epochs;",
+             DELETE FROM daily_ledgers;",
         )
         .expect("retain immutable observations only");
+    assert!(
+        connection
+            .execute("UPDATE usage_observations SET used_micropoints = 0", [])
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute("DELETE FROM usage_observations", [])
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO usage_observations
+                 (account_stream_id, captured_at_ms, used_micropoints,
+                  window_seconds, resets_at_s, quota_epoch_id)
+                 VALUES (1, 1785007200000, 42000000, 604800, 1785500000, NULL)",
+                [],
+            )
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -239,6 +259,111 @@ async fn confirmed_same_day_reset_retains_pre_and_post_reset_usage() {
             .sum::<i64>(),
         7_000_000
     );
+}
+
+#[tokio::test]
+async fn two_coherent_low_observations_confirm_an_early_reset_after_restart() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let account = binding(1, "/chosen/auth.json", "account-one");
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(1_700_000_000_000, 42_000_000, 1_700_604_800),
+        )
+        .await
+        .expect("baseline");
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(1_700_003_600_000, 2_000_000, 1_700_608_400),
+        )
+        .await
+        .expect("candidate");
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(1_700_007_200_000, 2_500_000, 1_700_608_420),
+        )
+        .await
+        .expect("confirmation");
+    drop(store);
+
+    let reopened = AccountSettingsStore::open(&database)
+        .await
+        .expect("reopen store");
+    let quota = reopened
+        .public_live_quota(1_700_007_200_000)
+        .await
+        .expect("projection")
+        .expect("quota");
+    assert_eq!(
+        quota
+            .ledger_days
+            .iter()
+            .filter_map(|day| day.used_micropoints)
+            .sum::<i64>(),
+        2_500_000
+    );
+}
+
+#[tokio::test]
+async fn production_ledger_uses_the_persisted_iana_policy_timezone() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open_with_policy_timezone(
+        directory.path().join("state.sqlite3"),
+        "America/New_York",
+    )
+    .await
+    .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let before_midnight = chrono::DateTime::parse_from_rfc3339("2026-07-28T03:59:00Z")
+        .expect("before midnight")
+        .timestamp_millis();
+    let after_midnight = chrono::DateTime::parse_from_rfc3339("2026-07-28T04:01:00Z")
+        .expect("after midnight")
+        .timestamp_millis();
+    let reset = chrono::DateTime::parse_from_rfc3339("2026-08-03T04:00:00Z")
+        .expect("reset")
+        .timestamp();
+    let account = binding(1, "/chosen/auth.json", "account-one");
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(before_midnight, 40_000_000, reset),
+        )
+        .await
+        .expect("baseline");
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(after_midnight, 41_000_000, reset),
+        )
+        .await
+        .expect("increase");
+
+    let quota = store
+        .public_live_quota(after_midnight)
+        .await
+        .expect("projection")
+        .expect("quota");
+    let known = quota
+        .ledger_days
+        .iter()
+        .find(|day| day.used_micropoints.is_some())
+        .expect("known day");
+    assert_eq!(known.local_date, "2026-07-28");
+    assert!(known.is_today);
 }
 
 #[tokio::test]
@@ -486,7 +611,7 @@ async fn a_mid_transaction_failure_leaves_no_partial_success_visible() {
             |row| row.get(0),
         )
         .expect("dashboard revision");
-    assert_eq!(dashboard_revision, 0);
+    assert_eq!(dashboard_revision, 1);
 }
 
 #[tokio::test]

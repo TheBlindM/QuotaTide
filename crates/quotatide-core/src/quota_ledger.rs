@@ -6,6 +6,7 @@ use chrono_tz::Tz;
 use crate::{QuotaUnits, WeeklyUsageObservation};
 
 const WEEK_SECONDS: u32 = 604_800;
+const RESET_DROP_MICROPOINTS: i64 = 10_000;
 const RESET_ADVANCE_TOLERANCE_SECONDS: i64 = 60;
 const MAX_SCHEDULE_CORRECTION_SECONDS: u64 = 60 * 60;
 
@@ -16,6 +17,7 @@ pub struct QuotaLedger;
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LedgerState {
     active_epoch: Option<QuotaEpoch>,
+    reset_candidate: Option<ResetCandidate>,
     daily_used_micropoints: BTreeMap<NaiveDate, i64>,
     next_epoch_sequence: u64,
 }
@@ -38,6 +40,11 @@ struct QuotaEpoch {
     first_observed_at_unix_ms: i64,
     latest_observed_at_unix_ms: i64,
     scheduled_reset_at_unix_s: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResetCandidate {
+    resets_at_unix_s: i64,
 }
 
 /// Meaning of an accepted ledger transition.
@@ -121,13 +128,7 @@ impl QuotaLedger {
         observation: &WeeklyUsageObservation,
         policy_timezone: Tz,
     ) -> Result<LedgerTransition, LedgerError> {
-        if observation.window_seconds != WEEK_SECONDS {
-            return Err(LedgerError::InvalidWindow);
-        }
-        let captured = DateTime::<Utc>::from_timestamp_millis(observation.captured_at_unix_ms)
-            .ok_or(LedgerError::InvalidObservationTime)?;
-        DateTime::<Utc>::from_timestamp(observation.resets_at_unix_s, 0)
-            .ok_or(LedgerError::InvalidResetTime)?;
+        let captured = validate_observation(observation)?;
 
         let Some(epoch) = state.active_epoch.as_mut() else {
             state.next_epoch_sequence = state.next_epoch_sequence.saturating_add(1);
@@ -158,6 +159,7 @@ impl QuotaLedger {
 
         let used = observation.used.micropoints();
         let high_water = epoch.high_water.micropoints();
+        let materially_below_high_water = high_water.saturating_sub(used) > RESET_DROP_MICROPOINTS;
         let crossed_old_boundary =
             observation.captured_at_unix_ms >= epoch.scheduled_reset_at_unix_s.saturating_mul(1000);
         let reset_advanced_one_window = observation.resets_at_unix_s
@@ -166,9 +168,18 @@ impl QuotaLedger {
                 .saturating_add(i64::from(WEEK_SECONDS))
                 .saturating_sub(RESET_ADVANCE_TOLERANCE_SECONDS);
         // A used-value drop is only one anomalous fact. It cannot establish a
-        // new epoch by itself; the old boundary must also have passed and the
-        // strict weekly window must have advanced.
-        let confirmed_reset = crossed_old_boundary && reset_advanced_one_window;
+        // new epoch by itself: confirmation comes from either the scheduled
+        // boundary advancing or a second coherent low observation.
+        let candidate_confirmed = state.reset_candidate.as_ref().is_some_and(|candidate| {
+            materially_below_high_water
+                && observation
+                    .resets_at_unix_s
+                    .saturating_sub(candidate.resets_at_unix_s)
+                    .unsigned_abs()
+                    <= MAX_SCHEDULE_CORRECTION_SECONDS
+        });
+        let confirmed_reset =
+            (crossed_old_boundary && reset_advanced_one_window) || candidate_confirmed;
 
         let (kind, added) = if confirmed_reset {
             state.next_epoch_sequence = state.next_epoch_sequence.saturating_add(1);
@@ -180,6 +191,7 @@ impl QuotaLedger {
                 latest_observed_at_unix_ms: observation.captured_at_unix_ms,
                 scheduled_reset_at_unix_s: observation.resets_at_unix_s,
             });
+            state.reset_candidate = None;
             (LedgerApplyKind::ConfirmedReset, used)
         } else {
             let added = used.saturating_sub(high_water).max(0);
@@ -190,9 +202,14 @@ impl QuotaLedger {
                 .resets_at_unix_s
                 .saturating_sub(epoch.scheduled_reset_at_unix_s)
                 .unsigned_abs();
-            if schedule_correction <= MAX_SCHEDULE_CORRECTION_SECONDS {
+            if !materially_below_high_water
+                && schedule_correction <= MAX_SCHEDULE_CORRECTION_SECONDS
+            {
                 epoch.scheduled_reset_at_unix_s = observation.resets_at_unix_s;
             }
+            state.reset_candidate = materially_below_high_water.then_some(ResetCandidate {
+                resets_at_unix_s: observation.resets_at_unix_s,
+            });
             (LedgerApplyKind::SameEpoch, added)
         };
 
@@ -251,6 +268,29 @@ impl QuotaLedger {
     }
 }
 
+fn validate_observation(
+    observation: &WeeklyUsageObservation,
+) -> Result<DateTime<Utc>, LedgerError> {
+    if observation.window_seconds != WEEK_SECONDS {
+        return Err(LedgerError::InvalidWindow);
+    }
+    let captured = DateTime::<Utc>::from_timestamp_millis(observation.captured_at_unix_ms)
+        .ok_or(LedgerError::InvalidObservationTime)?;
+    DateTime::<Utc>::from_timestamp(observation.resets_at_unix_s, 0)
+        .ok_or(LedgerError::InvalidResetTime)?;
+    let window_starts_at_unix_ms = observation
+        .resets_at_unix_s
+        .saturating_sub(i64::from(WEEK_SECONDS))
+        .saturating_mul(1000);
+    let window_ends_at_unix_ms = observation.resets_at_unix_s.saturating_mul(1000);
+    if observation.captured_at_unix_ms < window_starts_at_unix_ms
+        || observation.captured_at_unix_ms >= window_ends_at_unix_ms
+    {
+        return Err(LedgerError::InvalidWindow);
+    }
+    Ok(captured)
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{DateTime, Utc};
@@ -280,6 +320,17 @@ mod tests {
                 .iter()
                 .all(|day| day.used_micropoints.is_none())
         );
+    }
+
+    #[test]
+    fn observation_must_belong_to_its_strict_weekly_window() {
+        let result = QuotaLedger::apply(
+            LedgerState::default(),
+            &observation(1_700_000_000_000, 42_000_000, 1_701_209_600),
+            Shanghai,
+        );
+
+        assert_eq!(result, Err(super::LedgerError::InvalidWindow));
     }
 
     #[test]
@@ -348,7 +399,7 @@ mod tests {
         let baseline = apply_default(42_000_000);
         let corrected = QuotaLedger::apply(
             baseline.state,
-            &observation(1_700_003_600_000, 42_000_000, 1_700_700_000),
+            &observation(1_700_003_600_000, 42_000_000, 1_700_604_860),
             Shanghai,
         )
         .expect("schedule correction");
@@ -372,11 +423,31 @@ mod tests {
     }
 
     #[test]
+    fn a_second_coherent_low_sample_confirms_a_reset_before_the_old_boundary() {
+        let baseline = apply_default(42_000_000);
+        let candidate = QuotaLedger::apply(
+            baseline.state,
+            &observation(1_700_003_600_000, 2_000_000, 1_700_608_400),
+            Shanghai,
+        )
+        .expect("candidate");
+        let confirmed = QuotaLedger::apply(
+            candidate.state,
+            &observation(1_700_007_200_000, 2_500_000, 1_700_608_420),
+            Shanghai,
+        )
+        .expect("second coherent sample");
+
+        assert_eq!(confirmed.kind, LedgerApplyKind::ConfirmedReset);
+        assert_eq!(confirmed.added_micropoints, 2_500_000);
+    }
+
+    #[test]
     fn a_future_reset_anomaly_cannot_move_the_confirming_boundary() {
         let baseline = apply_default(42_000_000);
         let anomaly = QuotaLedger::apply(
             baseline.state,
-            &observation(1_700_003_600_000, 2_000_000, 1_701_209_600),
+            &observation(1_700_003_600_000, 2_000_000, 1_700_608_400),
             Shanghai,
         )
         .expect("future reset anomaly");

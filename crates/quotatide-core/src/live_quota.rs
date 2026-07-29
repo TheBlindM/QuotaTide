@@ -374,7 +374,6 @@ pub trait UsageRefreshSource: Clone + Send + Sync + 'static {
 struct RefreshState {
     in_flight: Option<watch::Receiver<Option<Result<RefreshReceipt, RefreshCoordinatorError>>>>,
     last_manual_started_at_unix_ms: Option<i64>,
-    dashboard_revision: u64,
     refreshing: bool,
 }
 
@@ -456,13 +455,13 @@ where
         now_unix_ms: i64,
     ) -> Result<PublicLiveQuotaState, AccountConfigError<V::Error>> {
         loop {
-            let before = self.refresh.dashboard_state().await;
-            let quota = self.account.live_quota(now_unix_ms).await?;
-            let after = self.refresh.dashboard_state().await;
+            let before = self.refresh.refreshing().await;
+            let (dashboard_revision, quota) = self.account.live_quota_snapshot(now_unix_ms).await?;
+            let after = self.refresh.refreshing().await;
             if before == after {
                 return Ok(PublicLiveQuotaState {
-                    dashboard_revision: after.0,
-                    refreshing: after.1,
+                    dashboard_revision,
+                    refreshing: after,
                     quota,
                 });
             }
@@ -618,9 +617,9 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
         }
     }
 
-    async fn dashboard_state(&self) -> (u64, bool) {
+    async fn refreshing(&self) -> bool {
         let state = self.state.lock().await;
-        (state.dashboard_revision, state.refreshing)
+        state.refreshing
     }
 
     /// Runs or joins one refresh flight.
@@ -641,7 +640,7 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
         }
 
         let now = self.clock.now_unix_ms();
-        let (role, started_change) = {
+        let (role, started) = {
             let mut state = self.state.lock().await;
             if let Some(receiver) = state.in_flight.clone() {
                 if trigger == RefreshTrigger::Manual
@@ -651,13 +650,13 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
                 {
                     state.last_manual_started_at_unix_ms = Some(now);
                 }
-                (Role::Follower(receiver), None)
+                (Role::Follower(receiver), false)
             } else if trigger == RefreshTrigger::Manual
                 && state
                     .last_manual_started_at_unix_ms
                     .is_some_and(|last| now.saturating_sub(last) < Self::MANUAL_COOLDOWN_MS)
             {
-                (Role::Cooldown, None)
+                (Role::Cooldown, false)
             } else {
                 if trigger == RefreshTrigger::Manual {
                     state.last_manual_started_at_unix_ms = Some(now);
@@ -665,17 +664,14 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
                 let (sender, receiver) = watch::channel(None);
                 state.in_flight = Some(receiver);
                 state.refreshing = true;
-                state.dashboard_revision = state.dashboard_revision.saturating_add(1);
-                (
-                    Role::Leader(sender),
-                    Some(DashboardChanged {
-                        revision: state.dashboard_revision,
-                    }),
-                )
+                (Role::Leader(sender), true)
             }
         };
-        if let Some(change) = started_change {
-            self.dashboard_changes.send_replace(change);
+        if started {
+            if let Ok(revision) = self.persisted_dashboard_revision(now).await {
+                self.dashboard_changes
+                    .send_replace(DashboardChanged { revision });
+            }
         }
 
         match role {
@@ -695,21 +691,36 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
                     .map_err(|_| RefreshCoordinatorError::FlightUnavailable)?;
             },
             Role::Leader(sender) => {
-                let result = self.run_once(now).await;
-                let completed_change = {
+                let refresh_result = self.run_once(now).await;
+                {
                     let mut state = self.state.lock().await;
                     state.in_flight = None;
                     state.refreshing = false;
-                    state.dashboard_revision = state.dashboard_revision.saturating_add(1);
-                    DashboardChanged {
-                        revision: state.dashboard_revision,
-                    }
+                }
+                let revision_result = self.persisted_dashboard_revision(now).await;
+                if let Ok(revision) = revision_result {
+                    self.dashboard_changes
+                        .send_replace(DashboardChanged { revision });
+                }
+                let result = match (refresh_result, revision_result) {
+                    (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+                    (Ok(receipt), Ok(_)) => Ok(receipt),
                 };
-                self.dashboard_changes.send_replace(completed_change);
                 let _ = sender.send(Some(result.clone()));
                 self.with_trigger_retry_after(result, trigger).await
             }
         }
+    }
+
+    async fn persisted_dashboard_revision(
+        &self,
+        now_unix_ms: i64,
+    ) -> Result<u64, RefreshCoordinatorError> {
+        self.store
+            .public_live_quota_snapshot(now_unix_ms)
+            .await
+            .map(|(revision, _)| revision)
+            .map_err(map_store)
     }
 
     /// Refreshes once only when the latest attempt is at least `interval_ms`

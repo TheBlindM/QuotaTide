@@ -194,22 +194,26 @@ struct WeeklyUsageSnapshot {
 
 ### 同一 epoch
 
-满足以下条件时视为同一 epoch：
+满足以下条件时继续沿用同一 epoch：
 
 - account stream 相同；
 - 窗口仍为 604800 秒；
-- 没有出现超过 `0.01` 个百分点的用量下降；
 - 旧的计划重置边界尚未被可靠跨越。
 
 增量为 `max(0, current_used - high_water_used)`，随后更新 high-water。小于等于 `0.01` 的下降视为舍入噪声，不降低 high-water，避免后续回升被重复计量。
+
+超过 `0.01` 个百分点的一次下降只建立 reset candidate，不立刻建立新
+epoch，也不降低 high-water。下一笔同账号严格周窗口观测必须继续明显低于
+旧 high-water，且 `reset_at` 与 candidate 保持一致，才能排除单一异常样本。
 
 如果 `reset_at` 在旧边界到来前发生变化，但用量没有下降，只更新计划重置时间；这是 schedule correction，不创建 epoch，也不通知重置。
 
 ### 确认新 epoch
 
-下列任一强证据创建新 epoch：
+下列任一确认事实创建新 epoch：
 
-1. 同一账号、同一窗口的 `used_percent` 比 high-water 下降超过 `0.01`；
+1. 同一账号连续两笔严格周窗口观测都比旧 high-water 下降超过 `0.01`，且
+   两笔的计划重置边界一致；
 2. 已跨过旧 `resets_at`，且新快照的 `resets_at` 明显推进到下一窗口。
 
 新 epoch 的首笔每日增量为当前 `used_percent`，因为它代表重置后到本次采集之间已经发生的用量。该转换才可发送“当前账号额度已重置”通知。

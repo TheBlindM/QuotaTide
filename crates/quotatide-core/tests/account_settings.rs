@@ -106,7 +106,7 @@ async fn newer_schema_is_rejected_without_downgrade() {
         let connection =
             tokio_rusqlite::rusqlite::Connection::open(&database).expect("seed database");
         connection
-            .pragma_update(None, "user_version", 4)
+            .pragma_update(None, "user_version", 5)
             .expect("seed newer schema");
     }
     let before = std::fs::read(&database).expect("snapshot newer database");
@@ -126,7 +126,7 @@ async fn newer_schema_is_rejected_without_downgrade() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read schema version");
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 }
 
 #[tokio::test]
@@ -179,10 +179,116 @@ async fn version_one_settings_are_preserved_while_live_quota_and_ledger_tables_a
         })
         .expect("migration count");
 
-    assert_eq!(version, 3);
-    assert_eq!(migration_count, 3);
+    assert_eq!(version, 4);
+    assert_eq!(migration_count, 4);
     assert_eq!(quota_table, "usage_observations");
     assert_eq!(ledger_table, "daily_ledgers");
+}
+
+#[tokio::test]
+async fn populated_version_two_observations_are_backfilled_and_made_immutable() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    seed_version_two_database_with_observations(&database);
+
+    let store = AccountSettingsStore::open_with_policy_timezone(&database, "America/New_York")
+        .await
+        .expect("migrate populated version two");
+    let quota = store
+        .public_live_quota(1_785_003_600_000)
+        .await
+        .expect("projection")
+        .expect("quota");
+    assert_eq!(quota.ledger_days.len(), 7);
+    assert_eq!(
+        quota
+            .ledger_days
+            .iter()
+            .filter_map(|day| day.used_micropoints)
+            .sum::<i64>(),
+        1_000_000
+    );
+    drop(store);
+
+    let connection = rusqlite::Connection::open(database).expect("inspect migrated database");
+    let facts: (i64, i64, String) = connection
+        .query_row(
+            "SELECT
+               (SELECT COUNT(*) FROM usage_observations),
+               (SELECT COUNT(*) FROM usage_observations
+                WHERE quota_epoch_id IS NOT NULL),
+               (SELECT policy_timezone FROM app_settings WHERE singleton_id = 1)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("backfilled facts");
+    assert_eq!(facts, (2, 2, "America/New_York".to_owned()));
+    let epoch_not_null: i64 = connection
+        .query_row(
+            "SELECT \"notnull\" FROM pragma_table_info('usage_observations')
+             WHERE name = 'quota_epoch_id'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("quota epoch nullability");
+    assert_eq!(epoch_not_null, 1);
+    assert!(
+        connection
+            .execute("DELETE FROM usage_observations", [])
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn populated_version_three_is_upgraded_without_rewriting_its_checksum() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    seed_version_three_database_with_observations(&database);
+
+    let store = AccountSettingsStore::open_with_policy_timezone(&database, "Europe/Berlin")
+        .await
+        .expect("migrate populated version three");
+    assert!(
+        store
+            .public_live_quota(1_785_003_600_000)
+            .await
+            .expect("projection")
+            .is_some()
+    );
+    drop(store);
+
+    let connection = rusqlite::Connection::open(database).expect("inspect migrated database");
+    let facts: (i64, i64, String, String, String) = connection
+        .query_row(
+            "SELECT
+               (SELECT user_version FROM pragma_user_version),
+               (SELECT COUNT(*) FROM usage_observations
+                WHERE quota_epoch_id IS NOT NULL),
+               (SELECT checksum FROM schema_migrations WHERE version = 3),
+               (SELECT checksum FROM schema_migrations WHERE version = 4),
+               (SELECT policy_timezone FROM app_settings WHERE singleton_id = 1)",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .expect("upgraded facts");
+    assert_eq!(
+        facts,
+        (
+            4,
+            2,
+            "quotatide-v3-current-seven-day-ledger".to_owned(),
+            "quotatide-v4-immutable-observations-iana-policy".to_owned(),
+            "Europe/Berlin".to_owned(),
+        )
+    );
 }
 
 fn seed_version_one_database(path: &std::path::Path) {
@@ -229,6 +335,86 @@ fn seed_version_one_database(path: &std::path::Path) {
              PRAGMA user_version = 1;",
         )
         .expect("seed version one schema");
+}
+
+fn seed_version_two_database_with_observations(path: &std::path::Path) {
+    seed_version_one_database(path);
+    let connection = rusqlite::Connection::open(path).expect("seed version two database");
+    connection
+        .execute_batch(
+            "CREATE TABLE usage_observations (
+               id INTEGER PRIMARY KEY,
+               account_stream_id INTEGER NOT NULL REFERENCES account_streams(id),
+               captured_at_ms INTEGER NOT NULL,
+               used_micropoints INTEGER NOT NULL
+                 CHECK (used_micropoints BETWEEN 0 AND 100000000),
+               window_seconds INTEGER NOT NULL CHECK (window_seconds = 604800),
+               resets_at_s INTEGER NOT NULL,
+               plan_type TEXT,
+               allowed INTEGER,
+               UNIQUE(account_stream_id, captured_at_ms)
+             );
+             CREATE TABLE usage_source_health (
+               account_stream_id INTEGER PRIMARY KEY REFERENCES account_streams(id),
+               last_attempt_at_ms INTEGER NOT NULL,
+               last_success_at_ms INTEGER,
+               consecutive_failures INTEGER NOT NULL CHECK (consecutive_failures >= 0),
+               public_error TEXT
+             );
+             CREATE INDEX usage_observations_stream_capture
+               ON usage_observations(account_stream_id, captured_at_ms DESC);
+             INSERT INTO usage_observations VALUES
+               (1, 1, 1785000000000, 40000000, 604800, 1785500000, 'plus', 1),
+               (2, 1, 1785003600000, 41000000, 604800, 1785500000, 'plus', 1);
+             INSERT INTO usage_source_health VALUES
+               (1, 1785003600000, 1785003600000, 0, NULL);
+             INSERT INTO schema_migrations VALUES
+               (2, 1785000000000, '0.1.0', 'quotatide-v2-live-quota-health');
+             PRAGMA user_version = 2;",
+        )
+        .expect("seed version two schema");
+}
+
+fn seed_version_three_database_with_observations(path: &std::path::Path) {
+    seed_version_two_database_with_observations(path);
+    let connection = rusqlite::Connection::open(path).expect("seed version three database");
+    connection
+        .execute_batch(
+            "CREATE TABLE quota_epochs (
+               id INTEGER PRIMARY KEY,
+               account_stream_id INTEGER NOT NULL REFERENCES account_streams(id),
+               sequence INTEGER NOT NULL CHECK (sequence > 0),
+               baseline_micropoints INTEGER NOT NULL
+                 CHECK (baseline_micropoints BETWEEN 0 AND 100000000),
+               high_water_micropoints INTEGER NOT NULL
+                 CHECK (high_water_micropoints BETWEEN 0 AND 100000000),
+               first_observed_at_ms INTEGER NOT NULL,
+               latest_observed_at_ms INTEGER NOT NULL,
+               scheduled_reset_at_s INTEGER NOT NULL,
+               closed_at_ms INTEGER,
+               UNIQUE(account_stream_id, sequence)
+             );
+             CREATE UNIQUE INDEX one_active_quota_epoch_per_stream
+               ON quota_epochs(account_stream_id) WHERE closed_at_ms IS NULL;
+             CREATE TABLE daily_ledgers (
+               id INTEGER PRIMARY KEY,
+               account_stream_id INTEGER NOT NULL REFERENCES account_streams(id),
+               local_date TEXT NOT NULL,
+               policy_timezone TEXT NOT NULL,
+               used_micropoints INTEGER NOT NULL CHECK (used_micropoints >= 0),
+               updated_at_ms INTEGER NOT NULL,
+               UNIQUE(account_stream_id, local_date, policy_timezone)
+             );
+             ALTER TABLE usage_observations
+               ADD COLUMN quota_epoch_id INTEGER REFERENCES quota_epochs(id);
+             ALTER TABLE app_meta
+               ADD COLUMN dashboard_revision INTEGER NOT NULL DEFAULT 0;
+             INSERT INTO schema_migrations VALUES
+               (3, 1785000000000, '0.1.0',
+                'quotatide-v3-current-seven-day-ledger');
+             PRAGMA user_version = 3;",
+        )
+        .expect("seed version three schema");
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {

@@ -2509,6 +2509,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "getrandom 0.4.3",
+ "iana-time-zone",
  "serde",
  "serde_json",
  "sha2",

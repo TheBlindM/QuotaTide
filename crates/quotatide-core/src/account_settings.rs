@@ -15,10 +15,11 @@ use crate::{
     RefreshAccountBinding, SourceStatus, UsageSourceErrorCode, WeeklyUsageObservation,
 };
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-settings-v1-account-path-stream";
 const LIVE_QUOTA_SCHEMA_CHECKSUM: &str = "quotatide-v2-live-quota-health";
 const QUOTA_LEDGER_SCHEMA_CHECKSUM: &str = "quotatide-v3-current-seven-day-ledger";
+const IMMUTABLE_IANA_SCHEMA_CHECKSUM: &str = "quotatide-v4-immutable-observations-iana-policy";
 const FRESH_FOR_MS: i64 = 90 * 60 * 1000;
 
 /// A stable, secret-free account configuration projection for the UI.
@@ -209,6 +210,16 @@ impl<V: AuthCandidateValidator> SettingsManager<V> {
             .await
             .map_err(Into::into)
     }
+
+    pub(crate) async fn live_quota_snapshot(
+        &self,
+        now_unix_ms: i64,
+    ) -> Result<(u64, Option<PublicLiveQuota>), AccountConfigError<V::Error>> {
+        self.store
+            .public_live_quota_snapshot(now_unix_ms)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 /// Sole account-configuration facade exposed to the native shell.
@@ -260,6 +271,13 @@ impl<V: AuthCandidateValidator> AccountApplication<V> {
     ) -> Result<Option<PublicLiveQuota>, AccountConfigError<V::Error>> {
         self.settings.live_quota(now_unix_ms).await
     }
+
+    pub(crate) async fn live_quota_snapshot(
+        &self,
+        now_unix_ms: i64,
+    ) -> Result<(u64, Option<PublicLiveQuota>), AccountConfigError<V::Error>> {
+        self.settings.live_quota_snapshot(now_unix_ms).await
+    }
 }
 
 /// Stable storage failure category. Database details never cross the public boundary.
@@ -297,6 +315,7 @@ fn initialize_database(
     salt: &[u8; 32],
     app_instance_id: &str,
     now: i64,
+    policy_timezone: &str,
 ) -> rusqlite::Result<()> {
     let current_version: i64 =
         database.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -324,6 +343,11 @@ fn initialize_database(
         migrate_quota_ledger_v3(database, now)?;
     } else {
         validate_migration(database, 3, QUOTA_LEDGER_SCHEMA_CHECKSUM)?;
+    }
+    if current_version <= 3 {
+        migrate_immutable_iana_v4(database, now, policy_timezone)?;
+    } else {
+        validate_migration(database, 4, IMMUTABLE_IANA_SCHEMA_CHECKSUM)?;
     }
     Ok(())
 }
@@ -471,6 +495,71 @@ fn migrate_quota_ledger_v3(database: &mut rusqlite::Connection, now: i64) -> rus
     transaction.commit()
 }
 
+fn migrate_immutable_iana_v4(
+    database: &mut rusqlite::Connection,
+    now: i64,
+    policy_timezone: &str,
+) -> rusqlite::Result<()> {
+    let transaction =
+        database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE app_settings
+           ADD COLUMN policy_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai';",
+    )?;
+    transaction.execute(
+        "UPDATE app_settings SET policy_timezone = ?1 WHERE singleton_id = 1",
+        [policy_timezone],
+    )?;
+    backfill_usage_observation_epochs(&transaction, policy_timezone)?;
+    transaction.execute_batch(
+        "CREATE TABLE usage_observations_v4 (
+           id INTEGER PRIMARY KEY,
+           account_stream_id INTEGER NOT NULL REFERENCES account_streams(id),
+           quota_epoch_id INTEGER NOT NULL REFERENCES quota_epochs(id),
+           captured_at_ms INTEGER NOT NULL,
+           used_micropoints INTEGER NOT NULL
+             CHECK (used_micropoints BETWEEN 0 AND 100000000),
+           window_seconds INTEGER NOT NULL CHECK (window_seconds = 604800),
+           resets_at_s INTEGER NOT NULL,
+           plan_type TEXT,
+           allowed INTEGER,
+           UNIQUE(account_stream_id, captured_at_ms)
+         );
+         INSERT INTO usage_observations_v4
+           (id, account_stream_id, quota_epoch_id, captured_at_ms,
+            used_micropoints, window_seconds, resets_at_s, plan_type, allowed)
+           SELECT id, account_stream_id, quota_epoch_id, captured_at_ms,
+                  used_micropoints, window_seconds, resets_at_s, plan_type, allowed
+           FROM usage_observations;
+         DROP TABLE usage_observations;
+         ALTER TABLE usage_observations_v4 RENAME TO usage_observations;
+         CREATE INDEX usage_observations_stream_capture
+           ON usage_observations(account_stream_id, captured_at_ms DESC);
+         CREATE TRIGGER usage_observations_are_immutable_update
+           BEFORE UPDATE ON usage_observations
+           BEGIN
+             SELECT RAISE(ABORT, 'usage observations are immutable');
+           END;
+         CREATE TRIGGER usage_observations_are_immutable_delete
+           BEFORE DELETE ON usage_observations
+           BEGIN
+             SELECT RAISE(ABORT, 'usage observations are immutable');
+           END;",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations
+         (version, applied_at_ms, app_version, checksum)
+         VALUES (4, ?1, ?2, ?3)",
+        rusqlite::params![
+            now,
+            env!("CARGO_PKG_VERSION"),
+            IMMUTABLE_IANA_SCHEMA_CHECKSUM
+        ],
+    )?;
+    transaction.pragma_update(None, "user_version", 4)?;
+    transaction.commit()
+}
+
 fn validate_migration(
     database: &rusqlite::Connection,
     version: i64,
@@ -500,6 +589,30 @@ impl AccountSettingsStore {
     ///
     /// Returns a database error if initialization or migration fails.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, SettingsStoreError> {
+        let policy_timezone = iana_time_zone::get_timezone()
+            .ok()
+            .filter(|timezone| timezone.parse::<chrono_tz::Tz>().is_ok())
+            .unwrap_or_else(|| "Asia/Shanghai".to_owned());
+        Self::open_with_policy_timezone(path, policy_timezone).await
+    }
+
+    /// Opens with an explicit IANA policy timezone.
+    ///
+    /// This seam keeps natural-day behavior deterministic in tests and is
+    /// superseded by the persisted user setting once configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the timezone is invalid or initialization
+    /// fails.
+    pub async fn open_with_policy_timezone(
+        path: impl AsRef<Path>,
+        policy_timezone: impl AsRef<str>,
+    ) -> Result<Self, SettingsStoreError> {
+        let policy_timezone = policy_timezone.as_ref().to_owned();
+        policy_timezone
+            .parse::<chrono_tz::Tz>()
+            .map_err(SettingsStoreError::database)?;
         let connection = Connection::open(path)
             .await
             .map_err(SettingsStoreError::database)?;
@@ -507,7 +620,9 @@ impl AccountSettingsStore {
         let app_instance_id = Uuid::now_v7().to_string();
         let now = unix_time_ms();
         connection
-            .call(move |database| initialize_database(database, &salt, &app_instance_id, now))
+            .call(move |database| {
+                initialize_database(database, &salt, &app_instance_id, now, &policy_timezone)
+            })
             .await
             .map_err(SettingsStoreError::database)?;
 
@@ -553,7 +668,9 @@ impl AccountSettingsStore {
                 )?;
                 transaction.execute(
                     "UPDATE app_meta
-                     SET settings_revision = settings_revision + 1, updated_at_ms = ?1
+                     SET settings_revision = settings_revision + 1,
+                         dashboard_revision = dashboard_revision + 1,
+                         updated_at_ms = ?1
                      WHERE singleton_id = 1",
                     [now],
                 )?;
@@ -727,13 +844,16 @@ impl AccountSettingsStore {
                          WHERE singleton_id = 1",
                         rusqlite::params![stream_id, attempted_at_unix_ms],
                     )?;
-                    transaction.execute(
-                        "UPDATE app_meta
-                         SET settings_revision = settings_revision + 1, updated_at_ms = ?1
-                         WHERE singleton_id = 1",
-                        [attempted_at_unix_ms],
-                    )?;
                 }
+                let settings_increment = i64::from(configured_stream_id != Some(stream_id));
+                transaction.execute(
+                    "UPDATE app_meta
+                     SET settings_revision = settings_revision + ?1,
+                         dashboard_revision = dashboard_revision + 1,
+                         updated_at_ms = ?2
+                     WHERE singleton_id = 1",
+                    rusqlite::params![settings_increment, attempted_at_unix_ms],
+                )?;
                 transaction
                     .commit()
                     .map(|()| UsageCommitDisposition::Committed)
@@ -752,15 +872,42 @@ impl AccountSettingsStore {
         &self,
         now_unix_ms: i64,
     ) -> Result<Option<PublicLiveQuota>, SettingsStoreError> {
+        self.public_live_quota_snapshot(now_unix_ms)
+            .await
+            .map(|(_, quota)| quota)
+    }
+
+    /// Returns the persisted dashboard revision and quota from one read
+    /// transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when persisted state is corrupt or unavailable.
+    pub async fn public_live_quota_snapshot(
+        &self,
+        now_unix_ms: i64,
+    ) -> Result<(u64, Option<PublicLiveQuota>), SettingsStoreError> {
         self.connection
             .call(move |database| {
                 let transaction = database.unchecked_transaction()?;
+                let revision: i64 = transaction.query_row(
+                    "SELECT dashboard_revision FROM app_meta WHERE singleton_id = 1",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let revision =
+                    u64::try_from(revision).map_err(|_| rusqlite::Error::InvalidQuery)?;
                 let Some(row) = query_live_quota_row(&transaction)? else {
-                    return Ok(None);
+                    return Ok((revision, None));
                 };
-                let ledger_days =
-                    project_public_ledger_days(&transaction, row.stream_id, now_unix_ms)?;
-                build_public_live_quota(row, ledger_days, now_unix_ms).map(Some)
+                let ledger_days = project_public_ledger_days(
+                    &transaction,
+                    row.stream_id,
+                    row.policy_timezone,
+                    now_unix_ms,
+                )?;
+                build_public_live_quota(row, ledger_days, now_unix_ms)
+                    .map(|quota| (revision, Some(quota)))
             })
             .await
             .map_err(SettingsStoreError::database)
@@ -791,8 +938,7 @@ fn record_usage_success_transaction(
 ) -> rusqlite::Result<UsageCommitDisposition> {
     let transaction =
         database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let Some((salt, configured_stream_id)) = validated_binding_context(&transaction, binding)?
-    else {
+    let Some(context) = validated_binding_context(&transaction, binding)? else {
         return Ok(UsageCommitDisposition::Superseded);
     };
     let account_id = binding
@@ -800,22 +946,28 @@ fn record_usage_success_transaction(
         .as_deref()
         .ok_or(rusqlite::Error::InvalidQuery)?;
     let now = observation.captured_at_unix_ms;
-    let (stream_id, _) = upsert_account_stream(&transaction, &salt, account_id, now)?;
+    let (stream_id, _) = upsert_account_stream(&transaction, &context.salt, account_id, now)?;
     let transition = QuotaLedger::apply(
-        load_ledger_state(&transaction, stream_id)?,
+        load_ledger_state(&transaction, stream_id, context.policy_timezone)?,
         observation,
-        chrono_tz::Asia::Shanghai,
+        context.policy_timezone,
     )
     .map_err(|_| rusqlite::Error::InvalidQuery)?;
     if transition.kind == LedgerApplyKind::DroppedOutOfOrder {
         transaction.commit()?;
         return Ok(UsageCommitDisposition::Committed);
     }
-    persist_success_observation(&transaction, stream_id, observation, &transition)?;
+    persist_success_observation(
+        &transaction,
+        stream_id,
+        observation,
+        &transition,
+        context.policy_timezone,
+    )?;
     persist_success_projection(
         &transaction,
         stream_id,
-        configured_stream_id,
+        context.configured_stream_id,
         observation.captured_at_unix_ms,
     )?;
     transaction
@@ -823,30 +975,49 @@ fn record_usage_success_transaction(
         .map(|()| UsageCommitDisposition::Committed)
 }
 
+struct BindingContext {
+    salt: Vec<u8>,
+    configured_stream_id: Option<i64>,
+    policy_timezone: chrono_tz::Tz,
+}
+
 fn validated_binding_context(
     transaction: &rusqlite::Transaction<'_>,
     binding: &RefreshAccountBinding,
-) -> rusqlite::Result<Option<(Vec<u8>, Option<i64>)>> {
-    let (salt, revision, configured_path, configured_stream_id): (
+) -> rusqlite::Result<Option<BindingContext>> {
+    let (salt, revision, configured_path, configured_stream_id, policy_timezone): (
         Vec<u8>,
         i64,
         Option<String>,
         Option<i64>,
+        String,
     ) = transaction.query_row(
         "SELECT m.local_hash_salt, m.settings_revision, s.auth_path,
-                s.configured_account_stream_id
+                s.configured_account_stream_id, s.policy_timezone
          FROM app_meta m
          JOIN app_settings s ON s.singleton_id = m.singleton_id
          WHERE m.singleton_id = 1",
         [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
     )?;
     if revision != i64::from(binding.settings_revision)
         || configured_path.as_deref() != binding.canonical_path.to_str()
     {
         return Ok(None);
     }
-    Ok(Some((salt, configured_stream_id)))
+    Ok(Some(BindingContext {
+        salt,
+        configured_stream_id,
+        policy_timezone: parse_policy_timezone(&policy_timezone)?,
+    }))
 }
 
 fn persist_success_observation(
@@ -854,6 +1025,7 @@ fn persist_success_observation(
     stream_id: i64,
     observation: &WeeklyUsageObservation,
     transition: &crate::LedgerTransition,
+    policy_timezone: chrono_tz::Tz,
 ) -> rusqlite::Result<()> {
     let persisted_epoch =
         QuotaLedger::persisted_epoch(&transition.state).ok_or(rusqlite::Error::InvalidQuery)?;
@@ -887,12 +1059,18 @@ fn persist_success_observation(
             "INSERT INTO daily_ledgers
              (account_stream_id, local_date, policy_timezone,
               used_micropoints, updated_at_ms)
-             VALUES (?1, ?2, 'Asia/Shanghai', ?3, ?4)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(account_stream_id, local_date, policy_timezone)
              DO UPDATE SET
                used_micropoints = excluded.used_micropoints,
                updated_at_ms = excluded.updated_at_ms",
-            rusqlite::params![stream_id, local_date, used, observation.captured_at_unix_ms],
+            rusqlite::params![
+                stream_id,
+                local_date,
+                policy_timezone.name(),
+                used,
+                observation.captured_at_unix_ms
+            ],
         )?;
     }
     Ok(())
@@ -937,6 +1115,7 @@ fn persist_success_projection(
 
 struct LiveQuotaRow {
     stream_id: i64,
+    policy_timezone: chrono_tz::Tz,
     used_micropoints: Option<i64>,
     captured_at_unix_ms: Option<i64>,
     resets_at_unix_s: Option<i64>,
@@ -955,7 +1134,7 @@ fn query_live_quota_row(
 
     transaction
         .query_row(
-            "SELECT s.configured_account_stream_id,
+            "SELECT s.configured_account_stream_id, s.policy_timezone,
                     o.used_micropoints, o.captured_at_ms, o.resets_at_s,
                     o.plan_type, o.allowed, h.last_attempt_at_ms,
                     h.last_success_at_ms, h.consecutive_failures, h.public_error
@@ -974,15 +1153,16 @@ fn query_live_quota_row(
             |row| {
                 Ok(LiveQuotaRow {
                     stream_id: row.get(0)?,
-                    used_micropoints: row.get(1)?,
-                    captured_at_unix_ms: row.get(2)?,
-                    resets_at_unix_s: row.get(3)?,
-                    plan_type: row.get(4)?,
-                    allowed: row.get(5)?,
-                    last_attempt_at_unix_ms: row.get(6)?,
-                    last_success_at_unix_ms: row.get(7)?,
-                    consecutive_failures: row.get(8)?,
-                    error_key: row.get(9)?,
+                    policy_timezone: parse_policy_timezone(&row.get::<_, String>(1)?)?,
+                    used_micropoints: row.get(2)?,
+                    captured_at_unix_ms: row.get(3)?,
+                    resets_at_unix_s: row.get(4)?,
+                    plan_type: row.get(5)?,
+                    allowed: row.get(6)?,
+                    last_attempt_at_unix_ms: row.get(7)?,
+                    last_success_at_unix_ms: row.get(8)?,
+                    consecutive_failures: row.get(9)?,
+                    error_key: row.get(10)?,
                 })
             },
         )
@@ -992,18 +1172,16 @@ fn query_live_quota_row(
 fn project_public_ledger_days(
     transaction: &rusqlite::Transaction<'_>,
     stream_id: i64,
+    policy_timezone: chrono_tz::Tz,
     now_unix_ms: i64,
 ) -> rusqlite::Result<Vec<PublicLedgerDay>> {
     let projection = QuotaLedger::project(
-        &load_ledger_state(transaction, stream_id)?,
-        chrono_tz::Asia::Shanghai,
+        &load_ledger_state(transaction, stream_id, policy_timezone)?,
+        policy_timezone,
     )
     .map_err(|_| rusqlite::Error::InvalidQuery)?;
-    let today = chrono::DateTime::from_timestamp_millis(now_unix_ms).map(|now| {
-        now.with_timezone(&chrono_tz::Asia::Shanghai)
-            .date_naive()
-            .to_string()
-    });
+    let today = chrono::DateTime::from_timestamp_millis(now_unix_ms)
+        .map(|now| now.with_timezone(&policy_timezone).date_naive().to_string());
     Ok(projection.map_or_else(Vec::new, |projection| {
         projection
             .days
@@ -1073,9 +1251,108 @@ fn build_public_live_quota(
     })
 }
 
+fn parse_policy_timezone(value: &str) -> rusqlite::Result<chrono_tz::Tz> {
+    value.parse().map_err(|_| rusqlite::Error::InvalidQuery)
+}
+
+fn backfill_usage_observation_epochs(
+    transaction: &rusqlite::Transaction<'_>,
+    policy_timezone: &str,
+) -> rusqlite::Result<()> {
+    let policy_timezone = parse_policy_timezone(policy_timezone)?;
+    let stream_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT DISTINCT account_stream_id
+             FROM usage_observations ORDER BY account_stream_id",
+        )?;
+        statement
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?
+    };
+    for stream_id in stream_ids {
+        backfill_stream_observations(transaction, stream_id, policy_timezone)?;
+    }
+    Ok(())
+}
+
+fn backfill_stream_observations(
+    transaction: &rusqlite::Transaction<'_>,
+    stream_id: i64,
+    policy_timezone: chrono_tz::Tz,
+) -> rusqlite::Result<()> {
+    let observations = {
+        let mut statement = transaction.prepare(
+            "SELECT id, captured_at_ms, used_micropoints, window_seconds,
+                    resets_at_s, plan_type, allowed
+             FROM usage_observations
+             WHERE account_stream_id = ?1
+             ORDER BY captured_at_ms, id",
+        )?;
+        statement
+            .query_map([stream_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    WeeklyUsageObservation {
+                        captured_at_unix_ms: row.get(1)?,
+                        used: crate::QuotaUnits::from_micropoints(row.get(2)?)
+                            .ok_or(rusqlite::Error::InvalidQuery)?,
+                        window_seconds: u32::try_from(row.get::<_, i64>(3)?)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        resets_at_unix_s: row.get(4)?,
+                        plan_type: row.get(5)?,
+                        allowed: row.get::<_, Option<i64>>(6)?.map(|value| value != 0),
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let mut state = crate::LedgerState::default();
+    for (observation_id, observation) in observations {
+        let transition = QuotaLedger::apply(state, &observation, policy_timezone)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let kind = transition.kind;
+        let assigned_local_date = transition.assigned_local_date;
+        state = transition.state;
+        let epoch = QuotaLedger::persisted_epoch(&state).ok_or(rusqlite::Error::InvalidQuery)?;
+        let epoch_id = persist_ledger_epoch(
+            transaction,
+            stream_id,
+            &epoch,
+            kind,
+            observation.captured_at_unix_ms,
+        )?;
+        transaction.execute(
+            "UPDATE usage_observations SET quota_epoch_id = ?1 WHERE id = ?2",
+            rusqlite::params![epoch_id, observation_id],
+        )?;
+        if let Some(local_date) = assigned_local_date {
+            let used = QuotaLedger::daily_used(&state, &local_date)
+                .ok_or(rusqlite::Error::InvalidQuery)?;
+            transaction.execute(
+                "INSERT INTO daily_ledgers
+                 (account_stream_id, local_date, policy_timezone,
+                  used_micropoints, updated_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(account_stream_id, local_date, policy_timezone)
+                 DO UPDATE SET used_micropoints = excluded.used_micropoints,
+                               updated_at_ms = excluded.updated_at_ms",
+                rusqlite::params![
+                    stream_id,
+                    local_date,
+                    policy_timezone.name(),
+                    used,
+                    observation.captured_at_unix_ms
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn load_ledger_state(
     transaction: &rusqlite::Transaction<'_>,
     stream_id: i64,
+    policy_timezone: chrono_tz::Tz,
 ) -> rusqlite::Result<crate::LedgerState> {
     let mut statement = transaction.prepare(
         "SELECT captured_at_ms, used_micropoints, window_seconds, resets_at_s,
@@ -1102,7 +1379,7 @@ fn load_ledger_state(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut state = crate::LedgerState::default();
     for observation in observations {
-        state = QuotaLedger::apply(state, &observation, chrono_tz::Asia::Shanghai)
+        state = QuotaLedger::apply(state, &observation, policy_timezone)
             .map_err(|_| rusqlite::Error::InvalidQuery)?
             .state;
     }

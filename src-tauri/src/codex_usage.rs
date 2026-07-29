@@ -255,6 +255,13 @@ pub(crate) fn normalize_usage(
         .reset_at
         .filter(|value| *value > 0 && chrono::DateTime::from_timestamp(*value, 0).is_some())
         .ok_or_else(|| simple(UsageSourceErrorCode::ContractViolation))?;
+    let window_starts_at_unix_ms = resets_at
+        .saturating_sub(i64::from(WEEK_SECONDS))
+        .saturating_mul(1_000);
+    let resets_at_unix_ms = resets_at.saturating_mul(1_000);
+    if !(window_starts_at_unix_ms..resets_at_unix_ms).contains(&captured_at_unix_ms) {
+        return Err(simple(UsageSourceErrorCode::ContractViolation));
+    }
     let _ = reset_after;
     let micropoints = percent_to_micropoints(used_percent);
     let used = QuotaUnits::from_micropoints(micropoints)
@@ -363,7 +370,7 @@ mod tests {
     #[test]
     fn selects_only_the_exact_current_seven_day_window() {
         let observation =
-            normalize_usage(VALID.as_bytes(), 1_785_000_000_000).expect("valid weekly observation");
+            normalize_usage(VALID.as_bytes(), 1_781_000_000_000).expect("valid weekly observation");
 
         assert_eq!(observation.used.micropoints(), 41_250_000);
         assert_eq!(observation.window_seconds, 604_800);
@@ -402,9 +409,21 @@ mod tests {
         ];
 
         for (payload, expected) in cases {
-            let error = normalize_usage(payload.as_bytes(), 0).expect_err("invalid window");
+            let error =
+                normalize_usage(payload.as_bytes(), 1_781_000_000_000).expect_err("invalid window");
             assert_eq!(error.code(), expected);
             assert!(!format!("{error:?}").contains(payload));
         }
+    }
+
+    #[test]
+    fn rejects_a_weekly_window_that_does_not_contain_capture_time() {
+        let error =
+            normalize_usage(VALID.as_bytes(), 1_781_300_000_000).expect_err("reset is exclusive");
+        assert_eq!(error.code(), UsageSourceErrorCode::ContractViolation);
+
+        let error = normalize_usage(VALID.as_bytes(), 1_780_695_199_999)
+            .expect_err("capture precedes window");
+        assert_eq!(error.code(), UsageSourceErrorCode::ContractViolation);
     }
 }

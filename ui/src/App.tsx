@@ -272,10 +272,6 @@ function projectLedgerDay(day: PublicLedgerDay) {
     day.usedMicropoints === null ? null : day.usedMicropoints / 1_000_000;
   const limit =
     day.limitMicropoints === null ? null : day.limitMicropoints / 1_000_000;
-  let status = day.status === "unknown" ? "尚无记录" : "已记录";
-  if (used !== null && limit !== null) {
-    status = used > limit ? "超额" : used >= limit * 0.8 ? "预警" : "正常";
-  }
   return {
     label: day.isToday
       ? "今天"
@@ -286,7 +282,7 @@ function projectLedgerDay(day: PublicLedgerDay) {
     used,
     limit,
     today: day.isToday,
-    status,
+    status: day.status === "unknown" ? "尚无记录" : "已记录",
   };
 }
 

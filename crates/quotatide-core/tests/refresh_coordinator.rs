@@ -153,7 +153,7 @@ fn observation(captured_at_unix_ms: i64) -> WeeklyUsageObservation {
         captured_at_unix_ms,
         used: QuotaUnits::from_micropoints(20_000_000).expect("valid quota"),
         window_seconds: 604_800,
-        resets_at_unix_s: 1_786_000_000,
+        resets_at_unix_s: 1_785_500_000,
         plan_type: Some("plus".to_owned()),
         allowed: Some(true),
     }
@@ -215,7 +215,7 @@ async fn dashboard_revision_events_invalidate_a_query_owned_refreshing_snapshot(
     let calls = Arc::clone(&source.calls);
     let application = Application::new(
         AccountApplication::new(SettingsManager::new(store.clone(), UnusedValidator)),
-        RefreshCoordinator::new(store, source, FakeClock::new(1_785_000_000_000)),
+        RefreshCoordinator::new(store.clone(), source, FakeClock::new(1_785_000_000_000)),
     );
     let mut changes = application.subscribe_dashboard_changes();
     let refresh_application = application.clone();
@@ -254,6 +254,21 @@ async fn dashboard_revision_events_invalidate_a_query_owned_refreshing_snapshot(
         completed.quota.expect("live quota").used_micropoints,
         Some(20_000_000)
     );
+
+    let restarted = Application::new(
+        AccountApplication::new(SettingsManager::new(store.clone(), UnusedValidator)),
+        RefreshCoordinator::new(
+            store,
+            FakeSource::successful(1_785_000_000_000),
+            FakeClock::new(1_785_000_000_000),
+        ),
+    );
+    let restored = restarted
+        .live_quota(1_785_000_000_000)
+        .await
+        .expect("restored dashboard state");
+    assert_eq!(restored.dashboard_revision, 2);
+    assert!(!restored.refreshing);
 }
 
 #[tokio::test]
@@ -436,11 +451,11 @@ async fn timeout_is_persisted_as_public_health_without_discarding_the_snapshot()
         .refresh(RefreshTrigger::Hourly)
         .await
         .expect("timeout is a source outcome");
-    let public = store
-        .public_live_quota(1_785_003_600_000)
+    let (dashboard_revision, public) = store
+        .public_live_quota_snapshot(1_785_003_600_000)
         .await
-        .expect("public quota")
-        .expect("last-known-good");
+        .expect("public quota");
+    let public = public.expect("last-known-good");
 
     assert_eq!(
         receipt.outcome,
@@ -449,6 +464,7 @@ async fn timeout_is_persisted_as_public_health_without_discarding_the_snapshot()
     assert_eq!(public.used_micropoints, Some(20_000_000));
     assert_eq!(public.consecutive_failures, 1);
     assert_eq!(public.public_error, Some(UsageSourceErrorCode::Timeout));
+    assert_eq!(dashboard_revision, 3);
 }
 
 #[tokio::test]
