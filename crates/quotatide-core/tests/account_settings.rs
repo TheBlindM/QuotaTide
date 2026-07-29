@@ -1,4 +1,4 @@
-use quotatide_core::AccountSettingsStore;
+use quotatide_core::{AccountSettingsStore, QuotaPolicyDraft};
 use tempfile::tempdir;
 use tokio_rusqlite::rusqlite;
 
@@ -99,6 +99,70 @@ async fn stale_revision_is_rejected_without_overwriting_the_selected_account() {
 }
 
 #[tokio::test]
+async fn daily_policy_updates_append_atomically_and_survive_restart() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open_with_policy_timezone(&database, "Asia/Shanghai")
+        .await
+        .expect("open settings store");
+    let initial = store.public_settings().await.expect("initial settings");
+    assert_eq!(
+        initial.quota_policy.base_micropoints,
+        vec![
+            16_000_000, 16_000_000, 16_000_000, 16_000_000, 16_000_000, 10_000_000, 10_000_000,
+        ]
+    );
+
+    let updated = store
+        .update_quota_policy(
+            0,
+            QuotaPolicyDraft {
+                policy_timezone: "America/New_York".to_owned(),
+                carry_workdays_enabled: true,
+                base_micropoints: vec![
+                    20_000_000, 20_000_000, 20_000_000, 20_000_000, 0, 10_000_000, 10_000_000,
+                ],
+            },
+        )
+        .await
+        .expect("update policy");
+    assert_eq!(updated.settings_revision, 1);
+    assert_eq!(
+        updated.quota_policy.policy_revision,
+        initial.quota_policy.policy_revision + 1
+    );
+    assert_eq!(updated.quota_policy.policy_timezone, "America/New_York");
+
+    let rejected = store
+        .update_quota_policy(
+            1,
+            QuotaPolicyDraft {
+                policy_timezone: "Asia/Shanghai".to_owned(),
+                carry_workdays_enabled: false,
+                base_micropoints: vec![20_000_000; 7],
+            },
+        )
+        .await;
+    assert!(matches!(
+        rejected,
+        Err(quotatide_core::SettingsStoreError::InvalidPolicy(_))
+    ));
+    assert_eq!(
+        store.public_settings().await.expect("unchanged settings"),
+        updated
+    );
+
+    drop(store);
+    let reopened = AccountSettingsStore::open(&database)
+        .await
+        .expect("reopen settings store");
+    assert_eq!(
+        reopened.public_settings().await.expect("restored settings"),
+        updated
+    );
+}
+
+#[tokio::test]
 async fn newer_schema_is_rejected_without_downgrade() {
     let directory = tempdir().expect("temporary directory");
     let database = directory.path().join("state.sqlite3");
@@ -106,7 +170,7 @@ async fn newer_schema_is_rejected_without_downgrade() {
         let connection =
             tokio_rusqlite::rusqlite::Connection::open(&database).expect("seed database");
         connection
-            .pragma_update(None, "user_version", 5)
+            .pragma_update(None, "user_version", 6)
             .expect("seed newer schema");
     }
     let before = std::fs::read(&database).expect("snapshot newer database");
@@ -126,7 +190,7 @@ async fn newer_schema_is_rejected_without_downgrade() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read schema version");
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
 }
 
 #[tokio::test]
@@ -179,8 +243,8 @@ async fn version_one_settings_are_preserved_while_live_quota_and_ledger_tables_a
         })
         .expect("migration count");
 
-    assert_eq!(version, 4);
-    assert_eq!(migration_count, 4);
+    assert_eq!(version, 5);
+    assert_eq!(migration_count, 5);
     assert_eq!(quota_table, "usage_observations");
     assert_eq!(ledger_table, "daily_ledgers");
 }
@@ -370,7 +434,7 @@ async fn populated_version_three_is_upgraded_without_rewriting_its_checksum() {
     assert_eq!(
         facts,
         (
-            4,
+            5,
             2,
             "quotatide-v3-current-seven-day-ledger".to_owned(),
             "quotatide-v4-immutable-observations-iana-policy".to_owned(),

@@ -8,6 +8,38 @@ import { App, projectLiveFixture } from "./App";
 import { selectAuthFile } from "./api/account-settings";
 import { getLiveQuota } from "./api/live-quota";
 
+const { quotaPolicy } = vi.hoisted(() => ({
+  quotaPolicy: {
+    policyRevision: 1,
+    policyTimezone: "Asia/Shanghai",
+    carryWorkdaysEnabled: true,
+    baseMicropoints: [
+      16_000_000, 16_000_000, 16_000_000, 16_000_000, 16_000_000,
+      10_000_000, 10_000_000,
+    ],
+  },
+}));
+
+function ledgerDay(
+  localDate: string,
+  usedMicropoints: number | null,
+  isToday: boolean,
+  status: "unknown" | "normal" | "finalized" = "unknown",
+) {
+  return {
+    localDate,
+    usedMicropoints,
+    policyRevision: 1,
+    policyTimezone: "Asia/Shanghai",
+    baseMicropoints: 16_000_000,
+    carryMicropoints: 0,
+    limitMicropoints: 16_000_000,
+    isToday,
+    finalized: status === "finalized",
+    status,
+  };
+}
+
 vi.mock("./api/build-info", () => ({
   loadBuildInfo: vi.fn().mockResolvedValue({
     productName: "QuotaTide",
@@ -24,6 +56,7 @@ vi.mock("./api/account-settings", () => ({
     configured: true,
     pathSummary: "…/auth.json",
     accountLabel: "账号 • 21B8",
+    quotaPolicy,
   }),
   selectAuthFile: vi.fn(),
 }));
@@ -47,13 +80,13 @@ vi.mock("./api/live-quota", () => ({
       sourceStatus: "fresh",
       publicError: null,
       ledgerDays: [
-        { localDate: "2026-07-24", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
-        { localDate: "2026-07-25", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
-        { localDate: "2026-07-26", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
-        { localDate: "2026-07-27", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
-        { localDate: "2026-07-28", usedMicropoints: 1_000_000, limitMicropoints: null, isToday: true, status: "known" },
-        { localDate: "2026-07-29", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
-        { localDate: "2026-07-30", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+        ledgerDay("2026-07-24", null, false),
+        ledgerDay("2026-07-25", null, false),
+        ledgerDay("2026-07-26", null, false),
+        ledgerDay("2026-07-27", null, false),
+        ledgerDay("2026-07-28", 1_000_000, true, "normal"),
+        ledgerDay("2026-07-29", null, false),
+        ledgerDay("2026-07-30", null, false),
       ],
     },
   }),
@@ -87,6 +120,7 @@ describe("QuotaTide tray app", () => {
       configured: true,
       pathSummary: "…/new-auth.json",
       accountLabel: "账号 • 991A",
+      quotaPolicy,
     });
     render(<App />);
     expect(await screen.findByText(/已用 42%/)).toBeInTheDocument();
@@ -138,6 +172,7 @@ describe("QuotaTide tray app", () => {
         configured: true,
         pathSummary: "…/auth.json",
         accountLabel: "账号 • 21B8",
+        quotaPolicy,
       },
       {
         usedMicropoints: 42_000_000,
@@ -154,13 +189,13 @@ describe("QuotaTide tray app", () => {
         sourceStatus: "stale_after_failure",
         publicError: "timeout",
         ledgerDays: [
-          { localDate: "2026-07-24", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
-          { localDate: "2026-07-25", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
-          { localDate: "2026-07-26", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
-          { localDate: "2026-07-27", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
-          { localDate: "2026-07-28", usedMicropoints: 1_000_000, limitMicropoints: null, isToday: true, status: "known" },
-          { localDate: "2026-07-29", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
-          { localDate: "2026-07-30", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+          ledgerDay("2026-07-24", null, false),
+          ledgerDay("2026-07-25", null, false),
+          ledgerDay("2026-07-26", null, false),
+          ledgerDay("2026-07-27", null, false),
+          ledgerDay("2026-07-28", 1_000_000, true, "normal"),
+          ledgerDay("2026-07-29", null, false),
+          ledgerDay("2026-07-30", null, false),
         ],
       },
       1_785_003_600_000,
@@ -172,8 +207,8 @@ describe("QuotaTide tray app", () => {
       label: "今天",
       date: "07/28",
       used: 1,
-      limit: null,
-      status: "已记录",
+      limit: 16,
+      status: "进行中",
     });
     expect(fixture.sourceHealth).toBe("Codex 额度 · 连续 1 次失败（请求超时）");
     expect(fixture.lastSuccess).toContain("上次成功");

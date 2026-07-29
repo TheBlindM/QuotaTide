@@ -4,6 +4,12 @@ use quotatide_core::{
 };
 use tempfile::tempdir;
 
+fn timestamp_ms(value: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .expect("RFC 3339 timestamp")
+        .timestamp_millis()
+}
+
 fn observation(captured_at_unix_ms: i64, used_micropoints: i64) -> WeeklyUsageObservation {
     observation_with_reset(captured_at_unix_ms, used_micropoints, 1_785_500_000)
 }
@@ -70,7 +76,15 @@ async fn success_commits_observation_and_health_as_one_public_snapshot() {
         quota
             .ledger_days
             .iter()
-            .all(|day| day.limit_micropoints.is_none())
+            .all(|day| matches!(day.limit_micropoints, 10_000_000 | 16_000_000))
+    );
+    assert_eq!(
+        quota
+            .ledger_days
+            .iter()
+            .map(|day| day.base_micropoints)
+            .sum::<u32>(),
+        100_000_000
     );
 }
 
@@ -118,7 +132,7 @@ async fn ledger_survives_restart_and_only_projects_the_current_epoch_dates() {
         before_restart
             .ledger_days
             .iter()
-            .filter(|day| day.status == quotatide_core::LedgerDayStatus::Known)
+            .filter(|day| day.status != quotatide_core::LedgerDayStatus::Unknown)
             .count(),
         1
     );
@@ -158,6 +172,70 @@ async fn ledger_survives_restart_and_only_projects_the_current_epoch_dates() {
     );
 }
 
+#[tokio::test]
+async fn dashboard_projects_confirmed_weekday_carry_from_the_active_policy() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open_with_policy_timezone(
+        directory.path().join("state.sqlite3"),
+        "Asia/Shanghai",
+    )
+    .await
+    .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let account = binding(1, "/chosen/auth.json", "account-one");
+    let reset = chrono::DateTime::parse_from_rfc3339("2026-08-03T00:00:00Z")
+        .expect("reset")
+        .timestamp();
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(timestamp_ms("2026-07-27T01:00:00Z"), 0, reset),
+        )
+        .await
+        .expect("baseline");
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(timestamp_ms("2026-07-27T10:00:00Z"), 6_000_000, reset),
+        )
+        .await
+        .expect("monday usage");
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(timestamp_ms("2026-07-28T04:00:00Z"), 20_000_000, reset),
+        )
+        .await
+        .expect("tuesday usage");
+
+    let quota = store
+        .public_live_quota(timestamp_ms("2026-07-28T04:00:00Z"))
+        .await
+        .expect("projection")
+        .expect("quota");
+    let monday = quota
+        .ledger_days
+        .iter()
+        .find(|day| day.local_date == "2026-07-27")
+        .expect("monday");
+    let tuesday = quota
+        .ledger_days
+        .iter()
+        .find(|day| day.local_date == "2026-07-28")
+        .expect("tuesday");
+
+    assert_eq!(monday.status, quotatide_core::LedgerDayStatus::Finalized);
+    assert_eq!(monday.base_micropoints, 16_000_000);
+    assert_eq!(monday.carry_micropoints, 0);
+    assert_eq!(tuesday.used_micropoints, Some(14_000_000));
+    assert_eq!(tuesday.carry_micropoints, 2_500_000);
+    assert_eq!(tuesday.limit_micropoints, 18_500_000);
+    assert_eq!(tuesday.status, quotatide_core::LedgerDayStatus::Normal);
+}
+
 fn remove_derived_state_after_asserting_atomic_facts(database: &std::path::Path) {
     let connection =
         tokio_rusqlite::rusqlite::Connection::open(database).expect("remove derived state");
@@ -182,7 +260,7 @@ fn remove_derived_state_after_asserting_atomic_facts(database: &std::path::Path)
             },
         )
         .expect("atomic ledger facts");
-    assert_eq!(facts, (3, 2, 2, 1, 1));
+    assert_eq!(facts, (3, 2, 2, 1, 7));
     connection
         .execute_batch(
             "PRAGMA foreign_keys = ON;

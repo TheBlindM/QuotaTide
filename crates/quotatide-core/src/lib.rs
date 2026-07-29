@@ -6,12 +6,14 @@ use ts_rs::TS;
 mod account_settings;
 mod live_quota;
 mod quota_ledger;
+mod quota_policy;
 mod tray_shell;
 
 pub use account_settings::{
     AccountApplication, AccountConfigError, AccountSettingsStore, AuthCandidateValidator,
-    PublicAccountSettings, PublicError, PublicErrorCode, SafeErrorContext, SettingsManager,
-    SettingsStoreError, UsageCommitDisposition, ValidatedAccountCandidate,
+    PublicAccountSettings, PublicError, PublicErrorCode, PublicQuotaPolicy, QuotaPolicyDraft,
+    SafeErrorContext, SettingsManager, SettingsStoreError, UsageCommitDisposition,
+    ValidatedAccountCandidate,
 };
 pub use live_quota::{
     Application, Clock, CurrentUsageAuth, DashboardChanged, LedgerDayStatus, PublicLedgerDay,
@@ -23,6 +25,10 @@ pub use live_quota::{
 pub use quota_ledger::{
     DailyUsageFact, LedgerApplyKind, LedgerError, LedgerProjection, LedgerState, LedgerTransition,
     QuotaLedger,
+};
+pub use quota_policy::{
+    DailyLimitSnapshot, DailyPolicyStatus, PolicyDayFact, PolicyDayProjection, PolicyError,
+    QuotaPolicy, ThresholdTransition,
 };
 pub use tray_shell::{
     PhysicalPoint, PhysicalRect, PhysicalSize, ShellEffect, ShellEvent, TrayShell,

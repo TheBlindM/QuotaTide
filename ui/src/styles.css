@@ -662,6 +662,89 @@ progress::-moz-progress-bar {
   letter-spacing: 0.04em;
 }
 
+.quota-day-grid {
+  display: grid;
+  gap: 7px;
+  margin-top: 13px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.quota-day-grid label {
+  display: grid;
+  gap: 5px;
+}
+
+.quota-day-grid label > span:first-child {
+  padding-left: 2px;
+  color: var(--faint);
+  font-size: 9px;
+}
+
+.quota-input {
+  position: relative;
+  display: block;
+}
+
+.quota-input input {
+  width: 100%;
+  height: 38px;
+  padding: 0 22px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  outline: none;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 30%), transparent),
+    var(--glass-strong);
+  color: var(--ink);
+  font: 680 12px/1 var(--font-sans);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.quota-input input:focus,
+.timezone-field input:focus {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.quota-input small {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  color: var(--faint);
+  font-size: 9px;
+  transform: translateY(-50%);
+}
+
+.quota-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--glass-strong);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.quota-total strong {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.quota-total.is-invalid strong {
+  color: var(--red);
+}
+
+.timezone-field {
+  margin-top: 10px;
+}
+
+.timezone-field input {
+  margin-top: 6px;
+}
+
 .settings-row {
   display: flex;
   min-height: 54px;
@@ -688,10 +771,44 @@ progress::-moz-progress-bar {
   font-size: 10px;
 }
 
-.settings-row input {
+.settings-row input[type="checkbox"] {
+  position: relative;
   width: 38px;
   height: 22px;
-  accent-color: var(--accent);
+  flex: 0 0 auto;
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.settings-row input[type="checkbox"]::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 4px rgb(15 32 24 / 24%);
+  content: "";
+  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.settings-row input[type="checkbox"]:checked {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  background: var(--accent);
+}
+
+.settings-row input[type="checkbox"]:checked::after {
+  transform: translateX(16px);
+}
+
+.settings-row input[type="checkbox"]:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  outline-offset: 2px;
 }
 
 .settings-footer {

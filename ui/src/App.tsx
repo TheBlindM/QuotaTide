@@ -8,6 +8,7 @@ import type { UsageSourceErrorCode } from "./bindings/UsageSourceErrorCode";
 import {
   getAccountSettings,
   selectAuthFile,
+  updateQuotaPolicy,
 } from "./api/account-settings";
 import { loadBuildInfo } from "./api/build-info";
 import { getLiveQuota, onDashboardChanged } from "./api/live-quota";
@@ -47,6 +48,15 @@ export function App() {
             configured: false,
             pathSummary: null,
             accountLabel: null,
+            quotaPolicy: {
+              policyRevision: 1,
+              policyTimezone: "Asia/Shanghai",
+              carryWorkdaysEnabled: true,
+              baseMicropoints: [
+                16_000_000, 16_000_000, 16_000_000, 16_000_000,
+                16_000_000, 10_000_000, 10_000_000,
+              ],
+            },
           },
           liveQuota: null,
           refreshing: false,
@@ -202,6 +212,20 @@ export function App() {
         return accountSettings;
       }}
       onReloadAccount={getAccountSettings}
+      onUpdatePolicy={async (revision, draft) => {
+        const accountSettings = await updateQuotaPolicy(revision, draft);
+        const liveQuotaState = await getLiveQuota();
+        setState((current) =>
+          current.kind === "ready"
+            ? {
+                ...current,
+                accountSettings,
+                liveQuota: liveQuotaState.quota,
+              }
+            : current,
+        );
+        return accountSettings;
+      }}
     />
   );
 }
@@ -238,6 +262,20 @@ export function projectLiveFixture(
   const remaining = formatMicropoints(live.remainingMicropoints);
   const sourceHealth = sourceHealthLabel(live);
   const days = live.ledgerDays.map(projectLedgerDay);
+  const today = live.ledgerDays.find((day) => day.isToday);
+  const todayUsed = today?.usedMicropoints ?? null;
+  const todayAvailable =
+    today === undefined || todayUsed === null
+      ? ""
+      : formatMicropoints(
+          Math.max(today.limitMicropoints - todayUsed, 0),
+        );
+  const todayLimit =
+    today === undefined
+      ? ""
+      : today.carryMicropoints > 0
+        ? `${formatMicropoints(today.limitMicropoints)}（${formatMicropoints(today.baseMicropoints)} + ${formatMicropoints(today.carryMicropoints)} 动态）`
+        : formatMicropoints(today.limitMicropoints);
   return {
     ...base,
     tone: live.sourceStatus === "fresh" ? "fresh" : "stale",
@@ -256,8 +294,8 @@ export function projectLiveFixture(
         : `上次成功 ${formatDateTime(live.lastSuccessAtUnixMs)}`,
     resetAbsolute: resetMs === null ? "" : formatDateTime(resetMs),
     resetRelative: resetMs === null ? "" : formatRelative(resetMs - now),
-    todayAvailable: "",
-    todayLimit: "",
+    todayAvailable,
+    todayLimit,
     radarChance: "",
     days,
   };
@@ -270,8 +308,7 @@ function projectLedgerDay(day: PublicLedgerDay) {
   const naturalDate = new Date(year, month - 1, date);
   const used =
     day.usedMicropoints === null ? null : day.usedMicropoints / 1_000_000;
-  const limit =
-    day.limitMicropoints === null ? null : day.limitMicropoints / 1_000_000;
+  const limit = day.limitMicropoints / 1_000_000;
   return {
     label: day.isToday
       ? "今天"
@@ -282,8 +319,23 @@ function projectLedgerDay(day: PublicLedgerDay) {
     used,
     limit,
     today: day.isToday,
-    status: day.status === "unknown" ? "尚无记录" : "已记录",
+    status: ledgerStatusLabel(day.status),
   };
+}
+
+function ledgerStatusLabel(status: PublicLedgerDay["status"]): string {
+  switch (status) {
+    case "unknown":
+      return "尚无记录";
+    case "normal":
+      return "进行中";
+    case "warning":
+      return "接近上限";
+    case "exceeded":
+      return "已达上限";
+    case "finalized":
+      return "已封存";
+  }
 }
 
 function sourceHealthLabel(live: PublicLiveQuota): string {

@@ -216,7 +216,10 @@ pub struct PublicLiveQuota {
 #[ts(export, export_to = "../../../ui/src/bindings/")]
 pub enum LedgerDayStatus {
     Unknown,
-    Known,
+    Normal,
+    Warning,
+    Exceeded,
+    Finalized,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
@@ -226,8 +229,14 @@ pub struct PublicLedgerDay {
     pub local_date: String,
     #[ts(type = "number | null")]
     pub used_micropoints: Option<i64>,
-    pub limit_micropoints: Option<u32>,
+    #[ts(type = "number")]
+    pub policy_revision: u64,
+    pub policy_timezone: String,
+    pub base_micropoints: u32,
+    pub carry_micropoints: u32,
+    pub limit_micropoints: u32,
     pub is_today: bool,
+    pub finalized: bool,
     pub status: LedgerDayStatus,
 }
 
@@ -443,6 +452,21 @@ where
         path: &std::path::Path,
     ) -> Result<PublicAccountSettings, AccountConfigError<V::Error>> {
         self.account.select_account(expected_revision, path).await
+    }
+
+    /// Validates and activates a complete daily quota policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, conflict, or storage errors.
+    pub async fn update_quota_policy(
+        &self,
+        expected_revision: u32,
+        draft: crate::QuotaPolicyDraft,
+    ) -> Result<PublicAccountSettings, AccountConfigError<V::Error>> {
+        self.account
+            .update_quota_policy(expected_revision, draft)
+            .await
     }
 
     /// Returns the secret-free live quota projection.

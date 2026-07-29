@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 
 import type { PublicAccountSettings } from "./bindings/PublicAccountSettings";
+import type { QuotaPolicyDraft } from "./bindings/QuotaPolicyDraft";
 import { WeeklyLedger, type LedgerFixture } from "./WeeklyLedger";
 
 const unconfiguredAccount: PublicAccountSettings = {
@@ -8,6 +9,15 @@ const unconfiguredAccount: PublicAccountSettings = {
   configured: false,
   pathSummary: null,
   accountLabel: null,
+  quotaPolicy: {
+    policyRevision: 1,
+    policyTimezone: "Asia/Shanghai",
+    carryWorkdaysEnabled: true,
+    baseMicropoints: [
+      16_000_000, 16_000_000, 16_000_000, 16_000_000, 16_000_000,
+      10_000_000, 10_000_000,
+    ],
+  },
 };
 
 type TrayAppProps = {
@@ -20,22 +30,45 @@ type TrayAppProps = {
     expectedSettingsRevision: number,
   ) => Promise<PublicAccountSettings>;
   onReloadAccount?: () => Promise<PublicAccountSettings>;
+  onUpdatePolicy?: (
+    expectedSettingsRevision: number,
+    draft: QuotaPolicyDraft,
+  ) => Promise<PublicAccountSettings>;
 };
 
 function SettingsView({
   accountSettings,
   onBack,
   onSelectAuth,
+  onUpdatePolicy,
 }: {
   accountSettings: PublicAccountSettings;
   onBack: () => void;
   onSelectAuth: () => Promise<void>;
+  onUpdatePolicy: (draft: QuotaPolicyDraft) => Promise<void>;
 }) {
   const [activeTab, setActiveTab] = useState<
     "quota" | "account" | "notifications"
   >("account");
   const [selectingAuth, setSelectingAuth] = useState(false);
   const [authError, setAuthError] = useState(false);
+  const [dailyLimits, setDailyLimits] = useState(() =>
+    accountSettings.quotaPolicy.baseMicropoints.map((value) => value / 1_000_000),
+  );
+  const [policyTimezone, setPolicyTimezone] = useState(
+    accountSettings.quotaPolicy.policyTimezone,
+  );
+  const [carryEnabled, setCarryEnabled] = useState(
+    accountSettings.quotaPolicy.carryWorkdaysEnabled,
+  );
+  const [savingPolicy, setSavingPolicy] = useState(false);
+  const [policyError, setPolicyError] = useState(false);
+  const total = dailyLimits.reduce((sum, value) => sum + value, 0);
+  const policyValid =
+    dailyLimits.length === 7 &&
+    dailyLimits.every((value) => Number.isFinite(value) && value >= 0) &&
+    total <= 100 &&
+    policyTimezone.trim().length > 0;
 
   const handleSelectAuth = () => {
     if (selectingAuth) {
@@ -131,9 +164,101 @@ function SettingsView({
               <h2 id="quota-settings">当前七日策略模板</h2>
             </div>
             <p class="settings-description">
-              工作日未用完的额度会平分到本窗口后续工作日。
+              每日基础额度合计不超过 100%。已确认的工作日余量只会平分给同一自然周后续工作日。
             </p>
-            <strong class="settings-value">16 · 16 · 16 · 16 · 16 · 10 · 10</strong>
+            <div class="quota-day-grid">
+              {["周一", "周二", "周三", "周四", "周五", "周六", "周日"].map(
+                (label, index) => (
+                  <label key={label}>
+                    <span>{label}</span>
+                    <span class="quota-input">
+                      <input
+                        aria-label={`${label}额度`}
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.5"
+                        value={dailyLimits[index]}
+                        onInput={(event) => {
+                          const next = [...dailyLimits];
+                          next[index] = event.currentTarget.valueAsNumber;
+                          setDailyLimits(next);
+                          setPolicyError(false);
+                        }}
+                      />
+                      <small>%</small>
+                    </span>
+                  </label>
+                ),
+              )}
+            </div>
+            <div class={`quota-total${policyValid ? "" : " is-invalid"}`}>
+              <span>基础额度合计</span>
+              <strong>{Number.isFinite(total) ? total.toFixed(1) : "—"}%</strong>
+            </div>
+            <label class="settings-row">
+              <span>
+                <strong>工作日动态结转</strong>
+                <small>未知或超额日期不会产生新结转</small>
+              </span>
+              <input
+                aria-label="工作日动态结转"
+                type="checkbox"
+                checked={carryEnabled}
+                onChange={(event) => {
+                  setCarryEnabled(event.currentTarget.checked);
+                }}
+              />
+            </label>
+            <label class="timezone-field">
+              <span>自然日时区</span>
+              <input
+                type="text"
+                aria-label="自然日时区"
+                value={policyTimezone}
+                spellcheck={false}
+                onInput={(event) => {
+                  setPolicyTimezone(event.currentTarget.value);
+                  setPolicyError(false);
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              class="primary-action"
+              disabled={!policyValid || savingPolicy}
+              onClick={() => {
+                if (!policyValid || savingPolicy) {
+                  return;
+                }
+                setSavingPolicy(true);
+                setPolicyError(false);
+                void onUpdatePolicy({
+                  policyTimezone: policyTimezone.trim(),
+                  carryWorkdaysEnabled: carryEnabled,
+                  baseMicropoints: dailyLimits.map((value) =>
+                    Math.round(value * 1_000_000),
+                  ),
+                })
+                  .catch(() => {
+                    setPolicyError(true);
+                  })
+                  .finally(() => {
+                    setSavingPolicy(false);
+                  });
+              }}
+            >
+              {savingPolicy ? "正在保存…" : "保存额度策略"}
+            </button>
+            {!policyValid ? (
+              <p class="settings-error" role="alert">
+                请填写 7 天非负额度，基础额度合计不能超过 100%。
+              </p>
+            ) : policyError ? (
+              <p class="settings-error" role="alert">
+                策略未保存，请检查时区或重新载入后再试。
+              </p>
+            ) : null}
           </section>
         ) : (
           <section aria-labelledby="notification-settings">
@@ -170,6 +295,7 @@ export function TrayApp({
   onRefresh,
   onSelectAuth,
   onReloadAccount,
+  onUpdatePolicy,
 }: TrayAppProps) {
   const [view, setView] = useState<"ledger" | "settings">("ledger");
   const [currentAccount, setCurrentAccount] = useState(accountSettings);
@@ -279,6 +405,21 @@ export function TrayApp({
               }
               throw error;
             }
+          }
+        }}
+        onUpdatePolicy={async (draft) => {
+          if (!onUpdatePolicy) {
+            return;
+          }
+          try {
+            setCurrentAccount(
+              await onUpdatePolicy(currentAccount.settingsRevision, draft),
+            );
+          } catch (error) {
+            if (isSettingsConflict(error) && onReloadAccount) {
+              setCurrentAccount(await onReloadAccount());
+            }
+            throw error;
           }
         }}
       />

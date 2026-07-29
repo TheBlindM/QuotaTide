@@ -1,13 +1,29 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/preact";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TrayApp } from "./TrayApp";
 import { ledgerFixtures } from "./WeeklyLedger";
 
 afterEach(cleanup);
+
+const quotaPolicy = {
+  policyRevision: 1,
+  policyTimezone: "Asia/Shanghai",
+  carryWorkdaysEnabled: true,
+  baseMicropoints: [
+    16_000_000, 16_000_000, 16_000_000, 16_000_000, 16_000_000,
+    10_000_000, 10_000_000,
+  ],
+};
 
 describe("tray-window navigation", () => {
   it("opens settings and returns to the weekly ledger", () => {
@@ -44,6 +60,7 @@ describe("tray-window navigation", () => {
       configured: true,
       pathSummary: "…/auth.json",
       accountLabel: "账号 • 9A2F",
+      quotaPolicy,
     });
     render(
       <TrayApp
@@ -53,6 +70,7 @@ describe("tray-window navigation", () => {
           configured: false,
           pathSummary: null,
           accountLabel: null,
+          quotaPolicy,
         }}
         onHide={vi.fn()}
         onRefresh={vi.fn()}
@@ -87,6 +105,7 @@ describe("tray-window navigation", () => {
           configured: true,
           pathSummary: "…/auth.json",
           accountLabel: "账号 • 21B8",
+          quotaPolicy,
         }}
         onHide={vi.fn()}
         onRefresh={vi.fn()}
@@ -120,12 +139,14 @@ describe("tray-window navigation", () => {
         configured: true,
         pathSummary: "…/auth.json",
         accountLabel: "账号 • 66AA",
+        quotaPolicy,
       });
     const onReloadAccount = vi.fn().mockResolvedValue({
       settingsRevision: 5,
       configured: true,
       pathSummary: "…/auth.json",
       accountLabel: "账号 • 55AA",
+      quotaPolicy,
     });
     render(
       <TrayApp
@@ -135,6 +156,7 @@ describe("tray-window navigation", () => {
           configured: true,
           pathSummary: "…/auth.json",
           accountLabel: "账号 • 44AA",
+          quotaPolicy,
         }}
         onHide={vi.fn()}
         onRefresh={vi.fn()}
@@ -175,6 +197,64 @@ describe("tray-window navigation", () => {
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onHide).toHaveBeenCalledOnce();
+  });
+
+  it("validates and saves a complete seven-day quota policy", async () => {
+    const onUpdatePolicy = vi.fn().mockResolvedValue({
+      settingsRevision: 1,
+      configured: false,
+      pathSummary: null,
+      accountLabel: null,
+      quotaPolicy: {
+        ...quotaPolicy,
+        policyRevision: 2,
+        baseMicropoints: [
+          15_000_000, 16_000_000, 16_000_000, 16_000_000, 16_000_000,
+          10_000_000, 10_000_000,
+        ],
+      },
+    });
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        accountSettings={{
+          settingsRevision: 0,
+          configured: false,
+          pathSummary: null,
+          accountLabel: null,
+          quotaPolicy,
+        }}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+        onUpdatePolicy={onUpdatePolicy}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "额度" }));
+    fireEvent.input(screen.getByLabelText("周一额度"), {
+      target: { value: "20" },
+    });
+    expect(
+      screen.getByRole("button", { name: "保存额度策略" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("不能超过 100%");
+
+    fireEvent.input(screen.getByLabelText("周一额度"), {
+      target: { value: "15" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存额度策略" }));
+
+    await waitFor(() => {
+      expect(onUpdatePolicy).toHaveBeenCalledWith(0, {
+        policyTimezone: "Asia/Shanghai",
+        carryWorkdaysEnabled: true,
+        baseMicropoints: [
+          15_000_000, 16_000_000, 16_000_000, 16_000_000, 16_000_000,
+          10_000_000, 10_000_000,
+        ],
+      });
+    });
   });
 
   it("keeps data visible and coalesces refreshes while one is running", () => {
