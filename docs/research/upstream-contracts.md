@@ -162,6 +162,8 @@ v1 只关心当前账号的基准七日窗口：
 - `used_percent` 必须是有限数值且在 `0..=100`。
 - `reset_at` 必须是有效 Unix 秒，`limit_window_seconds` 必须为正。
 - `reset_after_seconds` 只作诊断交叉检查；UI 和 epoch 以绝对 `reset_at` 为准，避免本地处理耗时造成漂移。
+- `captured_at` 取完整响应读取结束的时间；请求可能跨过 reset，不能用发送前
+  时间判断返回的新窗口。
 - `allowed`、`plan_type` 可以缺失或新增枚举值；它们不能阻止合法周窗口被采集。
 - 未识别字段全部忽略，以容忍向前扩展。
 
@@ -206,7 +208,10 @@ struct WeeklyUsageSnapshot {
 epoch，也不降低 high-water。下一笔同账号严格周窗口观测必须继续明显低于
 旧 high-water，且 `reset_at` 与 candidate 保持一致，才能排除单一异常样本。
 
-如果 `reset_at` 在旧边界到来前发生变化，但用量没有下降，只更新计划重置时间；这是 schedule correction，不创建 epoch，也不通知重置。
+如果 `reset_at` 在旧边界到来前发生变化，但用量没有下降，这是 schedule
+correction，不创建 epoch，也不通知重置。一小时内的漂移直接修正计划时间；
+更大的变化需要连续两笔边界一致的严格周窗口观测才确认，摘要和七日投影在
+确认前继续共同使用旧边界，避免单一异常污染当前窗口。
 
 ### 确认新 epoch
 
@@ -217,10 +222,16 @@ epoch，也不降低 high-water。下一笔同账号严格周窗口观测必须�
 2. 已跨过旧 `resets_at`，且新快照的 `resets_at` 明显推进到下一窗口。
 
 新 epoch 的首笔每日增量为当前 `used_percent`，因为它代表重置后到本次采集之间已经发生的用量。该转换才可发送“当前账号额度已重置”通知。
+确认新 epoch 时清除前一 epoch 的其他自然日投影，只保留确认日已经发生的
+重置前事实，再叠加重置后的首笔增量。
 
 账号变化、窗口结构变化、适配器升级或本地状态丢失只建立新的 baseline，不算已确认重置。
 
 比最后接受快照更早或相同 `captured_at` 的响应被丢弃，防止慢请求回写旧状态。
+
+迁移旧 v2/v3 数据时，历史 adapter 曾接受但不满足新严格时间窗关系的
+observation 仍以不可变、已关联的隔离事实保留，但不参与当前账本重放；它们
+不能阻断数据库启动，也不能覆盖最新合格观测。
 
 ## Codex Resets `watch` 契约
 

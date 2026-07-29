@@ -504,7 +504,15 @@ fn migrate_immutable_iana_v4(
         database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     transaction.execute_batch(
         "ALTER TABLE app_settings
-           ADD COLUMN policy_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai';",
+           ADD COLUMN policy_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai';
+         ALTER TABLE usage_observations
+           ADD COLUMN ledger_eligible INTEGER NOT NULL DEFAULT 1
+             CHECK (ledger_eligible IN (0, 1));
+         UPDATE usage_observations
+           SET ledger_eligible = CASE
+             WHEN captured_at_ms >= (resets_at_s - 604800) * 1000
+              AND captured_at_ms < resets_at_s * 1000
+             THEN 1 ELSE 0 END;",
     )?;
     transaction.execute(
         "UPDATE app_settings SET policy_timezone = ?1 WHERE singleton_id = 1",
@@ -520,10 +528,31 @@ fn migrate_immutable_iana_v4(
     )?;
     backfill_usage_observation_epochs(&transaction, policy_timezone)?;
     transaction.execute_batch(
+        "INSERT INTO quota_epochs
+           (account_stream_id, sequence, baseline_micropoints,
+            high_water_micropoints, first_observed_at_ms,
+            latest_observed_at_ms, scheduled_reset_at_s, closed_at_ms)
+         SELECT account_stream_id, 9223372036854775807,
+                MIN(used_micropoints), MAX(used_micropoints),
+                MIN(captured_at_ms), MAX(captured_at_ms),
+                MAX(resets_at_s), MAX(captured_at_ms)
+         FROM usage_observations
+         WHERE ledger_eligible = 0
+         GROUP BY account_stream_id;
+         UPDATE usage_observations
+           SET quota_epoch_id = (
+             SELECT epoch.id FROM quota_epochs epoch
+             WHERE epoch.account_stream_id = usage_observations.account_stream_id
+               AND epoch.sequence = 9223372036854775807
+           )
+         WHERE ledger_eligible = 0;",
+    )?;
+    transaction.execute_batch(
         "CREATE TABLE usage_observations_v4 (
            id INTEGER PRIMARY KEY,
            account_stream_id INTEGER NOT NULL REFERENCES account_streams(id),
            quota_epoch_id INTEGER NOT NULL REFERENCES quota_epochs(id),
+           ledger_eligible INTEGER NOT NULL CHECK (ledger_eligible IN (0, 1)),
            captured_at_ms INTEGER NOT NULL,
            used_micropoints INTEGER NOT NULL
              CHECK (used_micropoints BETWEEN 0 AND 100000000),
@@ -534,9 +563,9 @@ fn migrate_immutable_iana_v4(
            UNIQUE(account_stream_id, captured_at_ms)
          );
          INSERT INTO usage_observations_v4
-           (id, account_stream_id, quota_epoch_id, captured_at_ms,
+           (id, account_stream_id, quota_epoch_id, ledger_eligible, captured_at_ms,
             used_micropoints, window_seconds, resets_at_s, plan_type, allowed)
-           SELECT id, account_stream_id, quota_epoch_id, captured_at_ms,
+           SELECT id, account_stream_id, quota_epoch_id, ledger_eligible, captured_at_ms,
                   used_micropoints, window_seconds, resets_at_s, plan_type, allowed
            FROM usage_observations;
          DROP TABLE usage_observations;
@@ -1046,9 +1075,9 @@ fn persist_success_observation(
     )?;
     transaction.execute(
         "INSERT INTO usage_observations
-         (account_stream_id, captured_at_ms, used_micropoints,
-          window_seconds, resets_at_s, plan_type, allowed, quota_epoch_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+         (account_stream_id, quota_epoch_id, ledger_eligible, captured_at_ms,
+          used_micropoints, window_seconds, resets_at_s, plan_type, allowed)
+         VALUES (?1, ?8, 1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![
             stream_id,
             observation.captured_at_unix_ms,
@@ -1143,7 +1172,8 @@ fn query_live_quota_row(
     transaction
         .query_row(
             "SELECT s.configured_account_stream_id, s.policy_timezone,
-                    o.used_micropoints, o.captured_at_ms, o.resets_at_s,
+                    o.used_micropoints, o.captured_at_ms,
+                    COALESCE(e.scheduled_reset_at_s, o.resets_at_s),
                     o.plan_type, o.allowed, h.last_attempt_at_ms,
                     h.last_success_at_ms, h.consecutive_failures, h.public_error
              FROM app_settings s
@@ -1153,8 +1183,12 @@ fn query_live_quota_row(
                ON o.id = (
                  SELECT latest.id FROM usage_observations latest
                  WHERE latest.account_stream_id = s.configured_account_stream_id
+                   AND latest.ledger_eligible = 1
                  ORDER BY latest.captured_at_ms DESC LIMIT 1
                )
+             LEFT JOIN quota_epochs e
+               ON e.account_stream_id = s.configured_account_stream_id
+              AND e.closed_at_ms IS NULL
              WHERE s.singleton_id = 1
              LIMIT 1",
             [],
@@ -1271,7 +1305,9 @@ fn backfill_usage_observation_epochs(
     let stream_ids = {
         let mut statement = transaction.prepare(
             "SELECT DISTINCT account_stream_id
-             FROM usage_observations ORDER BY account_stream_id",
+             FROM usage_observations
+             WHERE ledger_eligible = 1
+             ORDER BY account_stream_id",
         )?;
         statement
             .query_map([], |row| row.get(0))?
@@ -1294,6 +1330,7 @@ fn backfill_stream_observations(
                     resets_at_s, plan_type, allowed
              FROM usage_observations
              WHERE account_stream_id = ?1
+               AND ledger_eligible = 1
              ORDER BY captured_at_ms, id",
         )?;
         statement
@@ -1367,6 +1404,7 @@ fn load_ledger_state(
                 plan_type, allowed
          FROM usage_observations
          WHERE account_stream_id = ?1
+           AND ledger_eligible = 1
          ORDER BY captured_at_ms, id",
     )?;
     let observations = statement

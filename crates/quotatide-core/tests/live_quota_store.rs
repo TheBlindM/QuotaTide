@@ -367,6 +367,55 @@ async fn production_ledger_uses_the_persisted_iana_policy_timezone() {
 }
 
 #[tokio::test]
+async fn public_reset_and_ledger_share_the_confirmed_schedule_boundary() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let account = binding(1, "/chosen/auth.json", "account-one");
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(1_700_000_000_000, 42_000_000, 1_700_604_800),
+        )
+        .await
+        .expect("baseline");
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(1_700_007_200_000, 42_500_000, 1_700_612_000),
+        )
+        .await
+        .expect("schedule candidate");
+    let candidate = store
+        .public_live_quota(1_700_007_200_000)
+        .await
+        .expect("candidate projection")
+        .expect("candidate quota");
+    assert_eq!(candidate.resets_at_unix_s, Some(1_700_604_800));
+
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(1_700_010_800_000, 43_000_000, 1_700_612_020),
+        )
+        .await
+        .expect("confirmed schedule");
+    let confirmed = store
+        .public_live_quota(1_700_010_800_000)
+        .await
+        .expect("confirmed projection")
+        .expect("confirmed quota");
+    assert_eq!(confirmed.resets_at_unix_s, Some(1_700_612_020));
+    assert_eq!(confirmed.window_starts_at_unix_s, Some(1_700_007_220));
+    assert_eq!(confirmed.ledger_days.len(), 7);
+}
+
+#[tokio::test]
 async fn failures_keep_last_known_good_and_mark_it_stale() {
     let directory = tempdir().expect("temporary directory");
     let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))

@@ -18,6 +18,7 @@ pub struct QuotaLedger;
 pub struct LedgerState {
     active_epoch: Option<QuotaEpoch>,
     reset_candidate: Option<ResetCandidate>,
+    schedule_candidate: Option<ScheduleCandidate>,
     daily_used_micropoints: BTreeMap<NaiveDate, i64>,
     next_epoch_sequence: u64,
 }
@@ -44,6 +45,11 @@ struct QuotaEpoch {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResetCandidate {
+    resets_at_unix_s: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScheduleCandidate {
     resets_at_unix_s: i64,
 }
 
@@ -178,10 +184,23 @@ impl QuotaLedger {
                     .unsigned_abs()
                     <= MAX_SCHEDULE_CORRECTION_SECONDS
         });
+        let schedule_candidate_confirmed =
+            state.schedule_candidate.as_ref().is_some_and(|candidate| {
+                !materially_below_high_water
+                    && observation
+                        .resets_at_unix_s
+                        .saturating_sub(candidate.resets_at_unix_s)
+                        .unsigned_abs()
+                        <= MAX_SCHEDULE_CORRECTION_SECONDS
+            });
         let confirmed_reset =
             (crossed_old_boundary && reset_advanced_one_window) || candidate_confirmed;
 
         let (kind, added) = if confirmed_reset {
+            let reset_local_date = captured.with_timezone(&policy_timezone).date_naive();
+            state
+                .daily_used_micropoints
+                .retain(|date, _| *date == reset_local_date);
             state.next_epoch_sequence = state.next_epoch_sequence.saturating_add(1);
             state.active_epoch = Some(QuotaEpoch {
                 sequence: state.next_epoch_sequence,
@@ -192,24 +211,18 @@ impl QuotaLedger {
                 scheduled_reset_at_unix_s: observation.resets_at_unix_s,
             });
             state.reset_candidate = None;
+            state.schedule_candidate = None;
             (LedgerApplyKind::ConfirmedReset, used)
         } else {
-            let added = used.saturating_sub(high_water).max(0);
-            epoch.high_water = QuotaUnits::from_micropoints(high_water.max(used))
-                .ok_or(LedgerError::InvalidWindow)?;
-            epoch.latest_observed_at_unix_ms = observation.captured_at_unix_ms;
-            let schedule_correction = observation
-                .resets_at_unix_s
-                .saturating_sub(epoch.scheduled_reset_at_unix_s)
-                .unsigned_abs();
-            if !materially_below_high_water
-                && schedule_correction <= MAX_SCHEDULE_CORRECTION_SECONDS
-            {
-                epoch.scheduled_reset_at_unix_s = observation.resets_at_unix_s;
-            }
-            state.reset_candidate = materially_below_high_water.then_some(ResetCandidate {
-                resets_at_unix_s: observation.resets_at_unix_s,
-            });
+            let added = apply_same_epoch_observation(
+                epoch,
+                &mut state.reset_candidate,
+                &mut state.schedule_candidate,
+                observation,
+                high_water,
+                materially_below_high_water,
+                schedule_candidate_confirmed,
+            )?;
             (LedgerApplyKind::SameEpoch, added)
         };
 
@@ -266,6 +279,42 @@ impl QuotaLedger {
             days,
         }))
     }
+}
+
+fn apply_same_epoch_observation(
+    epoch: &mut QuotaEpoch,
+    reset_candidate: &mut Option<ResetCandidate>,
+    schedule_candidate: &mut Option<ScheduleCandidate>,
+    observation: &WeeklyUsageObservation,
+    high_water: i64,
+    materially_below_high_water: bool,
+    schedule_candidate_confirmed: bool,
+) -> Result<i64, LedgerError> {
+    let used = observation.used.micropoints();
+    let added = used.saturating_sub(high_water).max(0);
+    epoch.high_water =
+        QuotaUnits::from_micropoints(high_water.max(used)).ok_or(LedgerError::InvalidWindow)?;
+    epoch.latest_observed_at_unix_ms = observation.captured_at_unix_ms;
+    let schedule_correction = observation
+        .resets_at_unix_s
+        .saturating_sub(epoch.scheduled_reset_at_unix_s)
+        .unsigned_abs();
+    if !materially_below_high_water
+        && (schedule_correction <= MAX_SCHEDULE_CORRECTION_SECONDS || schedule_candidate_confirmed)
+    {
+        epoch.scheduled_reset_at_unix_s = observation.resets_at_unix_s;
+        *schedule_candidate = None;
+    } else if materially_below_high_water {
+        *schedule_candidate = None;
+    } else {
+        *schedule_candidate = Some(ScheduleCandidate {
+            resets_at_unix_s: observation.resets_at_unix_s,
+        });
+    }
+    *reset_candidate = materially_below_high_water.then_some(ResetCandidate {
+        resets_at_unix_s: observation.resets_at_unix_s,
+    });
+    Ok(added)
 }
 
 fn validate_observation(
@@ -409,6 +458,35 @@ mod tests {
     }
 
     #[test]
+    fn a_large_schedule_correction_requires_two_coherent_samples() {
+        let baseline = apply_default(42_000_000);
+        let candidate = QuotaLedger::apply(
+            baseline.state,
+            &observation(1_700_007_200_000, 42_500_000, 1_700_612_000),
+            Shanghai,
+        )
+        .expect("schedule candidate");
+        assert_eq!(
+            QuotaLedger::persisted_epoch(&candidate.state)
+                .expect("candidate epoch")
+                .scheduled_reset_at_unix_s,
+            1_700_604_800
+        );
+
+        let confirmed = QuotaLedger::apply(
+            candidate.state,
+            &observation(1_700_010_800_000, 43_000_000, 1_700_612_020),
+            Shanghai,
+        )
+        .expect("confirmed schedule correction");
+        let epoch = QuotaLedger::persisted_epoch(&confirmed.state).expect("confirmed epoch");
+
+        assert_eq!(confirmed.kind, LedgerApplyKind::SameEpoch);
+        assert_eq!(epoch.sequence, 1);
+        assert_eq!(epoch.scheduled_reset_at_unix_s, 1_700_612_020);
+    }
+
+    #[test]
     fn one_large_used_regression_does_not_establish_a_new_epoch() {
         let baseline = apply_default(42_000_000);
         let anomaly = QuotaLedger::apply(
@@ -440,6 +518,39 @@ mod tests {
 
         assert_eq!(confirmed.kind, LedgerApplyKind::ConfirmedReset);
         assert_eq!(confirmed.added_micropoints, 2_500_000);
+    }
+
+    #[test]
+    fn an_early_reset_drops_prior_epoch_days_but_keeps_the_reset_day() {
+        let baseline = apply_default(42_000_000);
+        let prior_day = QuotaLedger::apply(
+            baseline.state,
+            &observation(1_700_003_600_000, 43_000_000, 1_700_604_800),
+            Shanghai,
+        )
+        .expect("prior-day increase");
+        let candidate = QuotaLedger::apply(
+            prior_day.state,
+            &observation(1_700_090_000_000, 2_000_000, 1_700_604_900),
+            Shanghai,
+        )
+        .expect("early reset candidate");
+        let confirmed = QuotaLedger::apply(
+            candidate.state,
+            &observation(1_700_093_600_000, 2_500_000, 1_700_604_920),
+            Shanghai,
+        )
+        .expect("confirmed early reset");
+        let total: i64 = QuotaLedger::project(&confirmed.state, Shanghai)
+            .expect("projection")
+            .expect("epoch")
+            .days
+            .iter()
+            .filter_map(|day| day.used_micropoints)
+            .sum();
+
+        assert_eq!(confirmed.kind, LedgerApplyKind::ConfirmedReset);
+        assert_eq!(total, 2_500_000);
     }
 
     #[test]

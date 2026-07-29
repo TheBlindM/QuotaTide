@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt as _;
 use quotatide_core::{
@@ -198,7 +198,14 @@ impl CodexUsageClient {
             }
             bytes.extend_from_slice(&chunk);
         }
-        normalize_usage(&bytes, captured_at_unix_ms)
+        let response_completed_at_unix_ms = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|source| failure(UsageSourceErrorCode::UpstreamUnavailable, source))?
+                .as_millis(),
+        )
+        .map_err(|source| failure(UsageSourceErrorCode::UpstreamUnavailable, source))?;
+        normalize_completed_usage(&bytes, captured_at_unix_ms, response_completed_at_unix_ms)
     }
 }
 
@@ -221,6 +228,17 @@ struct UsageWindow {
     limit_window_seconds: Option<u32>,
     reset_after_seconds: Option<i64>,
     reset_at: Option<i64>,
+}
+
+fn normalize_completed_usage(
+    bytes: &[u8],
+    _request_started_at_unix_ms: i64,
+    response_completed_at_unix_ms: i64,
+) -> Result<WeeklyUsageObservation, CodexUsageError> {
+    // A request can cross the reset boundary. The returned snapshot belongs to
+    // the response-completion instant, not the instant before the request was
+    // sent.
+    normalize_usage(bytes, response_completed_at_unix_ms)
 }
 
 pub(crate) fn normalize_usage(
@@ -320,7 +338,7 @@ fn failure(
 mod tests {
     use secrecy::SecretString;
 
-    use super::{CodexUsageClient, normalize_usage};
+    use super::{CodexUsageClient, normalize_completed_usage, normalize_usage};
     use quotatide_core::UsageSourceErrorCode;
 
     const VALID: &str = r#"{
@@ -425,5 +443,15 @@ mod tests {
         let error = normalize_usage(VALID.as_bytes(), 1_780_695_199_999)
             .expect_err("capture precedes window");
         assert_eq!(error.code(), UsageSourceErrorCode::ContractViolation);
+    }
+
+    #[test]
+    fn a_request_crossing_reset_uses_response_completion_time() {
+        let observation =
+            normalize_completed_usage(VALID.as_bytes(), 1_780_695_199_999, 1_780_695_200_000)
+                .expect("new window response");
+
+        assert_eq!(observation.captured_at_unix_ms, 1_780_695_200_000);
+        assert_eq!(observation.resets_at_unix_s, 1_781_300_000);
     }
 }

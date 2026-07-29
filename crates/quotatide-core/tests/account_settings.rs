@@ -240,6 +240,46 @@ async fn populated_version_two_observations_are_backfilled_and_made_immutable() 
 }
 
 #[tokio::test]
+async fn legacy_observation_outside_the_new_strict_window_is_quarantined() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    seed_version_two_database_with_observations(&database);
+    {
+        let connection = rusqlite::Connection::open(&database).expect("extend legacy database");
+        connection
+            .execute(
+                "INSERT INTO usage_observations VALUES
+                 (3, 1, 1785007200000, 42000000, 604800, 1788000000, 'plus', 1)",
+                [],
+            )
+            .expect("legacy-valid observation");
+    }
+
+    let store = AccountSettingsStore::open_with_policy_timezone(&database, "Asia/Shanghai")
+        .await
+        .expect("migrate legacy observation");
+    let quota = store
+        .public_live_quota(1_785_007_200_000)
+        .await
+        .expect("public quota")
+        .expect("eligible quota");
+    assert_eq!(quota.used_micropoints, Some(41_000_000));
+    drop(store);
+
+    let connection = rusqlite::Connection::open(database).expect("inspect migrated database");
+    let facts: (i64, i64, i64) = connection
+        .query_row(
+            "SELECT COUNT(*), SUM(ledger_eligible),
+                    SUM(quota_epoch_id IS NOT NULL)
+             FROM usage_observations",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("quarantine facts");
+    assert_eq!(facts, (3, 2, 3));
+}
+
+#[tokio::test]
 async fn populated_version_three_is_upgraded_without_rewriting_its_checksum() {
     let directory = tempdir().expect("temporary directory");
     let database = directory.path().join("state.sqlite3");
