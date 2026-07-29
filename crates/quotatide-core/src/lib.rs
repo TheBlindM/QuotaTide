@@ -5,6 +5,7 @@ use ts_rs::TS;
 
 mod account_settings;
 mod live_quota;
+mod quota_ledger;
 mod tray_shell;
 
 pub use account_settings::{
@@ -13,10 +14,15 @@ pub use account_settings::{
     SettingsStoreError, UsageCommitDisposition, ValidatedAccountCandidate,
 };
 pub use live_quota::{
-    Application, Clock, CurrentUsageAuth, DashboardChanged, PublicLiveQuota, PublicLiveQuotaState,
-    QuotaUnits, RefreshAccountBinding, RefreshCoordinator, RefreshCoordinatorError, RefreshOutcome,
-    RefreshReceipt, RefreshTrigger, SourceStatus, UsageAuthReadFailure, UsageRefreshAttempt,
-    UsageRefreshSource, UsageSourceError, UsageSourceErrorCode, WeeklyUsageObservation,
+    Application, Clock, CurrentUsageAuth, DashboardChanged, LedgerDayStatus, PublicLedgerDay,
+    PublicLiveQuota, PublicLiveQuotaState, QuotaUnits, RefreshAccountBinding, RefreshCoordinator,
+    RefreshCoordinatorError, RefreshOutcome, RefreshReceipt, RefreshTrigger, SourceStatus,
+    UsageAuthReadFailure, UsageRefreshAttempt, UsageRefreshSource, UsageSourceError,
+    UsageSourceErrorCode, WeeklyUsageObservation,
+};
+pub use quota_ledger::{
+    DailyUsageFact, LedgerApplyKind, LedgerError, LedgerProjection, LedgerState, LedgerTransition,
+    QuotaLedger,
 };
 pub use tray_shell::{
     PhysicalPoint, PhysicalRect, PhysicalSize, ShellEffect, ShellEvent, TrayShell,

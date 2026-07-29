@@ -46,6 +46,15 @@ vi.mock("./api/live-quota", () => ({
       consecutiveFailures: 0,
       sourceStatus: "fresh",
       publicError: null,
+      ledgerDays: [
+        { localDate: "2026-07-24", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+        { localDate: "2026-07-25", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+        { localDate: "2026-07-26", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+        { localDate: "2026-07-27", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+        { localDate: "2026-07-28", usedMicropoints: 1_000_000, limitMicropoints: null, isToday: true, status: "known" },
+        { localDate: "2026-07-29", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+        { localDate: "2026-07-30", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+      ],
     },
   }),
   onDashboardChanged: vi.fn().mockResolvedValue(vi.fn()),
@@ -144,11 +153,28 @@ describe("QuotaTide tray app", () => {
         consecutiveFailures: 1,
         sourceStatus: "stale_after_failure",
         publicError: "timeout",
+        ledgerDays: [
+          { localDate: "2026-07-24", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+          { localDate: "2026-07-25", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+          { localDate: "2026-07-26", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+          { localDate: "2026-07-27", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+          { localDate: "2026-07-28", usedMicropoints: 1_000_000, limitMicropoints: null, isToday: true, status: "known" },
+          { localDate: "2026-07-29", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+          { localDate: "2026-07-30", usedMicropoints: null, limitMicropoints: null, isToday: false, status: "unknown" },
+        ],
       },
       1_785_003_600_000,
     );
 
     expect(fixture.weeklyUsed).toBe("42%");
+    expect(fixture.days).toHaveLength(7);
+    expect(fixture.days[4]).toMatchObject({
+      label: "今天",
+      date: "07/28",
+      used: 1,
+      limit: null,
+      status: "已记录",
+    });
     expect(fixture.sourceHealth).toBe("Codex 额度 · 连续 1 次失败（请求超时）");
     expect(fixture.lastSuccess).toContain("上次成功");
   });

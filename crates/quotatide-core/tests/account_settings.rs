@@ -106,7 +106,7 @@ async fn newer_schema_is_rejected_without_downgrade() {
         let connection =
             tokio_rusqlite::rusqlite::Connection::open(&database).expect("seed database");
         connection
-            .pragma_update(None, "user_version", 3)
+            .pragma_update(None, "user_version", 4)
             .expect("seed newer schema");
     }
     let before = std::fs::read(&database).expect("snapshot newer database");
@@ -126,11 +126,11 @@ async fn newer_schema_is_rejected_without_downgrade() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read schema version");
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
 }
 
 #[tokio::test]
-async fn version_one_settings_are_preserved_while_live_quota_tables_are_added() {
+async fn version_one_settings_are_preserved_while_live_quota_and_ledger_tables_are_added() {
     let directory = tempdir().expect("temporary directory");
     let database = directory.path().join("state.sqlite3");
     seed_version_one_database(&database);
@@ -165,9 +165,24 @@ async fn version_one_settings_are_preserved_while_live_quota_tables_are_added() 
             |row| row.get(0),
         )
         .expect("live quota table");
+    let ledger_table: String = connection
+        .query_row(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name = 'daily_ledgers'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("daily ledger table");
+    let migration_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
+        .expect("migration count");
 
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
+    assert_eq!(migration_count, 3);
     assert_eq!(quota_table, "usage_observations");
+    assert_eq!(ledger_table, "daily_ledgers");
 }
 
 fn seed_version_one_database(path: &std::path::Path) {

@@ -5,11 +5,19 @@ use quotatide_core::{
 use tempfile::tempdir;
 
 fn observation(captured_at_unix_ms: i64, used_micropoints: i64) -> WeeklyUsageObservation {
+    observation_with_reset(captured_at_unix_ms, used_micropoints, 1_785_500_000)
+}
+
+fn observation_with_reset(
+    captured_at_unix_ms: i64,
+    used_micropoints: i64,
+    resets_at_unix_s: i64,
+) -> WeeklyUsageObservation {
     WeeklyUsageObservation {
         captured_at_unix_ms,
         used: QuotaUnits::from_micropoints(used_micropoints).expect("valid quota"),
         window_seconds: 604_800,
-        resets_at_unix_s: 1_786_000_000,
+        resets_at_unix_s,
         plan_type: Some("plus".to_owned()),
         allowed: Some(true),
     }
@@ -48,9 +56,189 @@ async fn success_commits_observation_and_health_as_one_public_snapshot() {
     assert_eq!(quota.last_success_at_unix_ms, Some(1_785_000_000_000));
     assert_eq!(quota.consecutive_failures, 0);
     assert_eq!(quota.source_status, SourceStatus::Fresh);
-    assert_eq!(quota.window_starts_at_unix_s, Some(1_785_395_200));
-    assert_eq!(quota.window_ends_at_unix_s, Some(1_785_999_999));
+    assert_eq!(quota.window_starts_at_unix_s, Some(1_784_895_200));
+    assert_eq!(quota.window_ends_at_unix_s, Some(1_785_499_999));
     assert_eq!(quota.public_error, None);
+    assert_eq!(quota.ledger_days.len(), 7);
+    assert!(
+        quota
+            .ledger_days
+            .iter()
+            .all(|day| day.used_micropoints.is_none())
+    );
+    assert!(
+        quota
+            .ledger_days
+            .iter()
+            .all(|day| day.limit_micropoints.is_none())
+    );
+}
+
+#[tokio::test]
+async fn ledger_survives_restart_and_only_projects_the_current_epoch_dates() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    store
+        .record_usage_success(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            observation(1_785_000_000_000, 41_250_000),
+        )
+        .await
+        .expect("baseline");
+    store
+        .record_usage_success(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            observation(1_785_003_600_000, 42_250_000),
+        )
+        .await
+        .expect("increase");
+    let before_restart = store
+        .public_live_quota(1_785_003_600_000)
+        .await
+        .expect("projection")
+        .expect("quota");
+
+    assert_eq!(before_restart.ledger_days.len(), 7);
+    assert_eq!(
+        before_restart
+            .ledger_days
+            .iter()
+            .filter_map(|day| day.used_micropoints)
+            .sum::<i64>(),
+        1_000_000
+    );
+    assert_eq!(
+        before_restart
+            .ledger_days
+            .iter()
+            .filter(|day| day.status == quotatide_core::LedgerDayStatus::Known)
+            .count(),
+        1
+    );
+
+    drop(store);
+    remove_derived_state_after_asserting_atomic_facts(&database);
+    let reopened = AccountSettingsStore::open(&database)
+        .await
+        .expect("reopen store");
+    let after_restart = reopened
+        .public_live_quota(1_785_003_600_000)
+        .await
+        .expect("rebuilt projection")
+        .expect("quota");
+    assert_eq!(after_restart, before_restart);
+
+    reopened
+        .record_usage_success(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            observation(1_785_007_200_000, 42_750_000),
+        )
+        .await
+        .expect("continue from rebuilt facts");
+    let continued = reopened
+        .public_live_quota(1_785_007_200_000)
+        .await
+        .expect("continued projection")
+        .expect("quota");
+    assert_eq!(
+        continued
+            .ledger_days
+            .iter()
+            .filter_map(|day| day.used_micropoints)
+            .sum::<i64>(),
+        1_500_000
+    );
+}
+
+fn remove_derived_state_after_asserting_atomic_facts(database: &std::path::Path) {
+    let connection =
+        tokio_rusqlite::rusqlite::Connection::open(database).expect("remove derived state");
+    let facts: (i64, i64, i64, i64, i64) = connection
+        .query_row(
+            "SELECT
+               (SELECT dashboard_revision FROM app_meta WHERE singleton_id = 1),
+               (SELECT COUNT(*) FROM usage_observations),
+               (SELECT COUNT(*) FROM usage_observations
+                WHERE quota_epoch_id IS NOT NULL),
+               (SELECT COUNT(*) FROM quota_epochs),
+               (SELECT COUNT(*) FROM daily_ledgers)",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .expect("atomic ledger facts");
+    assert_eq!(facts, (2, 2, 2, 1, 1));
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = ON;
+             UPDATE usage_observations SET quota_epoch_id = NULL;
+             DELETE FROM daily_ledgers;
+             DELETE FROM quota_epochs;",
+        )
+        .expect("retain immutable observations only");
+}
+
+#[tokio::test]
+async fn confirmed_same_day_reset_retains_pre_and_post_reset_usage() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let account = binding(1, "/chosen/auth.json", "account-one");
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(1_700_600_000_000, 50_000_000, 1_700_604_800),
+        )
+        .await
+        .expect("baseline");
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(1_700_602_000_000, 55_000_000, 1_700_604_800),
+        )
+        .await
+        .expect("pre-reset use");
+    store
+        .record_usage_success(
+            &account,
+            observation_with_reset(1_700_605_000_000, 2_000_000, 1_701_209_600),
+        )
+        .await
+        .expect("confirmed reset");
+
+    let quota = store
+        .public_live_quota(1_700_605_000_000)
+        .await
+        .expect("projection")
+        .expect("quota");
+    assert_eq!(quota.ledger_days.len(), 7);
+    assert_eq!(
+        quota
+            .ledger_days
+            .iter()
+            .filter_map(|day| day.used_micropoints)
+            .sum::<i64>(),
+        7_000_000
+    );
 }
 
 #[tokio::test]
@@ -156,6 +344,57 @@ async fn account_switches_do_not_project_the_previous_accounts_quota() {
 }
 
 #[tokio::test]
+async fn switching_back_restores_only_that_accounts_ledger() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/one/auth.json", "account-one")
+        .await
+        .expect("first account");
+    let first_binding = binding(1, "/one/auth.json", "account-one");
+    store
+        .record_usage_success(&first_binding, observation(1_785_000_000_000, 40_000_000))
+        .await
+        .expect("baseline");
+    store
+        .record_usage_success(&first_binding, observation(1_785_003_600_000, 43_000_000))
+        .await
+        .expect("increase");
+
+    store
+        .configure_account(1, "/two/auth.json", "account-two")
+        .await
+        .expect("second account");
+    assert_eq!(
+        store
+            .public_live_quota(1_785_003_600_000)
+            .await
+            .expect("second account projection"),
+        None
+    );
+
+    store
+        .configure_account(2, "/one/auth.json", "account-one")
+        .await
+        .expect("switch back");
+    let restored = store
+        .public_live_quota(1_785_003_600_000)
+        .await
+        .expect("restored projection")
+        .expect("first account quota");
+    assert_eq!(
+        restored
+            .ledger_days
+            .iter()
+            .filter_map(|day| day.used_micropoints)
+            .sum::<i64>(),
+        3_000_000
+    );
+}
+
+#[tokio::test]
 async fn age_alone_makes_a_last_success_stale_after_ninety_minutes() {
     let directory = tempdir().expect("temporary directory");
     let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
@@ -224,6 +463,30 @@ async fn a_mid_transaction_failure_leaves_no_partial_success_visible() {
             .expect("public projection"),
         None
     );
+    drop(store);
+    let connection =
+        tokio_rusqlite::rusqlite::Connection::open(&database).expect("inspect rollback");
+    for table in [
+        "usage_observations",
+        "quota_epochs",
+        "daily_ledgers",
+        "usage_source_health",
+    ] {
+        let count: i64 = connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("rolled-back table count");
+        assert_eq!(count, 0, "{table} must roll back");
+    }
+    let dashboard_revision: i64 = connection
+        .query_row(
+            "SELECT dashboard_revision FROM app_meta WHERE singleton_id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("dashboard revision");
+    assert_eq!(dashboard_revision, 0);
 }
 
 #[tokio::test]

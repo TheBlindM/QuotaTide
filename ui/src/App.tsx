@@ -2,6 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 
 import type { BuildInfo } from "./bindings/BuildInfo";
 import type { PublicAccountSettings } from "./bindings/PublicAccountSettings";
+import type { PublicLedgerDay } from "./bindings/PublicLedgerDay";
 import type { PublicLiveQuota } from "./bindings/PublicLiveQuota";
 import type { UsageSourceErrorCode } from "./bindings/UsageSourceErrorCode";
 import {
@@ -236,6 +237,7 @@ export function projectLiveFixture(
   const used = formatMicropoints(live.usedMicropoints);
   const remaining = formatMicropoints(live.remainingMicropoints);
   const sourceHealth = sourceHealthLabel(live);
+  const days = live.ledgerDays.map(projectLedgerDay);
   return {
     ...base,
     tone: live.sourceStatus === "fresh" ? "fresh" : "stale",
@@ -243,9 +245,11 @@ export function projectLiveFixture(
     weeklyRemaining: remaining,
     sourceHealth,
     windowLabel:
-      live.windowStartsAtUnixS === null || live.windowEndsAtUnixS === null
-        ? ""
-        : `${formatDate(live.windowStartsAtUnixS * 1000)} 至 ${formatDate(live.windowEndsAtUnixS * 1000)}`,
+      days.length === 0
+        ? live.windowStartsAtUnixS === null || live.windowEndsAtUnixS === null
+          ? ""
+          : `${formatDate(live.windowStartsAtUnixS * 1000)} 至 ${formatDate(live.windowEndsAtUnixS * 1000)}`
+        : `${days[0].date} 至 ${days.at(-1)?.date ?? ""}`,
     lastSuccess:
       live.lastSuccessAtUnixMs === null
         ? "尚未成功同步"
@@ -255,7 +259,34 @@ export function projectLiveFixture(
     todayAvailable: "",
     todayLimit: "",
     radarChance: "",
-    days: [],
+    days,
+  };
+}
+
+function projectLedgerDay(day: PublicLedgerDay) {
+  const [year, month, date] = day.localDate
+    .split("-")
+    .map((part) => Number.parseInt(part, 10));
+  const naturalDate = new Date(year, month - 1, date);
+  const used =
+    day.usedMicropoints === null ? null : day.usedMicropoints / 1_000_000;
+  const limit =
+    day.limitMicropoints === null ? null : day.limitMicropoints / 1_000_000;
+  let status = day.status === "unknown" ? "尚无记录" : "已记录";
+  if (used !== null && limit !== null) {
+    status = used > limit ? "超额" : used >= limit * 0.8 ? "预警" : "正常";
+  }
+  return {
+    label: day.isToday
+      ? "今天"
+      : new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(
+          naturalDate,
+        ),
+    date: `${month.toString().padStart(2, "0")}/${date.toString().padStart(2, "0")}`,
+    used,
+    limit,
+    today: day.isToday,
+    status,
   };
 }
 

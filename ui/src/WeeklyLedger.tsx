@@ -9,7 +9,7 @@ export type LedgerDay = {
   label: string;
   date: string;
   used: number | null;
-  limit: number;
+  limit: number | null;
   today?: boolean;
   status: string;
 };
@@ -284,7 +284,7 @@ export function WeeklyLedger({
               <tr>
                 <th scope="col">日期</th>
                 <th scope="col">使用</th>
-                <th scope="col">今日实际上限</th>
+                <th scope="col">每日上限</th>
               </tr>
             </thead>
             <tbody>
@@ -296,14 +296,16 @@ export function WeeklyLedger({
                   </th>
                   <td>
                     <progress
-                      max={day.limit}
+                      max={day.limit ?? 100}
                       value={day.used ?? 0}
                       aria-label={`${day.label}已使用`}
                     />
                     <span>{day.used === null ? day.status : `${day.used.toFixed(1)}% 已用`}</span>
                   </td>
                   <td>
-                    <strong>{day.limit.toFixed(1)}%</strong>
+                    <strong>
+                      {day.limit === null ? "待策略" : `${day.limit.toFixed(1)}%`}
+                    </strong>
                     <span>{day.status}</span>
                   </td>
                 </tr>

@@ -208,6 +208,27 @@ pub struct PublicLiveQuota {
     pub consecutive_failures: u32,
     pub source_status: SourceStatus,
     pub public_error: Option<UsageSourceErrorCode>,
+    pub ledger_days: Vec<PublicLedgerDay>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub enum LedgerDayStatus {
+    Unknown,
+    Known,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct PublicLedgerDay {
+    pub local_date: String,
+    #[ts(type = "number | null")]
+    pub used_micropoints: Option<i64>,
+    pub limit_micropoints: Option<u32>,
+    pub is_today: bool,
+    pub status: LedgerDayStatus,
 }
 
 /// Complete query result for the current dashboard projection.

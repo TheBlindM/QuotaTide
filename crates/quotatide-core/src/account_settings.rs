@@ -9,14 +9,16 @@ use tokio_rusqlite::{Connection, rusqlite};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::quota_ledger::PersistedLedgerEpoch;
 use crate::{
-    PublicLiveQuota, RefreshAccountBinding, SourceStatus, UsageSourceErrorCode,
-    WeeklyUsageObservation,
+    LedgerApplyKind, LedgerDayStatus, PublicLedgerDay, PublicLiveQuota, QuotaLedger,
+    RefreshAccountBinding, SourceStatus, UsageSourceErrorCode, WeeklyUsageObservation,
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-settings-v1-account-path-stream";
 const LIVE_QUOTA_SCHEMA_CHECKSUM: &str = "quotatide-v2-live-quota-health";
+const QUOTA_LEDGER_SCHEMA_CHECKSUM: &str = "quotatide-v3-current-seven-day-ledger";
 const FRESH_FOR_MS: i64 = 90 * 60 * 1000;
 
 /// A stable, secret-free account configuration projection for the UI.
@@ -318,6 +320,11 @@ fn initialize_database(
     } else {
         validate_migration(database, 2, LIVE_QUOTA_SCHEMA_CHECKSUM)?;
     }
+    if current_version <= 2 {
+        migrate_quota_ledger_v3(database, now)?;
+    } else {
+        validate_migration(database, 3, QUOTA_LEDGER_SCHEMA_CHECKSUM)?;
+    }
     Ok(())
 }
 
@@ -417,6 +424,50 @@ fn migrate_live_quota_v2(database: &mut rusqlite::Connection, now: i64) -> rusql
         rusqlite::params![now, env!("CARGO_PKG_VERSION"), LIVE_QUOTA_SCHEMA_CHECKSUM],
     )?;
     transaction.pragma_update(None, "user_version", 2)?;
+    transaction.commit()
+}
+
+fn migrate_quota_ledger_v3(database: &mut rusqlite::Connection, now: i64) -> rusqlite::Result<()> {
+    let transaction =
+        database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE quota_epochs (
+           id INTEGER PRIMARY KEY,
+           account_stream_id INTEGER NOT NULL REFERENCES account_streams(id),
+           sequence INTEGER NOT NULL CHECK (sequence > 0),
+           baseline_micropoints INTEGER NOT NULL
+             CHECK (baseline_micropoints BETWEEN 0 AND 100000000),
+           high_water_micropoints INTEGER NOT NULL
+             CHECK (high_water_micropoints BETWEEN 0 AND 100000000),
+           first_observed_at_ms INTEGER NOT NULL,
+           latest_observed_at_ms INTEGER NOT NULL,
+           scheduled_reset_at_s INTEGER NOT NULL,
+           closed_at_ms INTEGER,
+           UNIQUE(account_stream_id, sequence)
+         );
+         CREATE UNIQUE INDEX one_active_quota_epoch_per_stream
+           ON quota_epochs(account_stream_id) WHERE closed_at_ms IS NULL;
+         CREATE TABLE daily_ledgers (
+           id INTEGER PRIMARY KEY,
+           account_stream_id INTEGER NOT NULL REFERENCES account_streams(id),
+           local_date TEXT NOT NULL,
+           policy_timezone TEXT NOT NULL,
+           used_micropoints INTEGER NOT NULL CHECK (used_micropoints >= 0),
+           updated_at_ms INTEGER NOT NULL,
+           UNIQUE(account_stream_id, local_date, policy_timezone)
+         );
+         ALTER TABLE usage_observations
+           ADD COLUMN quota_epoch_id INTEGER REFERENCES quota_epochs(id);
+         ALTER TABLE app_meta
+           ADD COLUMN dashboard_revision INTEGER NOT NULL DEFAULT 0;",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations
+         (version, applied_at_ms, app_version, checksum)
+         VALUES (3, ?1, ?2, ?3)",
+        rusqlite::params![now, env!("CARGO_PKG_VERSION"), QUOTA_LEDGER_SCHEMA_CHECKSUM],
+    )?;
+    transaction.pragma_update(None, "user_version", 3)?;
     transaction.commit()
 }
 
@@ -605,78 +656,7 @@ impl AccountSettingsStore {
         let binding = binding.clone();
         self.connection
             .call(move |database| {
-                let transaction =
-                    database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                let (salt, revision, configured_path, configured_stream_id): (
-                    Vec<u8>,
-                    i64,
-                    Option<String>,
-                    Option<i64>,
-                ) = transaction.query_row(
-                    "SELECT m.local_hash_salt, m.settings_revision, s.auth_path,
-                            s.configured_account_stream_id
-                     FROM app_meta m
-                     JOIN app_settings s ON s.singleton_id = m.singleton_id
-                     WHERE m.singleton_id = 1",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-                )?;
-                if revision != i64::from(binding.settings_revision)
-                    || configured_path.as_deref() != binding.canonical_path.to_str()
-                {
-                    return Ok(UsageCommitDisposition::Superseded);
-                }
-                let account_id = binding
-                    .canonical_account_id
-                    .as_deref()
-                    .ok_or(rusqlite::Error::InvalidQuery)?;
-                let now = observation.captured_at_unix_ms;
-                let (stream_id, _) = upsert_account_stream(&transaction, &salt, account_id, now)?;
-                transaction.execute(
-                    "INSERT INTO usage_observations
-                     (account_stream_id, captured_at_ms, used_micropoints,
-                      window_seconds, resets_at_s, plan_type, allowed)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    rusqlite::params![
-                        stream_id,
-                        observation.captured_at_unix_ms,
-                        observation.used.micropoints(),
-                        observation.window_seconds,
-                        observation.resets_at_unix_s,
-                        observation.plan_type,
-                        observation.allowed.map(i64::from),
-                    ],
-                )?;
-                transaction.execute(
-                    "INSERT INTO usage_source_health
-                     (account_stream_id, last_attempt_at_ms, last_success_at_ms,
-                      consecutive_failures, public_error)
-                     VALUES (?1, ?2, ?2, 0, NULL)
-                     ON CONFLICT(account_stream_id) DO UPDATE SET
-                       last_attempt_at_ms = excluded.last_attempt_at_ms,
-                       last_success_at_ms = excluded.last_success_at_ms,
-                       consecutive_failures = 0,
-                       public_error = NULL",
-                    rusqlite::params![stream_id, observation.captured_at_unix_ms],
-                )?;
-                transaction.execute(
-                    "UPDATE app_settings
-                     SET configured_account_stream_id = ?1,
-                         active_account_stream_id = ?1, updated_at_ms = ?2
-                     WHERE singleton_id = 1",
-                    rusqlite::params![stream_id, observation.captured_at_unix_ms],
-                )?;
-                if configured_stream_id != Some(stream_id) {
-                    transaction.execute(
-                        "UPDATE app_meta
-                         SET settings_revision = settings_revision + 1, updated_at_ms = ?1
-                         WHERE singleton_id = 1",
-                        [observation.captured_at_unix_ms],
-                    )?;
-                }
-                transaction
-                    .commit()
-                    .map(|()| UsageCommitDisposition::Committed)
+                record_usage_success_transaction(database, &binding, &observation)
             })
             .await
             .map_err(SettingsStoreError::database)
@@ -774,99 +754,13 @@ impl AccountSettingsStore {
     ) -> Result<Option<PublicLiveQuota>, SettingsStoreError> {
         self.connection
             .call(move |database| {
-                use rusqlite::OptionalExtension as _;
-
-                let row = database
-                    .query_row(
-                        "SELECT o.used_micropoints, o.captured_at_ms, o.resets_at_s,
-                                o.plan_type, o.allowed, h.last_attempt_at_ms,
-                                h.last_success_at_ms, h.consecutive_failures,
-                                h.public_error
-                         FROM app_settings s
-                         JOIN usage_source_health h
-                           ON h.account_stream_id = s.configured_account_stream_id
-                         LEFT JOIN usage_observations o
-                           ON o.id = (
-                             SELECT latest.id
-                             FROM usage_observations latest
-                             WHERE latest.account_stream_id =
-                               s.configured_account_stream_id
-                             ORDER BY latest.captured_at_ms DESC
-                             LIMIT 1
-                           )
-                         WHERE s.singleton_id = 1
-                         LIMIT 1",
-                        [],
-                        |row| {
-                            Ok((
-                                row.get::<_, Option<i64>>(0)?,
-                                row.get::<_, Option<i64>>(1)?,
-                                row.get::<_, Option<i64>>(2)?,
-                                row.get::<_, Option<String>>(3)?,
-                                row.get::<_, Option<i64>>(4)?,
-                                row.get::<_, i64>(5)?,
-                                row.get::<_, Option<i64>>(6)?,
-                                row.get::<_, i64>(7)?,
-                                row.get::<_, Option<String>>(8)?,
-                            ))
-                        },
-                    )
-                    .optional()?;
-                let Some((
-                    used,
-                    captured_at,
-                    resets_at,
-                    plan_type,
-                    allowed,
-                    last_attempt,
-                    last_success,
-                    failures,
-                    error_key,
-                )) = row
-                else {
-                    return Ok::<Option<PublicLiveQuota>, rusqlite::Error>(None);
+                let transaction = database.unchecked_transaction()?;
+                let Some(row) = query_live_quota_row(&transaction)? else {
+                    return Ok(None);
                 };
-                let used = used
-                    .map(u32::try_from)
-                    .transpose()
-                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
-                let failures =
-                    u32::try_from(failures).map_err(|_| rusqlite::Error::InvalidQuery)?;
-                let public_error = match error_key.as_deref() {
-                    Some(key) => Some(
-                        UsageSourceErrorCode::from_storage_key(key)
-                            .ok_or(rusqlite::Error::InvalidQuery)?,
-                    ),
-                    None => None,
-                };
-                let fresh_by_age = last_success
-                    .is_some_and(|success| now_unix_ms.saturating_sub(success) <= FRESH_FOR_MS);
-                let source_status = if last_success.is_none() {
-                    SourceStatus::Unavailable
-                } else if failures > 0 {
-                    SourceStatus::StaleAfterFailure
-                } else if fresh_by_age {
-                    SourceStatus::Fresh
-                } else {
-                    SourceStatus::StaleByAge
-                };
-                let window_starts_at_unix_s = resets_at.map(|reset| reset.saturating_sub(604_800));
-                let window_ends_at_unix_s = resets_at.map(|reset| reset.saturating_sub(1));
-                Ok::<Option<PublicLiveQuota>, rusqlite::Error>(Some(PublicLiveQuota {
-                    used_micropoints: used,
-                    remaining_micropoints: used.map(|value| 100_000_000_u32.saturating_sub(value)),
-                    captured_at_unix_ms: captured_at,
-                    resets_at_unix_s: resets_at,
-                    window_starts_at_unix_s,
-                    window_ends_at_unix_s,
-                    plan_type,
-                    allowed: allowed.map(|value| value != 0),
-                    last_attempt_at_unix_ms: last_attempt,
-                    last_success_at_unix_ms: last_success,
-                    consecutive_failures: failures,
-                    source_status,
-                    public_error,
-                }))
+                let ledger_days =
+                    project_public_ledger_days(&transaction, row.stream_id, now_unix_ms)?;
+                build_public_live_quota(row, ledger_days, now_unix_ms).map(Some)
             })
             .await
             .map_err(SettingsStoreError::database)
@@ -887,6 +781,424 @@ impl AccountSettingsStore {
             })
             .await
             .map_err(SettingsStoreError::database)
+    }
+}
+
+fn record_usage_success_transaction(
+    database: &mut rusqlite::Connection,
+    binding: &RefreshAccountBinding,
+    observation: &WeeklyUsageObservation,
+) -> rusqlite::Result<UsageCommitDisposition> {
+    let transaction =
+        database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let Some((salt, configured_stream_id)) = validated_binding_context(&transaction, binding)?
+    else {
+        return Ok(UsageCommitDisposition::Superseded);
+    };
+    let account_id = binding
+        .canonical_account_id
+        .as_deref()
+        .ok_or(rusqlite::Error::InvalidQuery)?;
+    let now = observation.captured_at_unix_ms;
+    let (stream_id, _) = upsert_account_stream(&transaction, &salt, account_id, now)?;
+    let transition = QuotaLedger::apply(
+        load_ledger_state(&transaction, stream_id)?,
+        observation,
+        chrono_tz::Asia::Shanghai,
+    )
+    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    if transition.kind == LedgerApplyKind::DroppedOutOfOrder {
+        transaction.commit()?;
+        return Ok(UsageCommitDisposition::Committed);
+    }
+    persist_success_observation(&transaction, stream_id, observation, &transition)?;
+    persist_success_projection(
+        &transaction,
+        stream_id,
+        configured_stream_id,
+        observation.captured_at_unix_ms,
+    )?;
+    transaction
+        .commit()
+        .map(|()| UsageCommitDisposition::Committed)
+}
+
+fn validated_binding_context(
+    transaction: &rusqlite::Transaction<'_>,
+    binding: &RefreshAccountBinding,
+) -> rusqlite::Result<Option<(Vec<u8>, Option<i64>)>> {
+    let (salt, revision, configured_path, configured_stream_id): (
+        Vec<u8>,
+        i64,
+        Option<String>,
+        Option<i64>,
+    ) = transaction.query_row(
+        "SELECT m.local_hash_salt, m.settings_revision, s.auth_path,
+                s.configured_account_stream_id
+         FROM app_meta m
+         JOIN app_settings s ON s.singleton_id = m.singleton_id
+         WHERE m.singleton_id = 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    if revision != i64::from(binding.settings_revision)
+        || configured_path.as_deref() != binding.canonical_path.to_str()
+    {
+        return Ok(None);
+    }
+    Ok(Some((salt, configured_stream_id)))
+}
+
+fn persist_success_observation(
+    transaction: &rusqlite::Transaction<'_>,
+    stream_id: i64,
+    observation: &WeeklyUsageObservation,
+    transition: &crate::LedgerTransition,
+) -> rusqlite::Result<()> {
+    let persisted_epoch =
+        QuotaLedger::persisted_epoch(&transition.state).ok_or(rusqlite::Error::InvalidQuery)?;
+    let quota_epoch_id = persist_ledger_epoch(
+        transaction,
+        stream_id,
+        &persisted_epoch,
+        transition.kind,
+        observation.captured_at_unix_ms,
+    )?;
+    transaction.execute(
+        "INSERT INTO usage_observations
+         (account_stream_id, captured_at_ms, used_micropoints,
+          window_seconds, resets_at_s, plan_type, allowed, quota_epoch_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            stream_id,
+            observation.captured_at_unix_ms,
+            observation.used.micropoints(),
+            observation.window_seconds,
+            observation.resets_at_unix_s,
+            observation.plan_type,
+            observation.allowed.map(i64::from),
+            quota_epoch_id,
+        ],
+    )?;
+    if let Some(local_date) = transition.assigned_local_date.as_deref() {
+        let used = QuotaLedger::daily_used(&transition.state, local_date)
+            .ok_or(rusqlite::Error::InvalidQuery)?;
+        transaction.execute(
+            "INSERT INTO daily_ledgers
+             (account_stream_id, local_date, policy_timezone,
+              used_micropoints, updated_at_ms)
+             VALUES (?1, ?2, 'Asia/Shanghai', ?3, ?4)
+             ON CONFLICT(account_stream_id, local_date, policy_timezone)
+             DO UPDATE SET
+               used_micropoints = excluded.used_micropoints,
+               updated_at_ms = excluded.updated_at_ms",
+            rusqlite::params![stream_id, local_date, used, observation.captured_at_unix_ms],
+        )?;
+    }
+    Ok(())
+}
+
+fn persist_success_projection(
+    transaction: &rusqlite::Transaction<'_>,
+    stream_id: i64,
+    configured_stream_id: Option<i64>,
+    observed_at_unix_ms: i64,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        "INSERT INTO usage_source_health
+         (account_stream_id, last_attempt_at_ms, last_success_at_ms,
+          consecutive_failures, public_error)
+         VALUES (?1, ?2, ?2, 0, NULL)
+         ON CONFLICT(account_stream_id) DO UPDATE SET
+           last_attempt_at_ms = excluded.last_attempt_at_ms,
+           last_success_at_ms = excluded.last_success_at_ms,
+           consecutive_failures = 0,
+           public_error = NULL",
+        rusqlite::params![stream_id, observed_at_unix_ms],
+    )?;
+    transaction.execute(
+        "UPDATE app_settings
+         SET configured_account_stream_id = ?1,
+             active_account_stream_id = ?1, updated_at_ms = ?2
+         WHERE singleton_id = 1",
+        rusqlite::params![stream_id, observed_at_unix_ms],
+    )?;
+    let settings_increment = i64::from(configured_stream_id != Some(stream_id));
+    transaction.execute(
+        "UPDATE app_meta
+         SET settings_revision = settings_revision + ?1,
+             dashboard_revision = dashboard_revision + 1,
+             updated_at_ms = ?2
+         WHERE singleton_id = 1",
+        rusqlite::params![settings_increment, observed_at_unix_ms],
+    )?;
+    Ok(())
+}
+
+struct LiveQuotaRow {
+    stream_id: i64,
+    used_micropoints: Option<i64>,
+    captured_at_unix_ms: Option<i64>,
+    resets_at_unix_s: Option<i64>,
+    plan_type: Option<String>,
+    allowed: Option<i64>,
+    last_attempt_at_unix_ms: i64,
+    last_success_at_unix_ms: Option<i64>,
+    consecutive_failures: i64,
+    error_key: Option<String>,
+}
+
+fn query_live_quota_row(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<Option<LiveQuotaRow>> {
+    use rusqlite::OptionalExtension as _;
+
+    transaction
+        .query_row(
+            "SELECT s.configured_account_stream_id,
+                    o.used_micropoints, o.captured_at_ms, o.resets_at_s,
+                    o.plan_type, o.allowed, h.last_attempt_at_ms,
+                    h.last_success_at_ms, h.consecutive_failures, h.public_error
+             FROM app_settings s
+             JOIN usage_source_health h
+               ON h.account_stream_id = s.configured_account_stream_id
+             LEFT JOIN usage_observations o
+               ON o.id = (
+                 SELECT latest.id FROM usage_observations latest
+                 WHERE latest.account_stream_id = s.configured_account_stream_id
+                 ORDER BY latest.captured_at_ms DESC LIMIT 1
+               )
+             WHERE s.singleton_id = 1
+             LIMIT 1",
+            [],
+            |row| {
+                Ok(LiveQuotaRow {
+                    stream_id: row.get(0)?,
+                    used_micropoints: row.get(1)?,
+                    captured_at_unix_ms: row.get(2)?,
+                    resets_at_unix_s: row.get(3)?,
+                    plan_type: row.get(4)?,
+                    allowed: row.get(5)?,
+                    last_attempt_at_unix_ms: row.get(6)?,
+                    last_success_at_unix_ms: row.get(7)?,
+                    consecutive_failures: row.get(8)?,
+                    error_key: row.get(9)?,
+                })
+            },
+        )
+        .optional()
+}
+
+fn project_public_ledger_days(
+    transaction: &rusqlite::Transaction<'_>,
+    stream_id: i64,
+    now_unix_ms: i64,
+) -> rusqlite::Result<Vec<PublicLedgerDay>> {
+    let projection = QuotaLedger::project(
+        &load_ledger_state(transaction, stream_id)?,
+        chrono_tz::Asia::Shanghai,
+    )
+    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let today = chrono::DateTime::from_timestamp_millis(now_unix_ms).map(|now| {
+        now.with_timezone(&chrono_tz::Asia::Shanghai)
+            .date_naive()
+            .to_string()
+    });
+    Ok(projection.map_or_else(Vec::new, |projection| {
+        projection
+            .days
+            .into_iter()
+            .map(|day| PublicLedgerDay {
+                is_today: today.as_deref() == Some(day.local_date.as_str()),
+                local_date: day.local_date,
+                status: if day.used_micropoints.is_some() {
+                    LedgerDayStatus::Known
+                } else {
+                    LedgerDayStatus::Unknown
+                },
+                used_micropoints: day.used_micropoints,
+                limit_micropoints: None,
+            })
+            .collect()
+    }))
+}
+
+fn build_public_live_quota(
+    row: LiveQuotaRow,
+    ledger_days: Vec<PublicLedgerDay>,
+    now_unix_ms: i64,
+) -> rusqlite::Result<PublicLiveQuota> {
+    let used = row
+        .used_micropoints
+        .map(u32::try_from)
+        .transpose()
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let failures =
+        u32::try_from(row.consecutive_failures).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let public_error = match row.error_key.as_deref() {
+        Some(key) => {
+            Some(UsageSourceErrorCode::from_storage_key(key).ok_or(rusqlite::Error::InvalidQuery)?)
+        }
+        None => None,
+    };
+    let source_status = if row.last_success_at_unix_ms.is_none() {
+        SourceStatus::Unavailable
+    } else if failures > 0 {
+        SourceStatus::StaleAfterFailure
+    } else if row
+        .last_success_at_unix_ms
+        .is_some_and(|success| now_unix_ms.saturating_sub(success) <= FRESH_FOR_MS)
+    {
+        SourceStatus::Fresh
+    } else {
+        SourceStatus::StaleByAge
+    };
+    Ok(PublicLiveQuota {
+        used_micropoints: used,
+        remaining_micropoints: used.map(|value| 100_000_000_u32.saturating_sub(value)),
+        captured_at_unix_ms: row.captured_at_unix_ms,
+        resets_at_unix_s: row.resets_at_unix_s,
+        window_starts_at_unix_s: row
+            .resets_at_unix_s
+            .map(|reset| reset.saturating_sub(604_800)),
+        window_ends_at_unix_s: row.resets_at_unix_s.map(|reset| reset.saturating_sub(1)),
+        plan_type: row.plan_type,
+        allowed: row.allowed.map(|value| value != 0),
+        last_attempt_at_unix_ms: row.last_attempt_at_unix_ms,
+        last_success_at_unix_ms: row.last_success_at_unix_ms,
+        consecutive_failures: failures,
+        source_status,
+        public_error,
+        ledger_days,
+    })
+}
+
+fn load_ledger_state(
+    transaction: &rusqlite::Transaction<'_>,
+    stream_id: i64,
+) -> rusqlite::Result<crate::LedgerState> {
+    let mut statement = transaction.prepare(
+        "SELECT captured_at_ms, used_micropoints, window_seconds, resets_at_s,
+                plan_type, allowed
+         FROM usage_observations
+         WHERE account_stream_id = ?1
+         ORDER BY captured_at_ms, id",
+    )?;
+    let observations = statement
+        .query_map([stream_id], |row| {
+            let used: i64 = row.get(1)?;
+            let window_seconds: i64 = row.get(2)?;
+            Ok(WeeklyUsageObservation {
+                captured_at_unix_ms: row.get(0)?,
+                used: crate::QuotaUnits::from_micropoints(used)
+                    .ok_or(rusqlite::Error::InvalidQuery)?,
+                window_seconds: u32::try_from(window_seconds)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                resets_at_unix_s: row.get(3)?,
+                plan_type: row.get(4)?,
+                allowed: row.get::<_, Option<i64>>(5)?.map(|value| value != 0),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut state = crate::LedgerState::default();
+    for observation in observations {
+        state = QuotaLedger::apply(state, &observation, chrono_tz::Asia::Shanghai)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?
+            .state;
+    }
+    Ok(state)
+}
+
+fn persist_ledger_epoch(
+    transaction: &rusqlite::Transaction<'_>,
+    stream_id: i64,
+    epoch: &PersistedLedgerEpoch,
+    kind: LedgerApplyKind,
+    captured_at_unix_ms: i64,
+) -> rusqlite::Result<i64> {
+    match kind {
+        LedgerApplyKind::Baseline => {
+            transaction.execute(
+                "INSERT INTO quota_epochs
+                 (account_stream_id, sequence, baseline_micropoints,
+                  high_water_micropoints, first_observed_at_ms,
+                  latest_observed_at_ms, scheduled_reset_at_s, closed_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+                rusqlite::params![
+                    stream_id,
+                    i64::try_from(epoch.sequence).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    epoch.baseline_micropoints,
+                    epoch.high_water_micropoints,
+                    epoch.first_observed_at_unix_ms,
+                    epoch.latest_observed_at_unix_ms,
+                    epoch.scheduled_reset_at_unix_s,
+                ],
+            )?;
+            Ok(transaction.last_insert_rowid())
+        }
+        LedgerApplyKind::SameEpoch => {
+            let updated = transaction.execute(
+                "UPDATE quota_epochs
+                 SET high_water_micropoints = ?1, latest_observed_at_ms = ?2,
+                     scheduled_reset_at_s = ?3
+                 WHERE account_stream_id = ?4 AND closed_at_ms IS NULL",
+                rusqlite::params![
+                    epoch.high_water_micropoints,
+                    epoch.latest_observed_at_unix_ms,
+                    epoch.scheduled_reset_at_unix_s,
+                    stream_id,
+                ],
+            )?;
+            if updated == 0 {
+                transaction.execute(
+                    "INSERT INTO quota_epochs
+                     (account_stream_id, sequence, baseline_micropoints,
+                      high_water_micropoints, first_observed_at_ms,
+                      latest_observed_at_ms, scheduled_reset_at_s, closed_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+                    rusqlite::params![
+                        stream_id,
+                        i64::try_from(epoch.sequence).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        epoch.baseline_micropoints,
+                        epoch.high_water_micropoints,
+                        epoch.first_observed_at_unix_ms,
+                        epoch.latest_observed_at_unix_ms,
+                        epoch.scheduled_reset_at_unix_s,
+                    ],
+                )?;
+            }
+            transaction.query_row(
+                "SELECT id FROM quota_epochs
+                 WHERE account_stream_id = ?1 AND closed_at_ms IS NULL",
+                [stream_id],
+                |row| row.get(0),
+            )
+        }
+        LedgerApplyKind::ConfirmedReset => {
+            transaction.execute(
+                "UPDATE quota_epochs SET closed_at_ms = ?1
+                 WHERE account_stream_id = ?2 AND closed_at_ms IS NULL",
+                rusqlite::params![captured_at_unix_ms, stream_id],
+            )?;
+            transaction.execute(
+                "INSERT INTO quota_epochs
+                 (account_stream_id, sequence, baseline_micropoints,
+                  high_water_micropoints, first_observed_at_ms,
+                  latest_observed_at_ms, scheduled_reset_at_s, closed_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+                rusqlite::params![
+                    stream_id,
+                    i64::try_from(epoch.sequence).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    epoch.baseline_micropoints,
+                    epoch.high_water_micropoints,
+                    epoch.first_observed_at_unix_ms,
+                    epoch.latest_observed_at_unix_ms,
+                    epoch.scheduled_reset_at_unix_s,
+                ],
+            )?;
+            Ok(transaction.last_insert_rowid())
+        }
+        LedgerApplyKind::DroppedOutOfOrder => Err(rusqlite::Error::InvalidQuery),
     }
 }
 

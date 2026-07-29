@@ -10,18 +10,21 @@ License：MIT
 
 ## 当前状态
 
-项目正在从旧 Node/Docker 原型重构为 Rust/Tauri 桌面应用。目前只完成
-**Ticket 14 的应用骨架**：
+项目正在从旧 Node/Docker 原型重构为 Rust/Tauri 桌面应用。目前已完成
+**Ticket 14–18 的桌面骨架、账号配置、真实额度接入和当前七日账本**：
 
 - Rust workspace 与框架无关的 `quotatide-core`；
 - Tauri 2 隐藏窗口和单一 Tide Dial 托盘入口；
-- Vite + Preact + TypeScript UI；
-- 类型化的公开构建信息 command；
+- Vite + Preact + TypeScript 毛玻璃小窗；
+- 界面选择并只读校验单账号 `auth.json`，不修改或复制令牌；
+- 启动、每小时、唤醒和手动触发的真实 Codex 当前周额度刷新；
+- SQLite v3 的账号隔离观测、来源健康、额度 epoch 和每日账本；
+- 严格展示当前额度周期的七个自然日，未知日期不伪造为 0；
 - macOS/Windows bundle CI 骨架。
 
-当前版本尚未读取 `auth.json`、请求真实额度、保存 SQLite 账本、发送通知或
-邮件，也没有完成发布 smoke。旧 Node 服务仍暂时保留供后续行为迁移测试使用，
-但新桌面应用不启动它、不读取它的数据库，也不依赖 Docker。
+当前版本尚未完成每日动态额度策略、重置雷达、系统通知、邮件和正式发布
+smoke。旧 Node 服务仍暂时保留供行为迁移测试使用，但新桌面应用不启动它、
+不读取它的数据库，也不依赖 Docker。
 
 ## 开发要求
 
