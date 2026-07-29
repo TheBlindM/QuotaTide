@@ -10,12 +10,13 @@ mod tray_shell;
 pub use account_settings::{
     AccountApplication, AccountConfigError, AccountSettingsStore, AuthCandidateValidator,
     PublicAccountSettings, PublicError, PublicErrorCode, SafeErrorContext, SettingsManager,
-    SettingsStoreError, ValidatedAccountCandidate,
+    SettingsStoreError, UsageCommitDisposition, ValidatedAccountCandidate,
 };
 pub use live_quota::{
-    Application, Clock, PublicLiveQuota, QuotaUnits, RefreshCoordinator, RefreshCoordinatorError,
-    RefreshOutcome, RefreshReceipt, RefreshTrigger, SourceFreshness, UsageRefreshSource,
-    UsageSourceErrorCode, WeeklyUsageObservation,
+    Application, Clock, PublicLiveQuota, QuotaUnits, RefreshAccountBinding, RefreshCoordinator,
+    RefreshCoordinatorError, RefreshOutcome, RefreshReceipt, RefreshTrigger, SourceStatus,
+    UsageRefreshAttempt, UsageRefreshSource, UsageSourceError, UsageSourceErrorCode,
+    WeeklyUsageObservation,
 };
 pub use tray_shell::{
     PhysicalPoint, PhysicalRect, PhysicalSize, ShellEffect, ShellEvent, TrayShell,

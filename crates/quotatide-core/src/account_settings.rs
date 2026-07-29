@@ -9,7 +9,10 @@ use tokio_rusqlite::{Connection, rusqlite};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::{PublicLiveQuota, SourceFreshness, UsageSourceErrorCode, WeeklyUsageObservation};
+use crate::{
+    PublicLiveQuota, RefreshAccountBinding, SourceStatus, UsageSourceErrorCode,
+    WeeklyUsageObservation,
+};
 
 const SCHEMA_VERSION: i64 = 2;
 const SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-settings-v1-account-path-stream";
@@ -190,17 +193,6 @@ impl<V: AuthCandidateValidator> SettingsManager<V> {
             .map_err(Into::into)
     }
 
-    /// Returns the current canonical path for a native adapter only.
-    ///
-    /// # Errors
-    ///
-    /// Returns a storage error if the path cannot be read.
-    pub async fn configured_auth_path(
-        &self,
-    ) -> Result<Option<std::path::PathBuf>, AccountConfigError<V::Error>> {
-        self.store.configured_auth_path().await.map_err(Into::into)
-    }
-
     /// Returns the current live quota projection.
     ///
     /// # Errors
@@ -255,17 +247,6 @@ impl<V: AuthCandidateValidator> AccountApplication<V> {
             .await
     }
 
-    /// Returns the selected path to the native read-only auth adapter.
-    ///
-    /// # Errors
-    ///
-    /// Returns a storage error when the selected path cannot be read.
-    pub async fn configured_auth_path(
-        &self,
-    ) -> Result<Option<std::path::PathBuf>, AccountConfigError<V::Error>> {
-        self.settings.configured_auth_path().await
-    }
-
     /// Returns the secret-free live quota projection.
     ///
     /// # Errors
@@ -286,6 +267,13 @@ pub enum SettingsStoreError {
     Conflict,
     #[error("account settings store unavailable")]
     Database(#[source] Box<dyn Error + Send + Sync>),
+}
+
+/// Whether a refresh result still belongs to the selected account revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageCommitDisposition {
+    Committed,
+    Superseded,
 }
 
 impl SettingsStoreError {
@@ -491,8 +479,8 @@ impl AccountSettingsStore {
         let account_id = canonical_account_id.as_ref().to_owned();
         self.connection
             .call(move |database| {
-                let transaction = database
-                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let transaction =
+                    database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                 let (salt, revision): (Vec<u8>, i64) = transaction.query_row(
                     "SELECT local_hash_salt, settings_revision
                      FROM app_meta WHERE singleton_id = 1",
@@ -502,20 +490,9 @@ impl AccountSettingsStore {
                 if revision != i64::from(expected_revision) {
                     return Err(StoreCallError::Conflict);
                 }
-                let account_key = account_key(&salt, &account_id);
                 let now = unix_time_ms();
-                transaction.execute(
-                    "INSERT INTO account_streams
-                     (stream_key, account_key, first_seen_at_ms, last_seen_at_ms)
-                     VALUES (?1, ?2, ?3, ?3)
-                     ON CONFLICT(account_key) DO UPDATE SET last_seen_at_ms = excluded.last_seen_at_ms",
-                    rusqlite::params![Uuid::now_v7().to_string(), account_key.as_slice(), now],
-                )?;
-                let stream_id: i64 = transaction.query_row(
-                    "SELECT id FROM account_streams WHERE account_key = ?1",
-                    [account_key.as_slice()],
-                    |row| row.get(0),
-                )?;
+                let (stream_id, account_key) =
+                    upsert_account_stream(&transaction, &salt, &account_id, now)?;
                 transaction.execute(
                     "UPDATE app_settings
                      SET auth_path = ?1, configured_account_stream_id = ?2,
@@ -578,25 +555,38 @@ impl AccountSettingsStore {
             .map_err(SettingsStoreError::database)
     }
 
-    /// Reads the canonical path for the native auth adapter. This value is
-    /// never part of a serialized DTO.
+    /// Captures the selected path and settings revision for one refresh round.
     ///
     /// # Errors
     ///
-    /// Returns a database error when the selected path cannot be read.
-    pub async fn configured_auth_path(
+    /// Returns a database error when settings cannot be read.
+    pub async fn configured_refresh_binding(
         &self,
-    ) -> Result<Option<std::path::PathBuf>, SettingsStoreError> {
+    ) -> Result<Option<RefreshAccountBinding>, SettingsStoreError> {
         self.connection
             .call(|database| {
                 database.query_row(
-                    "SELECT auth_path FROM app_settings WHERE singleton_id = 1",
+                    "SELECT m.settings_revision, s.auth_path
+                     FROM app_meta m
+                     JOIN app_settings s ON s.singleton_id = m.singleton_id
+                     WHERE m.singleton_id = 1",
                     [],
-                    |row| row.get::<_, Option<String>>(0),
+                    |row| {
+                        let revision: i64 = row.get(0)?;
+                        let path: Option<String> = row.get(1)?;
+                        let Some(path) = path else {
+                            return Ok(None);
+                        };
+                        let revision =
+                            u32::try_from(revision).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                        Ok(Some(RefreshAccountBinding::selected(
+                            revision,
+                            std::path::PathBuf::from(path),
+                        )))
+                    },
                 )
             })
             .await
-            .map(|path| path.map(std::path::PathBuf::from))
             .map_err(SettingsStoreError::database)
     }
 
@@ -609,20 +599,39 @@ impl AccountSettingsStore {
     /// transaction cannot be committed.
     pub async fn record_usage_success(
         &self,
+        binding: &RefreshAccountBinding,
         observation: WeeklyUsageObservation,
-    ) -> Result<(), SettingsStoreError> {
+    ) -> Result<UsageCommitDisposition, SettingsStoreError> {
+        let binding = binding.clone();
         self.connection
             .call(move |database| {
                 let transaction =
                     database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                let stream_id: i64 = transaction.query_row(
-                    "SELECT configured_account_stream_id
-                     FROM app_settings
-                     WHERE singleton_id = 1
-                       AND configured_account_stream_id IS NOT NULL",
+                let (salt, revision, configured_path, configured_stream_id): (
+                    Vec<u8>,
+                    i64,
+                    Option<String>,
+                    Option<i64>,
+                ) = transaction.query_row(
+                    "SELECT m.local_hash_salt, m.settings_revision, s.auth_path,
+                            s.configured_account_stream_id
+                     FROM app_meta m
+                     JOIN app_settings s ON s.singleton_id = m.singleton_id
+                     WHERE m.singleton_id = 1",
                     [],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )?;
+                if revision != i64::from(binding.settings_revision)
+                    || configured_path.as_deref() != binding.canonical_path.to_str()
+                {
+                    return Ok(UsageCommitDisposition::Superseded);
+                }
+                let account_id = binding
+                    .canonical_account_id
+                    .as_deref()
+                    .ok_or(rusqlite::Error::InvalidQuery)?;
+                let now = observation.captured_at_unix_ms;
+                let (stream_id, _) = upsert_account_stream(&transaction, &salt, account_id, now)?;
                 transaction.execute(
                     "INSERT INTO usage_observations
                      (account_stream_id, captured_at_ms, used_micropoints,
@@ -652,11 +661,22 @@ impl AccountSettingsStore {
                 )?;
                 transaction.execute(
                     "UPDATE app_settings
-                     SET active_account_stream_id = ?1, updated_at_ms = ?2
+                     SET configured_account_stream_id = ?1,
+                         active_account_stream_id = ?1, updated_at_ms = ?2
                      WHERE singleton_id = 1",
                     rusqlite::params![stream_id, observation.captured_at_unix_ms],
                 )?;
-                transaction.commit()
+                if configured_stream_id != Some(stream_id) {
+                    transaction.execute(
+                        "UPDATE app_meta
+                         SET settings_revision = settings_revision + 1, updated_at_ms = ?1
+                         WHERE singleton_id = 1",
+                        [observation.captured_at_unix_ms],
+                    )?;
+                }
+                transaction
+                    .commit()
+                    .map(|()| UsageCommitDisposition::Committed)
             })
             .await
             .map_err(SettingsStoreError::database)
@@ -670,21 +690,39 @@ impl AccountSettingsStore {
     /// transaction cannot be committed.
     pub async fn record_usage_failure(
         &self,
+        binding: &RefreshAccountBinding,
         attempted_at_unix_ms: i64,
         public_error: UsageSourceErrorCode,
-    ) -> Result<(), SettingsStoreError> {
+    ) -> Result<UsageCommitDisposition, SettingsStoreError> {
+        let binding = binding.clone();
         self.connection
             .call(move |database| {
                 let transaction =
                     database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                let stream_id: i64 = transaction.query_row(
-                    "SELECT configured_account_stream_id
-                     FROM app_settings
-                     WHERE singleton_id = 1
-                       AND configured_account_stream_id IS NOT NULL",
+                let (salt, revision, configured_path, configured_stream_id): (
+                    Vec<u8>,
+                    i64,
+                    Option<String>,
+                    Option<i64>,
+                ) = transaction.query_row(
+                    "SELECT m.local_hash_salt, m.settings_revision, s.auth_path,
+                            s.configured_account_stream_id
+                     FROM app_meta m
+                     JOIN app_settings s ON s.singleton_id = m.singleton_id
+                     WHERE m.singleton_id = 1",
                     [],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )?;
+                if revision != i64::from(binding.settings_revision)
+                    || configured_path.as_deref() != binding.canonical_path.to_str()
+                {
+                    return Ok(UsageCommitDisposition::Superseded);
+                }
+                let stream_id = if let Some(account_id) = binding.canonical_account_id.as_deref() {
+                    upsert_account_stream(&transaction, &salt, account_id, attempted_at_unix_ms)?.0
+                } else {
+                    configured_stream_id.ok_or(rusqlite::Error::QueryReturnedNoRows)?
+                };
                 transaction.execute(
                     "INSERT INTO usage_source_health
                      (account_stream_id, last_attempt_at_ms, last_success_at_ms,
@@ -700,7 +738,25 @@ impl AccountSettingsStore {
                         public_error.as_storage_key()
                     ],
                 )?;
-                transaction.commit()
+                if configured_stream_id != Some(stream_id) {
+                    transaction.execute(
+                        "UPDATE app_settings
+                         SET configured_account_stream_id = ?1,
+                             active_account_stream_id = NULL,
+                             updated_at_ms = ?2
+                         WHERE singleton_id = 1",
+                        rusqlite::params![stream_id, attempted_at_unix_ms],
+                    )?;
+                    transaction.execute(
+                        "UPDATE app_meta
+                         SET settings_revision = settings_revision + 1, updated_at_ms = ?1
+                         WHERE singleton_id = 1",
+                        [attempted_at_unix_ms],
+                    )?;
+                }
+                transaction
+                    .commit()
+                    .map(|()| UsageCommitDisposition::Committed)
             })
             .await
             .map_err(SettingsStoreError::database)
@@ -785,24 +841,30 @@ impl AccountSettingsStore {
                 };
                 let fresh_by_age = last_success
                     .is_some_and(|success| now_unix_ms.saturating_sub(success) <= FRESH_FOR_MS);
-                let freshness = if last_success.is_none() {
-                    SourceFreshness::Unavailable
-                } else if failures == 0 && fresh_by_age {
-                    SourceFreshness::Fresh
+                let source_status = if last_success.is_none() {
+                    SourceStatus::Unavailable
+                } else if failures > 0 {
+                    SourceStatus::StaleAfterFailure
+                } else if fresh_by_age {
+                    SourceStatus::Fresh
                 } else {
-                    SourceFreshness::Stale
+                    SourceStatus::StaleByAge
                 };
+                let window_starts_at_unix_s = resets_at.map(|reset| reset.saturating_sub(604_800));
+                let window_ends_at_unix_s = resets_at.map(|reset| reset.saturating_sub(1));
                 Ok::<Option<PublicLiveQuota>, rusqlite::Error>(Some(PublicLiveQuota {
                     used_micropoints: used,
                     remaining_micropoints: used.map(|value| 100_000_000_u32.saturating_sub(value)),
                     captured_at_unix_ms: captured_at,
                     resets_at_unix_s: resets_at,
+                    window_starts_at_unix_s,
+                    window_ends_at_unix_s,
                     plan_type,
                     allowed: allowed.map(|value| value != 0),
                     last_attempt_at_unix_ms: last_attempt,
                     last_success_at_unix_ms: last_success,
                     consecutive_failures: failures,
-                    freshness,
+                    source_status,
                     public_error,
                 }))
             })
@@ -826,6 +888,33 @@ impl AccountSettingsStore {
             .await
             .map_err(SettingsStoreError::database)
     }
+}
+
+fn upsert_account_stream(
+    transaction: &rusqlite::Transaction<'_>,
+    salt: &[u8],
+    account_id: &str,
+    observed_at_unix_ms: i64,
+) -> rusqlite::Result<(i64, [u8; 32])> {
+    let account_key = account_key(salt, account_id);
+    transaction.execute(
+        "INSERT INTO account_streams
+         (stream_key, account_key, first_seen_at_ms, last_seen_at_ms)
+         VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT(account_key) DO UPDATE
+           SET last_seen_at_ms = excluded.last_seen_at_ms",
+        rusqlite::params![
+            Uuid::now_v7().to_string(),
+            account_key.as_slice(),
+            observed_at_unix_ms
+        ],
+    )?;
+    let stream_id = transaction.query_row(
+        "SELECT id FROM account_streams WHERE account_key = ?1",
+        [account_key.as_slice()],
+        |row| row.get(0),
+    )?;
+    Ok((stream_id, account_key))
 }
 
 fn account_key(salt: &[u8], account_id: &str) -> [u8; 32] {

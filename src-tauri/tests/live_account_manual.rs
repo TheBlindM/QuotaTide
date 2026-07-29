@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use quotatide_core::UsageRefreshSource as _;
-use quotatide_lib::codex_usage::{CodexUsageClient, CodexUsageCollector, SelectedAuthFile};
+use quotatide_core::{AccountSettingsStore, UsageRefreshSource as _};
+use quotatide_lib::auth_file::read_auth_file;
+use quotatide_lib::codex_usage::{CodexUsageClient, CodexUsageCollector, ConfiguredAuthFile};
 
 #[tokio::test]
 #[ignore = "requires QUOTATIDE_AUTH_JSON and live Codex network access"]
@@ -14,14 +15,31 @@ async fn fetches_one_strict_current_seven_day_observation() {
         .duration_since(UNIX_EPOCH)
         .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
         .expect("system clock after epoch");
+    let material = read_auth_file(&path).expect("read selected auth file");
+    let directory = tempfile::tempdir().expect("temporary state directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open temporary settings store");
+    store
+        .configure_account(
+            0,
+            material
+                .canonical_path()
+                .to_str()
+                .expect("Unicode canonical auth path"),
+            material.account_id(),
+        )
+        .await
+        .expect("configure current account");
     let collector = CodexUsageCollector::new(
-        SelectedAuthFile::new(Some(path)),
+        ConfiguredAuthFile::new(store),
         CodexUsageClient::new().expect("build fixed-origin client"),
     );
 
     let observation = collector
         .fetch(captured_at_unix_ms)
         .await
+        .into_result()
         .expect("fetch current weekly usage");
 
     assert_eq!(observation.captured_at_unix_ms, captured_at_unix_ms);

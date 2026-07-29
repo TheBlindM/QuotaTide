@@ -81,21 +81,23 @@ export function App() {
     }
     let active = true;
     let unlisten: (() => void) | undefined;
-    const reloadLiveQuota = () => {
-      void getLiveQuota()
-        .then((liveQuota) => {
+    const reloadDashboard = () => {
+      void Promise.all([getAccountSettings(), getLiveQuota()])
+        .then(([accountSettings, liveQuota]) => {
           if (active) {
             setState((current) =>
-              current.kind === "ready" ? { ...current, liveQuota } : current,
+              current.kind === "ready"
+                ? { ...current, accountSettings, liveQuota }
+                : current,
             );
           }
         })
         .catch(() => undefined);
     };
-    void onDashboardChanged(reloadLiveQuota).then((dispose) => {
+    void onDashboardChanged(reloadDashboard).then((dispose) => {
       if (active) {
         unlisten = dispose;
-        reloadLiveQuota();
+        reloadDashboard();
       } else {
         dispose();
       }
@@ -205,22 +207,17 @@ export function projectLiveFixture(
     live.resetsAtUnixS === null ? null : live.resetsAtUnixS * 1000;
   const used = formatMicropoints(live.usedMicropoints);
   const remaining = formatMicropoints(live.remainingMicropoints);
-  const sourceHealth =
-    live.freshness === "fresh"
-      ? "Codex 额度 · 正常"
-      : live.consecutiveFailures > 0
-        ? `Codex 额度 · 连续 ${live.consecutiveFailures.toString()} 次失败（${usageErrorLabel(live.publicError)}）`
-        : "Codex 额度 · 数据超过 90 分钟";
+  const sourceHealth = sourceHealthLabel(live);
   return {
     ...base,
-    tone: live.freshness === "fresh" ? "fresh" : "stale",
+    tone: live.sourceStatus === "fresh" ? "fresh" : "stale",
     weeklyUsed: used,
     weeklyRemaining: remaining,
     sourceHealth,
     windowLabel:
-      resetMs === null
+      live.windowStartsAtUnixS === null || live.windowEndsAtUnixS === null
         ? ""
-        : `${formatDate(resetMs - 604_800_000)} 至 ${formatDate(resetMs - 1)}`,
+        : `${formatDate(live.windowStartsAtUnixS * 1000)} 至 ${formatDate(live.windowEndsAtUnixS * 1000)}`,
     lastSuccess:
       live.lastSuccessAtUnixMs === null
         ? "尚未成功同步"
@@ -232,6 +229,21 @@ export function projectLiveFixture(
     radarChance: "",
     days: [],
   };
+}
+
+function sourceHealthLabel(live: PublicLiveQuota): string {
+  switch (live.sourceStatus) {
+    case "fresh":
+      return "Codex 额度 · 正常";
+    case "stale_after_failure":
+      return `Codex 额度 · 连续 ${live.consecutiveFailures.toString()} 次失败（${usageErrorLabel(live.publicError)}）`;
+    case "stale_by_age":
+      return "Codex 额度 · 数据超过 90 分钟";
+    case "unavailable":
+      return live.consecutiveFailures > 0
+        ? `Codex 额度 · 首次同步失败（${usageErrorLabel(live.publicError)}）`
+        : "Codex 额度 · 等待首次同步";
+  }
 }
 
 function usageErrorLabel(error: UsageSourceErrorCode | null): string {

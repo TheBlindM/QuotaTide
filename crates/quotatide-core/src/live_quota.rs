@@ -1,5 +1,12 @@
+use std::error::Error;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
+use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use crate::{
@@ -40,6 +47,50 @@ pub struct WeeklyUsageObservation {
     pub allowed: Option<bool>,
 }
 
+/// In-memory binding between one refresh attempt and the selected account.
+///
+/// Its path and account identity are intentionally redacted from `Debug` and
+/// are never serialized or persisted in raw form.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RefreshAccountBinding {
+    pub(crate) settings_revision: u32,
+    pub(crate) canonical_path: PathBuf,
+    pub(crate) canonical_account_id: Option<String>,
+}
+
+impl std::fmt::Debug for RefreshAccountBinding {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RefreshAccountBinding")
+            .field("settings_revision", &self.settings_revision)
+            .field("canonical_path", &"<redacted>")
+            .field("canonical_account_id", &"<redacted>")
+            .finish()
+    }
+}
+
+impl RefreshAccountBinding {
+    #[must_use]
+    pub fn selected(settings_revision: u32, canonical_path: PathBuf) -> Self {
+        Self {
+            settings_revision,
+            canonical_path,
+            canonical_account_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_account_id(mut self, canonical_account_id: String) -> Self {
+        self.canonical_account_id = Some(canonical_account_id);
+        self
+    }
+
+    #[must_use]
+    pub fn canonical_path(&self) -> &std::path::Path {
+        &self.canonical_path
+    }
+}
+
 /// Stable source failure categories; raw upstream content never crosses this boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -57,13 +108,79 @@ pub enum UsageSourceErrorCode {
     WeeklyWindowUnavailable,
 }
 
-/// Freshness state projected alongside the last-known-good observation.
+/// Internal source failure with a stable public category and retained cause.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("live quota source failed: {code:?}")]
+pub struct UsageSourceError {
+    code: UsageSourceErrorCode,
+    #[source]
+    source: Option<Arc<dyn Error + Send + Sync>>,
+}
+
+impl UsageSourceError {
+    #[must_use]
+    pub const fn new(code: UsageSourceErrorCode) -> Self {
+        Self { code, source: None }
+    }
+
+    #[must_use]
+    pub fn with_source(
+        code: UsageSourceErrorCode,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            code,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    #[must_use]
+    pub const fn code(&self) -> UsageSourceErrorCode {
+        self.code
+    }
+}
+
+/// Complete source result, including the account selection observed at read time.
+pub struct UsageRefreshAttempt {
+    pub(crate) binding: Option<RefreshAccountBinding>,
+    pub(crate) result: Result<WeeklyUsageObservation, UsageSourceError>,
+}
+
+impl UsageRefreshAttempt {
+    #[must_use]
+    pub fn success(binding: RefreshAccountBinding, observation: WeeklyUsageObservation) -> Self {
+        Self {
+            binding: Some(binding),
+            result: Ok(observation),
+        }
+    }
+
+    #[must_use]
+    pub fn failure(binding: Option<RefreshAccountBinding>, error: UsageSourceError) -> Self {
+        Self {
+            binding,
+            result: Err(error),
+        }
+    }
+
+    /// Returns the source result while keeping the account binding internal.
+    ///
+    /// # Errors
+    ///
+    /// Returns the categorized source failure with its internal source chain.
+    pub fn into_result(self) -> Result<WeeklyUsageObservation, UsageSourceError> {
+        self.result
+    }
+}
+
+/// Complete source state; the UI only localizes this Rust-owned decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "../../../ui/src/bindings/")]
-pub enum SourceFreshness {
+pub enum SourceStatus {
     Fresh,
-    Stale,
+    StaleAfterFailure,
+    StaleByAge,
     Unavailable,
 }
 
@@ -78,6 +195,10 @@ pub struct PublicLiveQuota {
     pub captured_at_unix_ms: Option<i64>,
     #[ts(type = "number | null")]
     pub resets_at_unix_s: Option<i64>,
+    #[ts(type = "number | null")]
+    pub window_starts_at_unix_s: Option<i64>,
+    #[ts(type = "number | null")]
+    pub window_ends_at_unix_s: Option<i64>,
     pub plan_type: Option<String>,
     pub allowed: Option<bool>,
     #[ts(type = "number")]
@@ -85,7 +206,7 @@ pub struct PublicLiveQuota {
     #[ts(type = "number | null")]
     pub last_success_at_unix_ms: Option<i64>,
     pub consecutive_failures: u32,
-    pub freshness: SourceFreshness,
+    pub source_status: SourceStatus,
     pub public_error: Option<UsageSourceErrorCode>,
 }
 
@@ -137,6 +258,7 @@ pub enum RefreshTrigger {
 pub enum RefreshOutcome {
     Updated,
     Failed(UsageSourceErrorCode),
+    Superseded,
     ManualCooldown,
     NotDue,
 }
@@ -158,7 +280,7 @@ pub trait UsageRefreshSource: Clone + Send + Sync + 'static {
     fn fetch(
         &self,
         captured_at_unix_ms: i64,
-    ) -> impl std::future::Future<Output = Result<WeeklyUsageObservation, UsageSourceErrorCode>> + Send;
+    ) -> impl std::future::Future<Output = UsageRefreshAttempt> + Send;
 }
 
 #[derive(Default)]
@@ -181,6 +303,13 @@ pub struct RefreshCoordinator<S, C> {
 pub struct Application<V, S, C> {
     account: AccountApplication<V>,
     refresh: RefreshCoordinator<S, C>,
+    scheduler: Arc<SchedulerControl>,
+}
+
+struct SchedulerControl {
+    cancellation: CancellationToken,
+    resume_sequence: AtomicU64,
+    resume_sender: watch::Sender<u64>,
 }
 
 impl<V, S, C> Application<V, S, C>
@@ -190,8 +319,17 @@ where
     C: Clock,
 {
     #[must_use]
-    pub const fn new(account: AccountApplication<V>, refresh: RefreshCoordinator<S, C>) -> Self {
-        Self { account, refresh }
+    pub fn new(account: AccountApplication<V>, refresh: RefreshCoordinator<S, C>) -> Self {
+        let (resume_sender, _) = watch::channel(0);
+        Self {
+            account,
+            refresh,
+            scheduler: Arc::new(SchedulerControl {
+                cancellation: CancellationToken::new(),
+                resume_sequence: AtomicU64::new(0),
+                resume_sender,
+            }),
+        }
     }
 
     /// Reads the current secret-free account settings.
@@ -216,17 +354,6 @@ where
         path: &std::path::Path,
     ) -> Result<PublicAccountSettings, AccountConfigError<V::Error>> {
         self.account.select_account(expected_revision, path).await
-    }
-
-    /// Returns the selected path for native adapter composition only.
-    ///
-    /// # Errors
-    ///
-    /// Returns a storage error when settings cannot be read.
-    pub async fn configured_auth_path(
-        &self,
-    ) -> Result<Option<std::path::PathBuf>, AccountConfigError<V::Error>> {
-        self.account.configured_auth_path().await
     }
 
     /// Returns the secret-free live quota projection.
@@ -265,12 +392,91 @@ where
     ) -> Result<RefreshReceipt, RefreshCoordinatorError> {
         self.refresh.refresh_if_due(trigger, interval_ms).await
     }
+
+    /// Runs the cancellable startup/hourly scheduler until application shutdown.
+    ///
+    /// A resume signal performs at most one overdue refresh and resets the next
+    /// hourly deadline to one hour after resume.
+    pub async fn run_hourly_scheduler<F>(&self, refresh_on_startup: bool, on_refresh: F)
+    where
+        F: Fn() + Send + Sync,
+    {
+        const HOUR_MS: i64 = 60 * 60 * 1000;
+        let cancellation = self.scheduler.cancellation.clone();
+        let mut resumes = self.scheduler.resume_sender.subscribe();
+        let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+
+        if refresh_on_startup
+            && run_scheduled_refresh(&cancellation, self.refresh(RefreshTrigger::Startup)).await
+        {
+            on_refresh();
+        }
+
+        loop {
+            tokio::select! {
+                () = cancellation.cancelled() => break,
+                _ = interval.tick() => {
+                    if run_scheduled_refresh(
+                        &cancellation,
+                        self.refresh(RefreshTrigger::Hourly),
+                    ).await {
+                        on_refresh();
+                    } else {
+                        break;
+                    }
+                }
+                changed = resumes.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    if run_scheduled_refresh(
+                        &cancellation,
+                        self.refresh_if_due(RefreshTrigger::Resume, HOUR_MS),
+                    ).await {
+                        on_refresh();
+                    } else {
+                        break;
+                    }
+                    interval.reset();
+                }
+            }
+        }
+    }
+
+    /// Notifies the scheduler that the operating system resumed the app.
+    pub fn notify_resume(&self) {
+        let sequence = self
+            .scheduler
+            .resume_sequence
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        self.scheduler.resume_sender.send_replace(sequence);
+    }
+
+    /// Cancels scheduler work so it cannot hold application shutdown open.
+    pub fn cancel_scheduler(&self) {
+        self.scheduler.cancellation.cancel();
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+async fn run_scheduled_refresh(
+    cancellation: &CancellationToken,
+    refresh: impl std::future::Future<Output = Result<RefreshReceipt, RefreshCoordinatorError>>,
+) -> bool {
+    tokio::select! {
+        () = cancellation.cancelled() => false,
+        _ = refresh => true,
+    }
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum RefreshCoordinatorError {
     #[error("live quota storage unavailable")]
-    StorageUnavailable,
+    StorageUnavailable(#[source] Arc<SettingsStoreError>),
+    #[error("live quota refresh flight ended before publishing a result")]
+    FlightUnavailable,
 }
 
 impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
@@ -335,17 +541,17 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
                 outcome: RefreshOutcome::ManualCooldown,
             }),
             Role::Follower(mut receiver) => loop {
-                if let Some(result) = *receiver.borrow() {
+                if let Some(result) = receiver.borrow().clone() {
                     return result;
                 }
                 receiver
                     .changed()
                     .await
-                    .map_err(|_| RefreshCoordinatorError::StorageUnavailable)?;
+                    .map_err(|_| RefreshCoordinatorError::FlightUnavailable)?;
             },
             Role::Leader(sender) => {
                 let result = self.run_once(now).await;
-                let _ = sender.send(Some(result));
+                let _ = sender.send(Some(result.clone()));
                 self.state.lock().await.in_flight = None;
                 result
             }
@@ -381,20 +587,41 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
         &self,
         attempted_at_unix_ms: i64,
     ) -> Result<RefreshReceipt, RefreshCoordinatorError> {
-        let outcome = match self.source.fetch(attempted_at_unix_ms).await {
+        let attempt = self.source.fetch(attempted_at_unix_ms).await;
+        let outcome = match attempt.result {
             Ok(observation) => {
-                self.store
-                    .record_usage_success(observation)
+                let Some(binding) = attempt.binding.as_ref() else {
+                    return Ok(RefreshReceipt {
+                        attempted_at_unix_ms,
+                        outcome: RefreshOutcome::Superseded,
+                    });
+                };
+                match self
+                    .store
+                    .record_usage_success(binding, observation)
                     .await
-                    .map_err(map_store)?;
-                RefreshOutcome::Updated
+                    .map_err(map_store)?
+                {
+                    crate::UsageCommitDisposition::Committed => RefreshOutcome::Updated,
+                    crate::UsageCommitDisposition::Superseded => RefreshOutcome::Superseded,
+                }
             }
             Err(error) => {
-                self.store
-                    .record_usage_failure(attempted_at_unix_ms, error)
-                    .await
-                    .map_err(map_store)?;
-                RefreshOutcome::Failed(error)
+                let code = error.code();
+                if let Some(binding) = attempt.binding.as_ref()
+                    && self
+                        .store
+                        .record_usage_failure(binding, attempted_at_unix_ms, code)
+                        .await
+                        .map_err(map_store)?
+                        == crate::UsageCommitDisposition::Superseded
+                {
+                    return Ok(RefreshReceipt {
+                        attempted_at_unix_ms,
+                        outcome: RefreshOutcome::Superseded,
+                    });
+                }
+                RefreshOutcome::Failed(code)
             }
         };
         Ok(RefreshReceipt {
@@ -404,8 +631,8 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
     }
 }
 
-fn map_store(_error: SettingsStoreError) -> RefreshCoordinatorError {
-    RefreshCoordinatorError::StorageUnavailable
+fn map_store(error: SettingsStoreError) -> RefreshCoordinatorError {
+    RefreshCoordinatorError::StorageUnavailable(Arc::new(error))
 }
 
 #[cfg(test)]

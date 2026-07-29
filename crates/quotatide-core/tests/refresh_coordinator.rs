@@ -2,11 +2,28 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 use quotatide_core::{
-    AccountSettingsStore, Clock, QuotaUnits, RefreshCoordinator, RefreshOutcome, RefreshTrigger,
-    UsageRefreshSource, UsageSourceErrorCode, WeeklyUsageObservation,
+    AccountApplication, AccountSettingsStore, Application, AuthCandidateValidator, Clock,
+    PublicError, QuotaUnits, RefreshAccountBinding, RefreshCoordinator, RefreshOutcome,
+    RefreshTrigger, SettingsManager, UsageRefreshAttempt, UsageRefreshSource, UsageSourceError,
+    UsageSourceErrorCode, ValidatedAccountCandidate, WeeklyUsageObservation,
 };
 use tempfile::tempdir;
 use tokio::sync::Notify;
+
+#[derive(Clone)]
+struct UnusedValidator;
+
+impl AuthCandidateValidator for UnusedValidator {
+    type Error = std::convert::Infallible;
+
+    fn validate(&self, _path: &std::path::Path) -> Result<ValidatedAccountCandidate, Self::Error> {
+        unreachable!("scheduler test does not configure accounts")
+    }
+
+    fn public_error(error: &Self::Error) -> PublicError {
+        match *error {}
+    }
+}
 
 #[derive(Clone)]
 struct FakeClock(Arc<AtomicI64>);
@@ -56,8 +73,7 @@ impl UsageRefreshSource for FakeSource {
     fn fetch(
         &self,
         captured_at_unix_ms: i64,
-    ) -> impl std::future::Future<Output = Result<WeeklyUsageObservation, UsageSourceErrorCode>> + Send
-    {
+    ) -> impl std::future::Future<Output = UsageRefreshAttempt> + Send {
         let calls = Arc::clone(&self.calls);
         let release = self.release.clone();
         let mut result = self.result.clone();
@@ -69,7 +85,15 @@ impl UsageRefreshSource for FakeSource {
             if let Ok(observation) = &mut result {
                 observation.captured_at_unix_ms = captured_at_unix_ms;
             }
-            result
+            let binding =
+                RefreshAccountBinding::selected(1, std::path::PathBuf::from("/chosen/auth.json"))
+                    .with_account_id("account-one".to_owned());
+            match result {
+                Ok(observation) => UsageRefreshAttempt::success(binding, observation),
+                Err(error) => {
+                    UsageRefreshAttempt::failure(Some(binding), UsageSourceError::new(error))
+                }
+            }
         }
     }
 }
@@ -120,8 +144,14 @@ async fn concurrent_triggers_share_one_source_attempt_and_result() {
     release_task.await.expect("release task");
 
     assert_eq!(calls_for_assert.load(Ordering::SeqCst), 1);
-    assert_eq!(startup.expect("startup"), hourly.expect("hourly"));
-    assert_eq!(startup.expect("startup"), manual.expect("manual"));
+    assert_eq!(
+        startup.as_ref().expect("startup"),
+        hourly.as_ref().expect("hourly")
+    );
+    assert_eq!(
+        startup.as_ref().expect("startup"),
+        manual.as_ref().expect("manual")
+    );
 }
 
 #[tokio::test]
@@ -218,7 +248,11 @@ async fn resume_runs_once_only_after_the_hourly_deadline() {
 async fn timeout_is_persisted_as_public_health_without_discarding_the_snapshot() {
     let (_directory, store) = configured_store().await;
     store
-        .record_usage_success(observation(1_785_000_000_000))
+        .record_usage_success(
+            &RefreshAccountBinding::selected(1, std::path::PathBuf::from("/chosen/auth.json"))
+                .with_account_id("account-one".to_owned()),
+            observation(1_785_000_000_000),
+        )
         .await
         .expect("seed last-known-good");
     let clock = FakeClock::new(1_785_003_600_000);
@@ -245,4 +279,83 @@ async fn timeout_is_persisted_as_public_health_without_discarding_the_snapshot()
     assert_eq!(public.used_micropoints, Some(20_000_000));
     assert_eq!(public.consecutive_failures, 1);
     assert_eq!(public.public_error, Some(UsageSourceErrorCode::Timeout));
+}
+
+#[tokio::test]
+async fn a_storage_failure_retains_its_internal_source_chain() {
+    let (directory, store) = configured_store().await;
+    {
+        let connection =
+            tokio_rusqlite::rusqlite::Connection::open(directory.path().join("state.sqlite3"))
+                .expect("open fault injector");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_coordinator_health
+                 BEFORE INSERT ON usage_source_health
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected coordinator failure');
+                 END;",
+            )
+            .expect("install fault injector");
+    }
+    let coordinator = RefreshCoordinator::new(
+        store,
+        FakeSource::successful(1_785_000_000_000),
+        FakeClock::new(1_785_000_000_000),
+    );
+
+    let error = coordinator
+        .refresh(RefreshTrigger::Startup)
+        .await
+        .expect_err("storage failure");
+
+    assert!(std::error::Error::source(&error).is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn resume_resets_the_next_hourly_deadline_and_shutdown_cancels_the_actor() {
+    let (_directory, store) = configured_store().await;
+    let source = FakeSource::successful(1_785_000_000_000);
+    let calls = Arc::clone(&source.calls);
+    let clock = FakeClock::new(1_785_000_000_000);
+    let coordinator = RefreshCoordinator::new(store.clone(), source, clock.clone());
+    let application = Application::new(
+        AccountApplication::new(SettingsManager::new(store, UnusedValidator)),
+        coordinator,
+    );
+    let callbacks = Arc::new(AtomicUsize::new(0));
+    let callbacks_for_task = Arc::clone(&callbacks);
+    let application_for_task = application.clone();
+    let scheduler = tokio::spawn(async move {
+        application_for_task
+            .run_hourly_scheduler(true, move || {
+                callbacks_for_task.fetch_add(1, Ordering::SeqCst);
+            })
+            .await;
+    });
+
+    wait_for_count(&calls, 1).await;
+    clock.set(1_785_001_800_000);
+    tokio::time::advance(std::time::Duration::from_secs(30 * 60)).await;
+    application.notify_resume();
+    wait_for_count(&callbacks, 2).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    clock.set(1_785_003_600_000);
+    tokio::time::advance(std::time::Duration::from_secs(30 * 60)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    clock.set(1_785_005_400_000);
+    tokio::time::advance(std::time::Duration::from_secs(30 * 60)).await;
+    wait_for_count(&calls, 2).await;
+
+    application.cancel_scheduler();
+    scheduler.await.expect("scheduler shutdown");
+}
+
+async fn wait_for_count(counter: &AtomicUsize, expected: usize) {
+    while counter.load(Ordering::SeqCst) < expected {
+        tokio::task::yield_now().await;
+    }
 }

@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::path::Path;
 use std::time::Duration;
 
 use futures_util::StreamExt as _;
 use quotatide_core::{
-    QuotaUnits, UsageRefreshSource, UsageSourceErrorCode, WeeklyUsageObservation,
+    AccountSettingsStore, QuotaUnits, RefreshAccountBinding, UsageRefreshAttempt,
+    UsageRefreshSource, UsageSourceError, UsageSourceErrorCode, WeeklyUsageObservation,
 };
 use reqwest::{Client, StatusCode};
 use secrecy::{ExposeSecret as _, SecretString};
@@ -46,8 +46,20 @@ struct RequestCredentials {
     fingerprint: [u8; 32],
 }
 
+struct CurrentAuth {
+    binding: RefreshAccountBinding,
+    credentials: RequestCredentials,
+}
+
+struct AuthReadFailure {
+    binding: Option<RefreshAccountBinding>,
+    error: UsageSourceError,
+}
+
 trait AuthMaterialSource: Clone + Send + Sync + 'static {
-    fn read_current(&self) -> Result<RequestCredentials, UsageSourceErrorCode>;
+    fn read_current(
+        &self,
+    ) -> impl std::future::Future<Output = Result<CurrentAuth, AuthReadFailure>> + Send;
 }
 
 trait UsageFetcher: Clone + Send + Sync + 'static {
@@ -55,61 +67,68 @@ trait UsageFetcher: Clone + Send + Sync + 'static {
         &'a self,
         credentials: &'a RequestCredentials,
         captured_at_unix_ms: i64,
-    ) -> impl std::future::Future<Output = Result<WeeklyUsageObservation, UsageSourceErrorCode>>
-    + Send
-    + 'a;
+    ) -> impl std::future::Future<Output = Result<WeeklyUsageObservation, UsageSourceError>> + Send + 'a;
 }
 
-/// Mutable current path shared by settings and the read-only auth adapter.
+/// Read-only auth source backed by the versioned settings store.
 #[derive(Clone)]
-pub struct SelectedAuthFile {
-    path: Arc<RwLock<Option<PathBuf>>>,
+pub struct ConfiguredAuthFile {
+    store: AccountSettingsStore,
 }
 
-impl SelectedAuthFile {
+impl ConfiguredAuthFile {
     #[must_use]
-    pub fn new(path: Option<PathBuf>) -> Self {
-        Self {
-            path: Arc::new(RwLock::new(path)),
-        }
-    }
-
-    /// Replaces only the in-memory selected path after a successful settings commit.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the in-memory path lock is unavailable.
-    pub fn replace(&self, path: PathBuf) -> Result<(), UsageSourceErrorCode> {
-        *self
-            .path
-            .write()
-            .map_err(|_| UsageSourceErrorCode::AuthPathUnavailable)? = Some(path);
-        Ok(())
+    pub const fn new(store: AccountSettingsStore) -> Self {
+        Self { store }
     }
 }
 
-impl AuthMaterialSource for SelectedAuthFile {
-    fn read_current(&self) -> Result<RequestCredentials, UsageSourceErrorCode> {
-        let path = self
-            .path
-            .read()
-            .map_err(|_| UsageSourceErrorCode::AuthPathUnavailable)?
-            .clone()
-            .ok_or(UsageSourceErrorCode::AuthPathUnavailable)?;
-        credentials_from_file(&path)
+impl AuthMaterialSource for ConfiguredAuthFile {
+    #[allow(clippy::manual_async_fn)]
+    fn read_current(
+        &self,
+    ) -> impl std::future::Future<Output = Result<CurrentAuth, AuthReadFailure>> + Send {
+        let store = self.store.clone();
+        async move {
+            let binding = store
+                .configured_refresh_binding()
+                .await
+                .map_err(|error| AuthReadFailure {
+                    binding: None,
+                    error: UsageSourceError::with_source(
+                        UsageSourceErrorCode::AuthPathUnavailable,
+                        error,
+                    ),
+                })?
+                .ok_or_else(|| AuthReadFailure {
+                    binding: None,
+                    error: UsageSourceError::new(UsageSourceErrorCode::AuthPathUnavailable),
+                })?;
+            let credentials = credentials_from_file(binding.canonical_path()).map_err(|error| {
+                AuthReadFailure {
+                    binding: Some(binding.clone()),
+                    error,
+                }
+            })?;
+            let binding = binding.with_account_id(credentials.account_id.clone());
+            Ok(CurrentAuth {
+                binding,
+                credentials,
+            })
+        }
     }
 }
 
 /// Production current-account collector. Every attempt reopens auth.json.
 #[derive(Clone)]
-pub struct CodexUsageCollector<A = SelectedAuthFile, F = CodexUsageClient> {
+pub struct CodexUsageCollector<A = ConfiguredAuthFile, F = CodexUsageClient> {
     auth: A,
     fetcher: F,
 }
 
 impl CodexUsageCollector {
     #[must_use]
-    pub const fn new(auth: SelectedAuthFile, fetcher: CodexUsageClient) -> Self {
+    pub const fn new(auth: ConfiguredAuthFile, fetcher: CodexUsageClient) -> Self {
         Self { auth, fetcher }
     }
 }
@@ -118,24 +137,66 @@ impl<A: AuthMaterialSource, F: UsageFetcher> UsageRefreshSource for CodexUsageCo
     fn fetch(
         &self,
         captured_at_unix_ms: i64,
-    ) -> impl std::future::Future<Output = Result<WeeklyUsageObservation, UsageSourceErrorCode>> + Send
-    {
+    ) -> impl std::future::Future<Output = UsageRefreshAttempt> + Send {
         let auth = self.auth.clone();
         let fetcher = self.fetcher.clone();
         async move {
-            let first = auth.read_current()?;
-            match fetcher.fetch(&first, captured_at_unix_ms).await {
-                Err(
-                    error @ (UsageSourceErrorCode::AuthenticationStale
-                    | UsageSourceErrorCode::PermissionDenied),
-                ) => {
-                    let refreshed = auth.read_current()?;
-                    if refreshed.fingerprint == first.fingerprint {
-                        return Err(error);
-                    }
-                    fetcher.fetch(&refreshed, captured_at_unix_ms).await
+            let CurrentAuth {
+                binding,
+                credentials: first,
+            } = match auth.read_current().await {
+                Ok(current) => current,
+                Err(failure) => {
+                    return UsageRefreshAttempt::failure(failure.binding, failure.error);
                 }
-                result => result,
+            };
+            match fetcher.fetch(&first, captured_at_unix_ms).await {
+                Ok(observation) => UsageRefreshAttempt::success(binding, observation),
+                Err(error)
+                    if matches!(
+                        error.code(),
+                        UsageSourceErrorCode::AuthenticationStale
+                            | UsageSourceErrorCode::PermissionDenied
+                    ) =>
+                {
+                    let CurrentAuth {
+                        binding: refreshed_binding,
+                        credentials: refreshed,
+                    } = match auth.read_current().await {
+                        Ok(current) => current,
+                        Err(failure) => {
+                            return UsageRefreshAttempt::failure(
+                                failure.binding.or(Some(binding)),
+                                UsageSourceError::with_source(
+                                    UsageSourceErrorCode::AuthenticationStale,
+                                    failure.error,
+                                ),
+                            );
+                        }
+                    };
+                    if refreshed.fingerprint == first.fingerprint {
+                        return UsageRefreshAttempt::failure(
+                            Some(binding),
+                            UsageSourceError::with_source(
+                                UsageSourceErrorCode::AuthenticationStale,
+                                error,
+                            ),
+                        );
+                    }
+                    match fetcher.fetch(&refreshed, captured_at_unix_ms).await {
+                        Ok(observation) => {
+                            UsageRefreshAttempt::success(refreshed_binding, observation)
+                        }
+                        Err(retry_error) => UsageRefreshAttempt::failure(
+                            Some(refreshed_binding),
+                            UsageSourceError::with_source(
+                                UsageSourceErrorCode::AuthenticationStale,
+                                retry_error,
+                            ),
+                        ),
+                    }
+                }
+                Err(error) => UsageRefreshAttempt::failure(Some(binding), error),
             }
         }
     }
@@ -147,9 +208,8 @@ impl UsageFetcher for CodexUsageClient {
         &'a self,
         credentials: &'a RequestCredentials,
         captured_at_unix_ms: i64,
-    ) -> impl std::future::Future<Output = Result<WeeklyUsageObservation, UsageSourceErrorCode>>
-    + Send
-    + 'a {
+    ) -> impl std::future::Future<Output = Result<WeeklyUsageObservation, UsageSourceError>> + Send + 'a
+    {
         async move {
             self.fetch(
                 &credentials.access_token,
@@ -157,13 +217,15 @@ impl UsageFetcher for CodexUsageClient {
                 captured_at_unix_ms,
             )
             .await
-            .map_err(|error| error.code())
+            .map_err(|error| UsageSourceError::with_source(error.code(), error))
         }
     }
 }
 
-fn credentials_from_file(path: &Path) -> Result<RequestCredentials, UsageSourceErrorCode> {
-    let material = read_auth_file(path).map_err(|_| UsageSourceErrorCode::AuthPathUnavailable)?;
+fn credentials_from_file(path: &Path) -> Result<RequestCredentials, UsageSourceError> {
+    let material = read_auth_file(path).map_err(|error| {
+        UsageSourceError::with_source(UsageSourceErrorCode::AuthPathUnavailable, error)
+    })?;
     let mut hasher = Sha256::new();
     hasher.update(material.access_token().expose_secret().as_bytes());
     hasher.update([0]);
@@ -357,11 +419,12 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::{
-        AuthMaterialSource, CodexUsageClient, CodexUsageCollector, RequestCredentials,
-        UsageFetcher, normalize_usage,
+        AuthMaterialSource, AuthReadFailure, CodexUsageClient, CodexUsageCollector, CurrentAuth,
+        RequestCredentials, UsageFetcher, normalize_usage,
     };
     use quotatide_core::{
-        QuotaUnits, UsageRefreshSource, UsageSourceErrorCode, WeeklyUsageObservation,
+        QuotaUnits, RefreshAccountBinding, UsageRefreshSource, UsageSourceError,
+        UsageSourceErrorCode, WeeklyUsageObservation,
     };
 
     const VALID: &str = r#"{
@@ -463,15 +526,28 @@ mod tests {
     }
 
     impl AuthMaterialSource for FakeAuth {
-        fn read_current(&self) -> Result<RequestCredentials, UsageSourceErrorCode> {
-            self.reads.fetch_add(1, Ordering::SeqCst);
-            let mut credentials = self.credentials.lock().expect("credential queue");
-            if credentials.len() > 1 {
-                Ok(credentials.pop_front().expect("queued credentials"))
-            } else {
-                credentials
-                    .pop_front()
-                    .ok_or(UsageSourceErrorCode::AuthPathUnavailable)
+        #[allow(clippy::manual_async_fn)]
+        fn read_current(
+            &self,
+        ) -> impl std::future::Future<Output = Result<CurrentAuth, AuthReadFailure>> + Send
+        {
+            let this = self.clone();
+            async move {
+                this.reads.fetch_add(1, Ordering::SeqCst);
+                let mut credentials = this.credentials.lock().expect("credential queue");
+                let current = credentials.pop_front().ok_or_else(|| AuthReadFailure {
+                    binding: None,
+                    error: UsageSourceError::new(UsageSourceErrorCode::AuthPathUnavailable),
+                })?;
+                let binding = RefreshAccountBinding::selected(
+                    1,
+                    std::path::PathBuf::from("/chosen/auth.json"),
+                )
+                .with_account_id(current.account_id.clone());
+                Ok(CurrentAuth {
+                    binding,
+                    credentials: current,
+                })
             }
         }
     }
@@ -479,7 +555,7 @@ mod tests {
     #[derive(Clone)]
     struct FakeFetcher {
         calls: Arc<AtomicUsize>,
-        results: Arc<Mutex<VecDeque<Result<WeeklyUsageObservation, UsageSourceErrorCode>>>>,
+        results: Arc<Mutex<VecDeque<Result<WeeklyUsageObservation, UsageSourceError>>>>,
     }
 
     impl UsageFetcher for FakeFetcher {
@@ -488,9 +564,8 @@ mod tests {
             &'a self,
             _credentials: &'a RequestCredentials,
             _captured_at_unix_ms: i64,
-        ) -> impl std::future::Future<
-            Output = Result<WeeklyUsageObservation, UsageSourceErrorCode>,
-        > + Send
+        ) -> impl std::future::Future<Output = Result<WeeklyUsageObservation, UsageSourceError>>
+        + Send
         + 'a {
             async move {
                 self.calls.fetch_add(1, Ordering::SeqCst);
@@ -518,13 +593,15 @@ mod tests {
             fetcher: FakeFetcher {
                 calls: Arc::clone(&calls),
                 results: Arc::new(Mutex::new(VecDeque::from([
-                    Err(UsageSourceErrorCode::AuthenticationStale),
+                    Err(UsageSourceError::new(
+                        UsageSourceErrorCode::AuthenticationStale,
+                    )),
                     Ok(test_observation()),
                 ]))),
             },
         };
 
-        let result = collector.fetch(1_785_000_000_000).await;
+        let result = collector.fetch(1_785_000_000_000).await.into_result();
 
         assert!(result.is_ok());
         assert_eq!(reads.load(Ordering::SeqCst), 2);
@@ -532,7 +609,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unchanged_credentials_preserve_the_original_permission_failure() {
+    async fn unchanged_credentials_normalize_permission_failure_as_stale_authentication() {
         let reads = Arc::new(AtomicUsize::new(0));
         let calls = Arc::new(AtomicUsize::new(0));
         let collector = CodexUsageCollector {
@@ -545,17 +622,57 @@ mod tests {
             },
             fetcher: FakeFetcher {
                 calls: Arc::clone(&calls),
-                results: Arc::new(Mutex::new(VecDeque::from([Err(
+                results: Arc::new(Mutex::new(VecDeque::from([Err(UsageSourceError::new(
                     UsageSourceErrorCode::PermissionDenied,
-                )]))),
+                ))]))),
             },
         };
 
-        let result = collector.fetch(1_785_000_000_000).await;
+        let result = collector.fetch(1_785_000_000_000).await.into_result();
 
-        assert_eq!(result, Err(UsageSourceErrorCode::PermissionDenied));
+        assert_eq!(
+            result.expect_err("stale authentication").code(),
+            UsageSourceErrorCode::AuthenticationStale
+        );
         assert_eq!(reads.load(Ordering::SeqCst), 2);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_rotation_retry_is_normalized_and_retains_its_source_chain() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let collector = CodexUsageCollector {
+            auth: FakeAuth {
+                reads: Arc::clone(&reads),
+                credentials: Arc::new(Mutex::new(VecDeque::from([
+                    credentials("token-a"),
+                    credentials("token-b"),
+                ]))),
+            },
+            fetcher: FakeFetcher {
+                calls: Arc::clone(&calls),
+                results: Arc::new(Mutex::new(VecDeque::from([
+                    Err(UsageSourceError::new(
+                        UsageSourceErrorCode::AuthenticationStale,
+                    )),
+                    Err(UsageSourceError::new(
+                        UsageSourceErrorCode::PermissionDenied,
+                    )),
+                ]))),
+            },
+        };
+
+        let error = collector
+            .fetch(1_785_000_000_000)
+            .await
+            .into_result()
+            .expect_err("retry remains stale");
+
+        assert_eq!(error.code(), UsageSourceErrorCode::AuthenticationStale);
+        assert!(std::error::Error::source(&error).is_some());
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     fn credentials(token: &str) -> RequestCredentials {

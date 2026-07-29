@@ -1,5 +1,6 @@
 use quotatide_core::{
-    AccountSettingsStore, QuotaUnits, SourceFreshness, UsageSourceErrorCode, WeeklyUsageObservation,
+    AccountSettingsStore, QuotaUnits, RefreshAccountBinding, SourceStatus, UsageCommitDisposition,
+    UsageSourceErrorCode, WeeklyUsageObservation,
 };
 use tempfile::tempdir;
 
@@ -14,6 +15,10 @@ fn observation(captured_at_unix_ms: i64, used_micropoints: i64) -> WeeklyUsageOb
     }
 }
 
+fn binding(revision: u32, path: &str, account_id: &str) -> RefreshAccountBinding {
+    RefreshAccountBinding::selected(revision, path.into()).with_account_id(account_id.to_owned())
+}
+
 #[tokio::test]
 async fn success_commits_observation_and_health_as_one_public_snapshot() {
     let directory = tempdir().expect("temporary directory");
@@ -26,7 +31,10 @@ async fn success_commits_observation_and_health_as_one_public_snapshot() {
         .expect("configure account");
 
     store
-        .record_usage_success(observation(1_785_000_000_000, 41_250_000))
+        .record_usage_success(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            observation(1_785_000_000_000, 41_250_000),
+        )
         .await
         .expect("record success");
     let quota = store
@@ -39,7 +47,9 @@ async fn success_commits_observation_and_health_as_one_public_snapshot() {
     assert_eq!(quota.remaining_micropoints, Some(58_750_000));
     assert_eq!(quota.last_success_at_unix_ms, Some(1_785_000_000_000));
     assert_eq!(quota.consecutive_failures, 0);
-    assert_eq!(quota.freshness, SourceFreshness::Fresh);
+    assert_eq!(quota.source_status, SourceStatus::Fresh);
+    assert_eq!(quota.window_starts_at_unix_s, Some(1_785_395_200));
+    assert_eq!(quota.window_ends_at_unix_s, Some(1_785_999_999));
     assert_eq!(quota.public_error, None);
 }
 
@@ -54,12 +64,19 @@ async fn failures_keep_last_known_good_and_mark_it_stale() {
         .await
         .expect("configure account");
     store
-        .record_usage_success(observation(1_785_000_000_000, 41_250_000))
+        .record_usage_success(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            observation(1_785_000_000_000, 41_250_000),
+        )
         .await
         .expect("record success");
 
     store
-        .record_usage_failure(1_785_000_200_000, UsageSourceErrorCode::RateLimited)
+        .record_usage_failure(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            1_785_000_200_000,
+            UsageSourceErrorCode::RateLimited,
+        )
         .await
         .expect("record failure");
     let quota = store
@@ -70,7 +87,7 @@ async fn failures_keep_last_known_good_and_mark_it_stale() {
 
     assert_eq!(quota.used_micropoints, Some(41_250_000));
     assert_eq!(quota.consecutive_failures, 1);
-    assert_eq!(quota.freshness, SourceFreshness::Stale);
+    assert_eq!(quota.source_status, SourceStatus::StaleAfterFailure);
     assert_eq!(quota.public_error, Some(UsageSourceErrorCode::RateLimited));
 }
 
@@ -86,7 +103,11 @@ async fn failure_before_any_success_is_available_as_unavailable_health() {
         .expect("configure account");
 
     store
-        .record_usage_failure(1_785_000_200_000, UsageSourceErrorCode::Timeout)
+        .record_usage_failure(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            1_785_000_200_000,
+            UsageSourceErrorCode::Timeout,
+        )
         .await
         .expect("record failure");
     let quota = store
@@ -98,7 +119,7 @@ async fn failure_before_any_success_is_available_as_unavailable_health() {
     assert_eq!(quota.used_micropoints, None);
     assert_eq!(quota.last_success_at_unix_ms, None);
     assert_eq!(quota.consecutive_failures, 1);
-    assert_eq!(quota.freshness, SourceFreshness::Unavailable);
+    assert_eq!(quota.source_status, SourceStatus::Unavailable);
     assert_eq!(quota.public_error, Some(UsageSourceErrorCode::Timeout));
 }
 
@@ -113,7 +134,10 @@ async fn account_switches_do_not_project_the_previous_accounts_quota() {
         .await
         .expect("first account");
     store
-        .record_usage_success(observation(1_785_000_000_000, 41_250_000))
+        .record_usage_success(
+            &binding(1, "/one/auth.json", "account-one"),
+            observation(1_785_000_000_000, 41_250_000),
+        )
         .await
         .expect("first observation");
 
@@ -142,7 +166,10 @@ async fn age_alone_makes_a_last_success_stale_after_ninety_minutes() {
         .await
         .expect("configure account");
     store
-        .record_usage_success(observation(1_785_000_000_000, 41_250_000))
+        .record_usage_success(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            observation(1_785_000_000_000, 41_250_000),
+        )
         .await
         .expect("record success");
 
@@ -152,7 +179,7 @@ async fn age_alone_makes_a_last_success_stale_after_ninety_minutes() {
         .expect("live quota")
         .expect("last-known-good");
 
-    assert_eq!(quota.freshness, SourceFreshness::Stale);
+    assert_eq!(quota.source_status, SourceStatus::StaleByAge);
 }
 
 #[tokio::test]
@@ -183,7 +210,10 @@ async fn a_mid_transaction_failure_leaves_no_partial_success_visible() {
 
     assert!(
         store
-            .record_usage_success(observation(1_785_000_000_000, 41_250_000))
+            .record_usage_success(
+                &binding(1, "/chosen/auth.json", "account-one"),
+                observation(1_785_000_000_000, 41_250_000),
+            )
             .await
             .is_err()
     );
@@ -194,4 +224,122 @@ async fn a_mid_transaction_failure_leaves_no_partial_success_visible() {
             .expect("public projection"),
         None
     );
+}
+
+#[tokio::test]
+async fn account_identity_changes_on_the_same_path_create_a_new_current_stream() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure first account");
+    let first_label = store
+        .public_settings()
+        .await
+        .expect("first public settings")
+        .account_label;
+    store
+        .record_usage_success(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            observation(1_785_000_000_000, 41_250_000),
+        )
+        .await
+        .expect("first account observation");
+
+    let disposition = store
+        .record_usage_success(
+            &binding(1, "/chosen/auth.json", "account-two"),
+            observation(1_785_000_100_000, 7_000_000),
+        )
+        .await
+        .expect("second account observation");
+    let public = store
+        .public_live_quota(1_785_000_100_000)
+        .await
+        .expect("current quota")
+        .expect("second account quota");
+
+    assert_eq!(disposition, UsageCommitDisposition::Committed);
+    assert_eq!(store.account_stream_count().await.expect("stream count"), 2);
+    assert_eq!(public.used_micropoints, Some(7_000_000));
+    let updated_settings = store
+        .public_settings()
+        .await
+        .expect("updated account settings");
+    assert_eq!(updated_settings.settings_revision, 2);
+    assert_ne!(updated_settings.account_label, first_label);
+}
+
+#[tokio::test]
+async fn a_response_from_a_previous_selection_is_discarded() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/one/auth.json", "account-one")
+        .await
+        .expect("first selection");
+    store
+        .configure_account(1, "/two/auth.json", "account-two")
+        .await
+        .expect("second selection");
+
+    let disposition = store
+        .record_usage_success(
+            &binding(1, "/one/auth.json", "account-one"),
+            observation(1_785_000_000_000, 41_250_000),
+        )
+        .await
+        .expect("discard old response");
+
+    assert_eq!(disposition, UsageCommitDisposition::Superseded);
+    assert_eq!(
+        store
+            .public_live_quota(1_785_000_100_000)
+            .await
+            .expect("current quota"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn a_new_account_failure_never_displays_the_previous_accounts_snapshot() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure first account");
+    store
+        .record_usage_success(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            observation(1_785_000_000_000, 41_250_000),
+        )
+        .await
+        .expect("first account observation");
+
+    store
+        .record_usage_failure(
+            &binding(1, "/chosen/auth.json", "account-two"),
+            1_785_000_100_000,
+            UsageSourceErrorCode::Timeout,
+        )
+        .await
+        .expect("new account failure");
+    let public = store
+        .public_live_quota(1_785_000_100_000)
+        .await
+        .expect("current quota")
+        .expect("new account health");
+
+    assert_eq!(store.account_stream_count().await.expect("stream count"), 2);
+    assert_eq!(public.used_micropoints, None);
+    assert_eq!(public.source_status, SourceStatus::Unavailable);
+    assert_eq!(public.public_error, Some(UsageSourceErrorCode::Timeout));
 }
