@@ -1,6 +1,7 @@
 //! `QuotaTide` desktop shell.
 
 pub mod auth_file;
+pub mod codex_usage;
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};

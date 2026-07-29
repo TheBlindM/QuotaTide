@@ -4,6 +4,7 @@ use serde::Serialize;
 use ts_rs::TS;
 
 mod account_settings;
+mod live_quota;
 mod tray_shell;
 
 pub use account_settings::{
@@ -11,6 +12,7 @@ pub use account_settings::{
     PublicAccountSettings, PublicError, PublicErrorCode, SafeErrorContext, SettingsManager,
     SettingsStoreError, ValidatedAccountCandidate,
 };
+pub use live_quota::{QuotaUnits, SourceFreshness, UsageSourceErrorCode, WeeklyUsageObservation};
 pub use tray_shell::{
     PhysicalPoint, PhysicalRect, PhysicalSize, ShellEffect, ShellEvent, TrayShell,
     place_tray_window,
