@@ -409,6 +409,12 @@ fn seed_version_three_database_with_observations(path: &std::path::Path) {
                ADD COLUMN quota_epoch_id INTEGER REFERENCES quota_epochs(id);
              ALTER TABLE app_meta
                ADD COLUMN dashboard_revision INTEGER NOT NULL DEFAULT 0;
+             INSERT INTO quota_epochs VALUES
+               (1, 1, 1, 40000000, 41000000, 1785000000000,
+                1785003600000, 1785500000, NULL);
+             UPDATE usage_observations SET quota_epoch_id = 1;
+             INSERT INTO daily_ledgers VALUES
+               (1, 1, '2026-07-25', 'Asia/Shanghai', 1000000, 1785003600000);
              INSERT INTO schema_migrations VALUES
                (3, 1785000000000, '0.1.0',
                 'quotatide-v3-current-seven-day-ledger');

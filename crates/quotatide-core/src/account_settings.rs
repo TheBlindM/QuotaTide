@@ -510,6 +510,14 @@ fn migrate_immutable_iana_v4(
         "UPDATE app_settings SET policy_timezone = ?1 WHERE singleton_id = 1",
         [policy_timezone],
     )?;
+    // v3 epoch and daily rows are projections. Clear them before replaying
+    // their immutable observations so an already-used v3 database upgrades
+    // without uniqueness conflicts or stale policy-timezone facts.
+    transaction.execute_batch(
+        "UPDATE usage_observations SET quota_epoch_id = NULL;
+         DELETE FROM daily_ledgers;
+         DELETE FROM quota_epochs;",
+    )?;
     backfill_usage_observation_epochs(&transaction, policy_timezone)?;
     transaction.execute_batch(
         "CREATE TABLE usage_observations_v4 (
