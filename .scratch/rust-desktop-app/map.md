@@ -40,6 +40,8 @@ Type: wayfinder:map
 - [验证最低系统版本与发布 QA 矩阵](./issues/12-verify-minimum-os-and-release-qa.md) — v1 候选最低正式支持 macOS 15 Sequoia universal（Apple Silicon + Intel）与 Windows 11 25H2 x64；macOS 14、Windows 10 22H2 和 Windows 11 24H2 只作扩大兼容 smoke，并以六类证据覆盖安装、平台集成、数据/安全、更新、双语/可访问性与资源预算。
 - [搭建 Rust/Tauri 可运行骨架](./issues/14-bootstrap-rust-tauri-workspace.md) — 已建立 Rust 1.88 的 `quotatide-core`、Tauri/Preact 壳、类型化 BuildInfo seam、双平台 Tide Dial 托盘资产、最小权限/CSP、依赖门禁和无发布秘密的三平台 CI bundle smoke。
 - [打通 Weekly Ledger 托盘窗口](./issues/15-build-weekly-ledger-tray-shell.md) — 已交付单实例 420×680 托盘弹层、跨显示器物理定位、双平台毛玻璃与不透明降级、完整七日静态状态、设置/键盘交互，以及刷新冷却和系统对话框失焦 seams。
+- [完成当前账号配置流程](./issues/16-configure-current-account.md) — 已交付原生单文件选择、严格只读认证验证、版本化 SQLite 设置、稳定账号流 identity、乐观 revision 冲突处理及端到端秘密 canary 边界测试。
+- [接入当前账号真实额度](./issues/17-fetch-live-current-quota.md) — 已交付严格 WHAM 当前七日窗口适配、core-owned single-flight/冷却/token rotation、启动与每小时调度、事务化 last-known-good/来源健康，以及 revision 驱动的实时概览状态。
 
 ## Not yet specified
 
