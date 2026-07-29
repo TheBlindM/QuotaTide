@@ -11,7 +11,7 @@ serde = { version = "=1.0.229", features = ["derive"] }
 getrandom = "=0.4.3"
 sha2 = "=0.10.9"
 thiserror = "=2.0.19"
-tokio = { version = "=1.49.0", features = ["sync", "time"] }
+tokio = { version = "=1.49.0", features = ["macros", "sync", "time"] }
 tokio-util = { version = "=0.7.18", features = ["rt"] }
 tokio-rusqlite = { version = "=0.7.0", features = ["bundled"] }
 ts-rs = { version = "=12.0.1", features = ["serde-compat"] }
