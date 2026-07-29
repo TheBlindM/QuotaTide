@@ -232,13 +232,22 @@ struct UsageWindow {
 
 fn normalize_completed_usage(
     bytes: &[u8],
-    _request_started_at_unix_ms: i64,
+    request_started_at_unix_ms: i64,
     response_completed_at_unix_ms: i64,
 ) -> Result<WeeklyUsageObservation, CodexUsageError> {
-    // A request can cross the reset boundary. The returned snapshot belongs to
-    // the response-completion instant, not the instant before the request was
-    // sent.
-    normalize_usage(bytes, response_completed_at_unix_ms)
+    // A request can cross the reset boundary while the server returns either
+    // side's snapshot. Prefer completion time, then accept request start when
+    // that is the instant contained by the returned strict weekly window.
+    match normalize_usage(bytes, response_completed_at_unix_ms) {
+        Ok(observation) => Ok(observation),
+        Err(error)
+            if error.code() == UsageSourceErrorCode::ContractViolation
+                && request_started_at_unix_ms != response_completed_at_unix_ms =>
+        {
+            normalize_usage(bytes, request_started_at_unix_ms)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn normalize_usage(
@@ -453,5 +462,16 @@ mod tests {
 
         assert_eq!(observation.captured_at_unix_ms, 1_780_695_200_000);
         assert_eq!(observation.resets_at_unix_s, 1_781_300_000);
+    }
+
+    #[test]
+    fn an_old_window_response_crossing_reset_uses_request_start_time() {
+        let old_window = VALID.replace("1781300000", "1780695200");
+        let observation =
+            normalize_completed_usage(old_window.as_bytes(), 1_780_695_199_999, 1_780_695_200_001)
+                .expect("old window response");
+
+        assert_eq!(observation.captured_at_unix_ms, 1_780_695_199_999);
+        assert_eq!(observation.resets_at_unix_s, 1_780_695_200);
     }
 }

@@ -514,6 +514,7 @@ fn migrate_immutable_iana_v4(
               AND captured_at_ms < resets_at_s * 1000
              THEN 1 ELSE 0 END;",
     )?;
+    reconcile_legacy_source_health(&transaction)?;
     transaction.execute(
         "UPDATE app_settings SET policy_timezone = ?1 WHERE singleton_id = 1",
         [policy_timezone],
@@ -595,6 +596,36 @@ fn migrate_immutable_iana_v4(
     )?;
     transaction.pragma_update(None, "user_version", 4)?;
     transaction.commit()
+}
+
+fn reconcile_legacy_source_health(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    transaction.execute_batch(
+        "UPDATE usage_source_health
+         SET last_success_at_ms = (
+               SELECT MAX(observation.captured_at_ms)
+               FROM usage_observations observation
+               WHERE observation.account_stream_id =
+                       usage_source_health.account_stream_id
+                 AND observation.ledger_eligible = 1
+             ),
+             consecutive_failures = CASE
+               WHEN consecutive_failures = 0 THEN 1
+               ELSE consecutive_failures
+             END,
+             public_error = CASE
+               WHEN consecutive_failures = 0 THEN 'contract_violation'
+               ELSE public_error
+             END
+         WHERE last_success_at_ms IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM usage_observations observation
+             WHERE observation.account_stream_id =
+                     usage_source_health.account_stream_id
+               AND observation.captured_at_ms =
+                     usage_source_health.last_success_at_ms
+               AND observation.ledger_eligible = 1
+           );",
+    )
 }
 
 fn validate_migration(

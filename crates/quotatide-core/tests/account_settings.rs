@@ -247,10 +247,15 @@ async fn legacy_observation_outside_the_new_strict_window_is_quarantined() {
     {
         let connection = rusqlite::Connection::open(&database).expect("extend legacy database");
         connection
-            .execute(
+            .execute_batch(
                 "INSERT INTO usage_observations VALUES
-                 (3, 1, 1785007200000, 42000000, 604800, 1788000000, 'plus', 1)",
-                [],
+                   (3, 1, 1785007200000, 42000000, 604800, 1788000000, 'plus', 1);
+                 UPDATE usage_source_health
+                   SET last_attempt_at_ms = 1785007200000,
+                       last_success_at_ms = 1785007200000,
+                       consecutive_failures = 0,
+                       public_error = NULL
+                   WHERE account_stream_id = 1;",
             )
             .expect("legacy-valid observation");
     }
@@ -264,6 +269,15 @@ async fn legacy_observation_outside_the_new_strict_window_is_quarantined() {
         .expect("public quota")
         .expect("eligible quota");
     assert_eq!(quota.used_micropoints, Some(41_000_000));
+    assert_eq!(quota.last_success_at_unix_ms, Some(1_785_003_600_000));
+    assert_eq!(
+        quota.source_status,
+        quotatide_core::SourceStatus::StaleAfterFailure
+    );
+    assert_eq!(
+        quota.public_error,
+        Some(quotatide_core::UsageSourceErrorCode::ContractViolation)
+    );
     drop(store);
 
     let connection = rusqlite::Connection::open(database).expect("inspect migrated database");
@@ -277,6 +291,40 @@ async fn legacy_observation_outside_the_new_strict_window_is_quarantined() {
         )
         .expect("quarantine facts");
     assert_eq!(facts, (3, 2, 3));
+}
+
+#[tokio::test]
+async fn all_quarantined_legacy_observations_make_source_unavailable() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    seed_version_two_database_with_observations(&database);
+    {
+        let connection = rusqlite::Connection::open(&database).expect("invalidate legacy windows");
+        connection
+            .execute("UPDATE usage_observations SET resets_at_s = 1788000000", [])
+            .expect("legacy-only window relationship");
+    }
+
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("migrate all-quarantined stream");
+    let quota = store
+        .public_live_quota(1_785_003_600_000)
+        .await
+        .expect("public health")
+        .expect("configured stream health");
+
+    assert_eq!(quota.used_micropoints, None);
+    assert_eq!(quota.last_success_at_unix_ms, None);
+    assert_eq!(
+        quota.source_status,
+        quotatide_core::SourceStatus::Unavailable
+    );
+    assert_eq!(
+        quota.public_error,
+        Some(quotatide_core::UsageSourceErrorCode::ContractViolation)
+    );
+    assert!(quota.ledger_days.is_empty());
 }
 
 #[tokio::test]
