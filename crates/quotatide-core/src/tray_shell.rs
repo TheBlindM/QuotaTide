@@ -1,3 +1,11 @@
+#[derive(Clone, Copy)]
+enum DisplayEdge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
 /// A point in the operating system's physical pixel coordinate space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PhysicalPoint {
@@ -131,12 +139,17 @@ pub fn place_tray_window(
         .iter()
         .enumerate()
         .min_by(|(_, left), (_, right)| left.total_cmp(right))
-        .map_or(0, |(index, _)| index);
+        .map_or(DisplayEdge::Top, |(index, _)| match index {
+            0 => DisplayEdge::Top,
+            1 => DisplayEdge::Bottom,
+            2 => DisplayEdge::Left,
+            _ => DisplayEdge::Right,
+        });
     let (x, y) = match closest_edge {
-        0 => (centered_x, tray.origin.y + tray.size.height + gap),
-        1 => (centered_x, tray.origin.y - window.height - gap),
-        2 => (tray.origin.x + tray.size.width + gap, centered_y),
-        _ => (tray.origin.x - window.width - gap, centered_y),
+        DisplayEdge::Top => (centered_x, tray.origin.y + tray.size.height + gap),
+        DisplayEdge::Bottom => (centered_x, tray.origin.y - window.height - gap),
+        DisplayEdge::Left => (tray.origin.x + tray.size.width + gap, centered_y),
+        DisplayEdge::Right => (tray.origin.x - window.width - gap, centered_y),
     };
 
     PhysicalPoint::new(
@@ -154,6 +167,10 @@ pub enum ShellEvent {
     OpenRequested,
     /// The transient window lost focus.
     FocusLost,
+    /// A system-owned dialog was opened from the tray window.
+    ExternalDialogOpened,
+    /// The last system-owned dialog opened from the tray window was closed.
+    ExternalDialogClosed,
     /// The operating system requested that the window close.
     CloseRequested,
     /// The native menu requested a manual data refresh.
@@ -185,6 +202,7 @@ pub enum ShellEffect {
 #[derive(Debug, Default)]
 pub struct TrayShell {
     visible: bool,
+    external_dialog_depth: u16,
 }
 
 impl TrayShell {
@@ -219,6 +237,7 @@ impl TrayShell {
                     ShellEffect::Show
                 }
             }
+            ShellEvent::FocusLost if self.external_dialog_depth > 0 => ShellEffect::None,
             ShellEvent::FocusLost | ShellEvent::CloseRequested => {
                 if self.visible {
                     self.visible = false;
@@ -226,6 +245,14 @@ impl TrayShell {
                 } else {
                     ShellEffect::None
                 }
+            }
+            ShellEvent::ExternalDialogOpened => {
+                self.external_dialog_depth = self.external_dialog_depth.saturating_add(1);
+                ShellEffect::None
+            }
+            ShellEvent::ExternalDialogClosed => {
+                self.external_dialog_depth = self.external_dialog_depth.saturating_sub(1);
+                ShellEffect::None
             }
             ShellEvent::RefreshRequested => ShellEffect::Refresh,
             ShellEvent::ExitRequested => ShellEffect::Exit,

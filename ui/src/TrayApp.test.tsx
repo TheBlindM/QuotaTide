@@ -22,8 +22,14 @@ describe("tray-window navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
     expect(screen.getByRole("heading", { name: "设置" })).toBeInTheDocument();
     expect(screen.getByLabelText("auth.json 路径")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "额度" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "账号" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("tab", { name: "通知" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "返回额度" }));
+    fireEvent.click(screen.getByRole("button", { name: "完成" }));
     expect(
       screen.getByRole("table", { name: /当前七日窗口/ }),
     ).toBeInTheDocument();
@@ -51,5 +57,36 @@ describe("tray-window navigation", () => {
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onHide).toHaveBeenCalledOnce();
+  });
+
+  it("keeps data visible and coalesces refreshes while one is running", () => {
+    let completeRefresh: (() => void) | undefined;
+    const onRefresh = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          completeRefresh = resolve;
+        }),
+    );
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        onHide={vi.fn()}
+        onRefresh={onRefresh}
+      />,
+    );
+
+    const refresh = screen.getByRole("button", { name: "立即刷新" });
+    fireEvent.click(refresh);
+    fireEvent.click(refresh);
+
+    expect(onRefresh).toHaveBeenCalledOnce();
+    expect(
+      screen.getByRole("button", { name: "正在刷新" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("table", { name: /当前七日窗口/ }),
+    ).toBeInTheDocument();
+
+    completeRefresh?.();
   });
 });

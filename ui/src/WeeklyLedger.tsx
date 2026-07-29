@@ -60,6 +60,11 @@ export const ledgerFixtures: Record<LedgerTone, LedgerFixture> = {
     tone: "warning",
     weeklyRemaining: "55%",
     todayAvailable: "2.6%",
+    days: freshDays.map((day) =>
+      day.today
+        ? { ...day, used: 14.2, limit: 16.8, status: "预警" }
+        : { ...day },
+    ),
   },
   over: {
     ...freshFixture,
@@ -94,13 +99,55 @@ export const ledgerFixtures: Record<LedgerTone, LedgerFixture> = {
 type WeeklyLedgerProps = {
   fixture: LedgerFixture;
   onOpenSettings: () => void;
-  onRefresh: () => void;
+  onRefresh: () => void | Promise<void>;
+  refreshing?: boolean;
+  refreshDisabled?: boolean;
+};
+
+type ConfiguredTone = Exclude<LedgerTone, "unconfigured">;
+
+type TonePresentation = {
+  chip: string;
+  banner?: {
+    title: string;
+    detail: string;
+    action?: "today" | "refresh";
+  };
+};
+
+const tonePresentations: Record<ConfiguredTone, TonePresentation> = {
+  fresh: { chip: "状态良好" },
+  warning: {
+    chip: "预警",
+    banner: {
+      title: "接近今日额度",
+      detail: "已达到今日实际上限的 84%，完整七日数据仍保留。",
+      action: "today",
+    },
+  },
+  over: {
+    chip: "超额",
+    banner: {
+      title: "今日额度已超出",
+      detail: "已超过今日实际上限，完整七日数据仍保留。",
+    },
+  },
+  stale: {
+    chip: "数据过期",
+    banner: {
+      title: "数据已过期",
+      detail: "连续 3 次刷新失败，正在显示最后一次完整快照。",
+      action: "refresh",
+    },
+  },
 };
 
 export function WeeklyLedger({
   fixture,
   onOpenSettings,
   onRefresh,
+  refreshing = false,
+  refreshDisabled = false,
 }: WeeklyLedgerProps) {
   if (fixture.tone === "unconfigured") {
     return (
@@ -130,6 +177,18 @@ export function WeeklyLedger({
     );
   }
 
+  const presentation = tonePresentations[fixture.tone];
+  const requestRefresh = () => {
+    try {
+      const refreshResult = onRefresh();
+      if (refreshResult !== undefined) {
+        void refreshResult.catch(() => undefined);
+      }
+    } catch {
+      // The caller owns refresh error presentation; the last snapshot remains visible.
+    }
+  };
+
   return (
     <article class={`weekly-ledger tone-${fixture.tone}`}>
       <header class="ledger-header">
@@ -138,7 +197,19 @@ export function WeeklyLedger({
           <p>{fixture.sourceHealth}</p>
         </div>
         <div class="ledger-header__actions">
-          <button type="button" aria-label="立即刷新" onClick={onRefresh}>
+          <button
+            type="button"
+            aria-label={
+              refreshing
+                ? "正在刷新"
+                : refreshDisabled
+                  ? "刷新冷却中"
+                  : "立即刷新"
+            }
+            class={refreshing ? "is-spinning" : undefined}
+            disabled={refreshDisabled}
+            onClick={requestRefresh}
+          >
             ↻
           </button>
           <button type="button" aria-label="打开设置" onClick={onOpenSettings}>
@@ -148,31 +219,21 @@ export function WeeklyLedger({
       </header>
 
       <main class="ledger-content">
-        {fixture.tone === "warning" ||
-        fixture.tone === "over" ||
-        fixture.tone === "stale" ? (
+        {presentation.banner ? (
           <section class={`state-banner tone-${fixture.tone}`} role="alert">
             <div>
-              <strong>
-                {fixture.tone === "over"
-                  ? "今日额度已超出"
-                  : fixture.tone === "stale"
-                    ? "数据已过期"
-                    : "接近今日额度"}
-              </strong>
-              <span>
-                {fixture.tone === "over"
-                  ? "已超过今日实际上限，完整七日数据仍保留。"
-                  : fixture.tone === "stale"
-                    ? "连续 3 次刷新失败，正在显示最后一次完整快照。"
-                    : "已达到今日实际上限的 84%，完整七日数据仍保留。"}
-              </span>
+              <strong>{presentation.banner.title}</strong>
+              <span>{presentation.banner.detail}</span>
             </div>
-            {fixture.tone === "warning" ? (
+            {presentation.banner.action === "today" ? (
               <button type="button">查看今日</button>
-            ) : fixture.tone === "stale" ? (
-              <button type="button" onClick={onRefresh}>
-                重试
+            ) : presentation.banner.action === "refresh" ? (
+              <button
+                type="button"
+                disabled={refreshDisabled}
+                onClick={requestRefresh}
+              >
+                {refreshing ? "正在刷新" : refreshDisabled ? "冷却中" : "重试"}
               </button>
             ) : null}
           </section>
@@ -197,15 +258,7 @@ export function WeeklyLedger({
               <span>当前七日窗口</span>
               <h2 id="window-heading">{fixture.windowLabel}</h2>
             </div>
-            <span class="status-chip">
-              {fixture.tone === "warning"
-                ? "预警"
-                : fixture.tone === "over"
-                  ? "超额"
-                  : fixture.tone === "stale"
-                    ? "数据过期"
-                  : "状态良好"}
-            </span>
+            <span class="status-chip">{presentation.chip}</span>
           </div>
           <table aria-label={`当前七日窗口 ${fixture.windowLabel}`}>
             <thead>

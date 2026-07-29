@@ -43,6 +43,9 @@ describe("Weekly Ledger overview", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("接近今日额度");
     expect(screen.getByRole("button", { name: "查看今日" })).toBeInTheDocument();
     expect(
+      screen.getByRole("row", { name: /今天.*14.2% 已用.*预警/ }),
+    ).toBeInTheDocument();
+    expect(
       screen.getByRole("table", { name: /当前七日窗口/ }),
     ).toBeInTheDocument();
   });

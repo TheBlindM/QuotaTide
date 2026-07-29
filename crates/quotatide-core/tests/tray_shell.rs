@@ -49,6 +49,25 @@ fn repeated_open_and_resume_reuse_and_reposition_the_existing_window() {
 }
 
 #[test]
+fn external_dialogs_suspend_focus_loss_auto_hide() {
+    let mut shell = TrayShell::new();
+    shell.handle(ShellEvent::OpenRequested);
+
+    assert_eq!(
+        shell.handle(ShellEvent::ExternalDialogOpened),
+        ShellEffect::None
+    );
+    assert_eq!(shell.handle(ShellEvent::FocusLost), ShellEffect::None);
+    assert!(shell.is_visible());
+
+    assert_eq!(
+        shell.handle(ShellEvent::ExternalDialogClosed),
+        ShellEffect::None
+    );
+    assert_eq!(shell.handle(ShellEvent::FocusLost), ShellEffect::Hide);
+}
+
+#[test]
 fn tray_anchor_is_clamped_inside_the_display_work_area() {
     let work_area = PhysicalRect::new(0.0, 0.0, 1_440.0, 900.0);
     let tray = PhysicalRect::new(1_300.0, 0.0, 24.0, 24.0);

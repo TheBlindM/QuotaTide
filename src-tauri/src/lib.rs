@@ -1,6 +1,7 @@
 //! `QuotaTide` desktop shell.
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use quotatide_core::{
     BuildInfo, PhysicalRect as CoreRect, PhysicalSize as CoreSize, ShellEffect, ShellEvent,
@@ -17,11 +18,32 @@ use tauri::{
 const MAIN_WINDOW_LABEL: &str = "main";
 const MAIN_TRAY_ID: &str = "main";
 const WINDOW_GAP: f64 = 8.0;
+const MANUAL_REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Default)]
+struct RefreshGate {
+    last_started: Option<Instant>,
+}
+
+impl RefreshGate {
+    fn try_start(&mut self, now: Instant) -> bool {
+        if self
+            .last_started
+            .is_some_and(|started| now.duration_since(started) < MANUAL_REFRESH_COOLDOWN)
+        {
+            return false;
+        }
+
+        self.last_started = Some(now);
+        true
+    }
+}
 
 #[derive(Debug, Default)]
 struct DesktopShell {
     shell: TrayShell,
     last_tray_rect: Option<Rect>,
+    refresh_gate: RefreshGate,
 }
 
 type SharedDesktopShell = Mutex<DesktopShell>;
@@ -44,6 +66,18 @@ fn request_manual_refresh(app: AppHandle) -> Result<(), String> {
     dispatch_shell_event(&app, ShellEvent::RefreshRequested, None)
 }
 
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
+fn begin_external_dialog(app: AppHandle) -> Result<(), String> {
+    dispatch_shell_event(&app, ShellEvent::ExternalDialogOpened, None)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
+fn end_external_dialog(app: AppHandle) -> Result<(), String> {
+    dispatch_shell_event(&app, ShellEvent::ExternalDialogClosed, None)
+}
+
 fn menu_event_for_id(id: &str) -> Option<ShellEvent> {
     match id {
         "open" => Some(ShellEvent::OpenRequested),
@@ -60,11 +94,13 @@ fn dispatch_shell_event(
 ) -> Result<(), String> {
     let effect = {
         let state = app.state::<SharedDesktopShell>();
-        let mut desktop = state
-            .lock()
-            .map_err(|_| "任务栏窗口状态不可用".to_owned())?;
+        let mut desktop = state.lock().map_err(|_| "托盘窗口状态不可用".to_owned())?;
         if let Some(rect) = tray_rect {
             desktop.last_tray_rect = Some(rect);
+        }
+        if event == ShellEvent::RefreshRequested && !desktop.refresh_gate.try_start(Instant::now())
+        {
+            return Ok(());
         }
         desktop.shell.handle(event)
     };
@@ -114,7 +150,7 @@ fn position_main_window(app: &AppHandle) -> Result<(), String> {
         let state = app.state::<SharedDesktopShell>();
         state
             .lock()
-            .map_err(|_| "任务栏窗口状态不可用".to_owned())?
+            .map_err(|_| "托盘窗口状态不可用".to_owned())?
             .last_tray_rect
     };
     let anchor = tray_rect.as_ref().map_or_else(
@@ -283,7 +319,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_build_info,
             hide_main_window,
-            request_manual_refresh
+            request_manual_refresh,
+            begin_external_dialog,
+            end_external_dialog
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the QuotaTide desktop shell");
@@ -299,9 +337,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use quotatide_core::ShellEvent;
 
-    use super::{get_build_info, menu_event_for_id};
+    use super::{RefreshGate, get_build_info, menu_event_for_id};
 
     #[test]
     fn command_returns_the_public_core_contract() {
@@ -321,5 +361,15 @@ mod tests {
         );
         assert_eq!(menu_event_for_id("exit"), Some(ShellEvent::ExitRequested));
         assert_eq!(menu_event_for_id("unknown"), None);
+    }
+
+    #[test]
+    fn manual_refresh_gate_enforces_thirty_seconds() {
+        let now = Instant::now();
+        let mut gate = RefreshGate::default();
+
+        assert!(gate.try_start(now));
+        assert!(!gate.try_start(now + Duration::from_secs(29)));
+        assert!(gate.try_start(now + Duration::from_secs(30)));
     }
 }

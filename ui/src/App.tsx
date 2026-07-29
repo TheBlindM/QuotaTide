@@ -66,8 +66,13 @@ export function App() {
       delete document.documentElement.dataset.theme;
     }
 
-    document.documentElement.dataset.surface =
-      surface === "opaque" ? "opaque" : "glass";
+    if (surface === "opaque") {
+      document.documentElement.dataset.surface = "opaque";
+    } else if (
+      document.documentElement.dataset.platformFallback !== "true"
+    ) {
+      document.documentElement.dataset.surface = "glass";
+    }
   }, []);
 
   if (state.kind === "loading") {
@@ -77,7 +82,7 @@ export function App() {
   if (state.kind === "error") {
     return (
       <main>
-        <p role="alert">桌面外壳不可用，请从任务栏菜单重试。</p>
+        <p role="alert">桌面外壳不可用，请从托盘菜单重试。</p>
       </main>
     );
   }
@@ -95,7 +100,7 @@ export function App() {
         void hideMainWindow().catch(() => undefined);
       }}
       onRefresh={() => {
-        void requestManualRefresh().catch(() => undefined);
+        return requestManualRefresh().catch(() => undefined);
       }}
     />
   );

@@ -4,44 +4,34 @@
     -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --ink: #17231e;
-  --muted: #637068;
-  --faint: #89928d;
-  --line: rgb(33 68 51 / 12%);
-  --line-strong: rgb(33 68 51 / 18%);
-  --glass: rgb(250 252 250 / 78%);
-  --glass-strong: rgb(255 255 255 / 68%);
-  --solid: #f4f7f4;
-  --card: rgb(255 255 255 / 58%);
-  --card-hover: rgb(255 255 255 / 76%);
-  --accent: #267653;
-  --accent-soft: rgb(38 118 83 / 12%);
-  --amber: #a8670f;
-  --amber-soft: rgb(217 145 37 / 15%);
-  --red: #b64035;
-  --red-soft: rgb(190 64 52 / 13%);
-  --shadow: 0 20px 54px rgb(31 54 42 / 20%);
+  --ink: light-dark(#17231e, #f0f5f2);
+  --muted: light-dark(#637068, #a5b1aa);
+  --faint: light-dark(#89928d, #7f8d85);
+  --line: light-dark(rgb(33 68 51 / 12%), rgb(224 243 232 / 12%));
+  --line-strong: light-dark(rgb(33 68 51 / 18%), rgb(224 243 232 / 18%));
+  --glass: light-dark(rgb(250 252 250 / 78%), rgb(19 29 24 / 82%));
+  --glass-strong: light-dark(rgb(255 255 255 / 68%), rgb(43 57 49 / 66%));
+  --solid: light-dark(#f4f7f4, #18221d);
+  --card: light-dark(rgb(255 255 255 / 58%), rgb(255 255 255 / 6%));
+  --card-hover: light-dark(rgb(255 255 255 / 76%), rgb(255 255 255 / 9%));
+  --accent: light-dark(#267653, #6dc89d);
+  --accent-soft: light-dark(rgb(38 118 83 / 12%), rgb(109 200 157 / 15%));
+  --amber: light-dark(#a8670f, #f0b75e);
+  --amber-soft: light-dark(rgb(217 145 37 / 15%), rgb(240 183 94 / 14%));
+  --red: light-dark(#b64035, #f0877d);
+  --red-soft: light-dark(rgb(190 64 52 / 13%), rgb(240 135 125 / 13%));
+  --shadow: light-dark(
+    0 20px 54px rgb(31 54 42 / 20%),
+    0 22px 58px rgb(0 0 0 / 42%)
+  );
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --ink: #f0f5f2;
-  --muted: #a5b1aa;
-  --faint: #7f8d85;
-  --line: rgb(224 243 232 / 12%);
-  --line-strong: rgb(224 243 232 / 18%);
-  --glass: rgb(19 29 24 / 82%);
-  --glass-strong: rgb(43 57 49 / 66%);
-  --solid: #18221d;
-  --card: rgb(255 255 255 / 6%);
-  --card-hover: rgb(255 255 255 / 9%);
-  --accent: #6dc89d;
-  --accent-soft: rgb(109 200 157 / 15%);
-  --amber: #f0b75e;
-  --amber-soft: rgb(240 183 94 / 14%);
-  --red: #f0877d;
-  --red-soft: rgb(240 135 125 / 13%);
-  --shadow: 0 22px 58px rgb(0 0 0 / 42%);
 }
 
 * {
@@ -89,6 +79,11 @@ button {
 button:hover,
 a:hover {
   background: var(--card-hover);
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 button:focus-visible,
@@ -555,6 +550,29 @@ progress::-moz-progress-bar {
   gap: 12px;
 }
 
+.settings-tabs {
+  display: grid;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--glass-strong);
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.settings-tabs button {
+  min-height: 36px;
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.settings-tabs button[aria-selected="true"] {
+  background: var(--card-hover);
+  box-shadow: 0 1px 5px rgb(24 45 34 / 12%);
+  color: var(--ink);
+}
+
 .settings-content section {
   padding: 14px;
   border: 1px solid var(--line);
@@ -589,6 +607,21 @@ progress::-moz-progress-bar {
   color: var(--faint);
   font-size: 10px;
   line-height: 1.45;
+}
+
+.settings-description {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.settings-value {
+  display: block;
+  margin-top: 12px;
+  color: var(--accent);
+  font-size: 15px;
+  letter-spacing: 0.04em;
 }
 
 .settings-row {
@@ -628,6 +661,16 @@ progress::-moz-progress-bar {
   justify-content: space-between;
 }
 
+.is-spinning {
+  animation: refresh-spin 0.8s linear infinite;
+}
+
+@keyframes refresh-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
 .boot-state {
   display: grid;
   height: 100%;
@@ -661,23 +704,6 @@ progress::-moz-progress-bar {
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     color-scheme: dark;
-    --ink: #f0f5f2;
-    --muted: #a5b1aa;
-    --faint: #7f8d85;
-    --line: rgb(224 243 232 / 12%);
-    --line-strong: rgb(224 243 232 / 18%);
-    --glass: rgb(19 29 24 / 82%);
-    --glass-strong: rgb(43 57 49 / 66%);
-    --solid: #18221d;
-    --card: rgb(255 255 255 / 6%);
-    --card-hover: rgb(255 255 255 / 9%);
-    --accent: #6dc89d;
-    --accent-soft: rgb(109 200 157 / 15%);
-    --amber: #f0b75e;
-    --amber-soft: rgb(240 183 94 / 14%);
-    --red: #f0877d;
-    --red-soft: rgb(240 135 125 / 13%);
-    --shadow: 0 22px 58px rgb(0 0 0 / 42%);
   }
 }
 
@@ -698,6 +724,10 @@ progress::-moz-progress-bar {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+
+  .is-spinning {
+    animation: none;
   }
 }
 

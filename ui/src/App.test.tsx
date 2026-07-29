@@ -21,6 +21,7 @@ afterEach(() => {
   window.history.replaceState({}, "", "/");
   delete document.documentElement.dataset.theme;
   delete document.documentElement.dataset.surface;
+  delete document.documentElement.dataset.platformFallback;
 });
 
 describe("QuotaTide tray app", () => {
@@ -47,5 +48,15 @@ describe("QuotaTide tray app", () => {
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     expect(document.documentElement).toHaveAttribute("data-surface", "opaque");
     expect(screen.getByRole("alert")).toHaveTextContent("接近今日额度");
+  });
+
+  it("does not overwrite a native opaque fallback during startup", () => {
+    document.documentElement.dataset.surface = "opaque";
+    document.documentElement.dataset.platformFallback = "true";
+    window.history.replaceState({}, "", "/?preview");
+
+    render(<App />);
+
+    expect(document.documentElement).toHaveAttribute("data-surface", "opaque");
   });
 });
