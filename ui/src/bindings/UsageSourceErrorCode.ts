@@ -3,4 +3,4 @@
 /**
  * Stable source failure categories; raw upstream content never crosses this boundary.
  */
-export type UsageSourceErrorCode = "authentication_stale" | "permission_denied" | "rate_limited" | "timeout" | "upstream_unavailable" | "response_too_large" | "invalid_json" | "contract_violation" | "weekly_window_unavailable";
+export type UsageSourceErrorCode = "auth_path_unavailable" | "authentication_stale" | "permission_denied" | "rate_limited" | "timeout" | "upstream_unavailable" | "response_too_large" | "invalid_json" | "contract_violation" | "weekly_window_unavailable";

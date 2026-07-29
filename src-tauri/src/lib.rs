@@ -7,9 +7,11 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use auth_file::AuthFileReader;
+use codex_usage::{CodexUsageClient, CodexUsageCollector, SelectedAuthFile};
 use quotatide_core::{
-    AccountApplication, AccountSettingsStore, BuildInfo, PhysicalRect as CoreRect,
-    PhysicalSize as CoreSize, PublicAccountSettings, PublicError, PublicErrorCode, SettingsManager,
+    AccountApplication, AccountSettingsStore, Application, BuildInfo, Clock,
+    PhysicalRect as CoreRect, PhysicalSize as CoreSize, PublicAccountSettings, PublicError,
+    PublicErrorCode, PublicLiveQuota, RefreshCoordinator, RefreshTrigger, SettingsManager,
     ShellEffect, ShellEvent, TrayShell, place_tray_window,
 };
 use tauri::menu::{Menu, MenuItem};
@@ -25,6 +27,7 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const MAIN_TRAY_ID: &str = "main";
 const WINDOW_GAP: f64 = 8.0;
 const MANUAL_REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
+const HOURLY_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Default)]
 struct RefreshGate {
@@ -56,8 +59,24 @@ type SharedDesktopShell = Mutex<DesktopShell>;
 
 #[derive(Clone)]
 struct AccountConfigState {
-    application: AccountApplication<AuthFileReader>,
+    application: LiveApplication,
+    selected_auth: SelectedAuthFile,
 }
+
+#[derive(Debug, Clone, Copy)]
+struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now_unix_ms(&self) -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| {
+                i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+            })
+    }
+}
+
+type LiveApplication = Application<AuthFileReader, CodexUsageCollector, SystemClock>;
 
 /// Returns public metadata that proves the Rust core is connected to the UI.
 #[tauri::command]
@@ -73,8 +92,17 @@ fn hide_main_window(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
-fn request_manual_refresh(app: AppHandle) -> Result<u64, String> {
-    dispatch_shell_event(&app, ShellEvent::RefreshRequested, None)?;
+async fn request_manual_refresh(
+    app: AppHandle,
+    state: tauri::State<'_, AccountConfigState>,
+) -> Result<u64, PublicError> {
+    state
+        .application
+        .refresh(RefreshTrigger::Manual)
+        .await
+        .map_err(|_| storage_public_error())?;
+    app.emit("quotatide://dashboard-changed", ())
+        .map_err(|_| storage_public_error())?;
     Ok(manual_refresh_cooldown_ms())
 }
 
@@ -101,6 +129,17 @@ async fn get_account_settings(
     state
         .application
         .account_settings()
+        .await
+        .map_err(|error| error.public::<AuthFileReader>())
+}
+
+#[tauri::command]
+async fn get_live_quota(
+    state: tauri::State<'_, AccountConfigState>,
+) -> Result<Option<PublicLiveQuota>, PublicError> {
+    state
+        .application
+        .live_quota(SystemClock.now_unix_ms())
         .await
         .map_err(|error| error.public::<AuthFileReader>())
 }
@@ -136,9 +175,25 @@ async fn select_auth_file(
     let path = selection
         .into_path()
         .map_err(|_| PublicError::new(PublicErrorCode::InvalidPath, "auth.path.invalid"))?;
-    configure_selected_auth(&state.application, expected_settings_revision, &path).await
+    let settings = state
+        .application
+        .select_account(expected_settings_revision, &path)
+        .await
+        .map_err(|error| error.public::<AuthFileReader>())?;
+    state
+        .selected_auth
+        .replace(path)
+        .map_err(|_| storage_public_error())?;
+    let application = state.application.clone();
+    let app_for_refresh = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = application.refresh(RefreshTrigger::Settings).await;
+        let _ = app_for_refresh.emit("quotatide://dashboard-changed", ());
+    });
+    Ok(settings)
 }
 
+#[cfg(test)]
 async fn configure_selected_auth(
     application: &AccountApplication<AuthFileReader>,
     expected_settings_revision: u32,
@@ -148,6 +203,13 @@ async fn configure_selected_auth(
         .select_account(expected_settings_revision, path)
         .await
         .map_err(|error| error.public::<AuthFileReader>())
+}
+
+fn storage_public_error() -> PublicError {
+    PublicError::new(
+        PublicErrorCode::StorageUnavailable,
+        "settings.storage_unavailable",
+    )
 }
 
 fn menu_event_for_id(id: &str) -> Option<ShellEvent> {
@@ -327,6 +389,83 @@ fn platform_error(error: impl std::fmt::Display) -> String {
     format!("平台操作失败：{error}")
 }
 
+fn spawn_refresh_scheduler(app: AppHandle, application: LiveApplication, refresh_on_startup: bool) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(HOURLY_REFRESH_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        if refresh_on_startup {
+            let _ = application.refresh(RefreshTrigger::Startup).await;
+            let _ = app.emit("quotatide://dashboard-changed", ());
+        }
+        loop {
+            interval.tick().await;
+            let _ = application.refresh(RefreshTrigger::Hourly).await;
+            let _ = app.emit("quotatide://dashboard-changed", ());
+        }
+    });
+}
+
+fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+    setup_tray(app)?;
+    let app_data = app.path().app_data_dir()?;
+    std::fs::create_dir_all(&app_data)?;
+    secure_app_data_directory(&app_data)?;
+    let database_path = app_data.join("state.sqlite3");
+    validate_database_targets(&database_path)?;
+    let store = tauri::async_runtime::block_on(AccountSettingsStore::open(&database_path))
+        .map_err(|_| "failed to open the account settings store")?;
+    secure_database_files(&database_path)?;
+    let initial_auth_path = tauri::async_runtime::block_on(store.configured_auth_path())
+        .map_err(|_| "failed to read the selected auth path")?;
+    let selected_auth = SelectedAuthFile::new(initial_auth_path.clone());
+    let usage_client =
+        CodexUsageClient::new().map_err(|_| "failed to initialize Codex usage client")?;
+    let refresh = RefreshCoordinator::new(
+        store.clone(),
+        CodexUsageCollector::new(selected_auth.clone(), usage_client),
+        SystemClock,
+    );
+    let settings = SettingsManager::new(store, AuthFileReader);
+    let application = Application::new(AccountApplication::new(settings), refresh);
+    app.manage(AccountConfigState {
+        application: application.clone(),
+        selected_auth,
+    });
+    spawn_refresh_scheduler(
+        app.handle().clone(),
+        application,
+        initial_auth_path.is_some(),
+    );
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        apply_platform_material(&window);
+    }
+    Ok(())
+}
+
+fn handle_run_event(app: &AppHandle, event: &RunEvent) {
+    if !matches!(event, RunEvent::Resumed) {
+        return;
+    }
+    if let Err(error) = dispatch_shell_event(app, ShellEvent::ResumeRequested, None) {
+        eprintln!("QuotaTide: {error}");
+    }
+    let application = app.state::<AccountConfigState>().application.clone();
+    let app_for_refresh = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let interval_ms = i64::try_from(HOURLY_REFRESH_INTERVAL.as_millis()).unwrap_or(i64::MAX);
+        let result = application
+            .refresh_if_due(RefreshTrigger::Resume, interval_ms)
+            .await;
+        if result.is_ok() {
+            let _ = app_for_refresh.emit("quotatide://dashboard-changed", ());
+        }
+    });
+}
+
 /// Starts the `QuotaTide` desktop runtime.
 ///
 /// # Panics
@@ -336,32 +475,19 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(SharedDesktopShell::default())
-        .setup(|app| {
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-
-            setup_tray(app)?;
-            let app_data = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&app_data)?;
-            secure_app_data_directory(&app_data)?;
-            let database_path = app_data.join("state.sqlite3");
-            validate_database_targets(&database_path)?;
-            let store = tauri::async_runtime::block_on(AccountSettingsStore::open(&database_path))
-                .map_err(|_| "failed to open the account settings store")?;
-            secure_database_files(&database_path)?;
-            let settings = SettingsManager::new(store, AuthFileReader);
-            app.manage(AccountConfigState {
-                application: AccountApplication::new(settings),
-            });
-            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                apply_platform_material(&window);
-            }
-            Ok(())
-        })
+        .setup(setup_application)
         .on_menu_event(|app, event| {
             if let Some(shell_event) = menu_event_for_id(event.id().0.as_str()) {
                 if let Err(error) = dispatch_shell_event(app, shell_event, None) {
                     eprintln!("QuotaTide: {error}");
+                }
+                if shell_event == ShellEvent::RefreshRequested {
+                    let application = app.state::<AccountConfigState>().application.clone();
+                    let app_for_refresh = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = application.refresh(RefreshTrigger::Manual).await;
+                        let _ = app_for_refresh.emit("quotatide://dashboard-changed", ());
+                    });
                 }
             }
         })
@@ -408,18 +534,13 @@ pub fn run() {
             begin_external_dialog,
             end_external_dialog,
             get_account_settings,
+            get_live_quota,
             select_auth_file
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the QuotaTide desktop shell");
 
-    app.run(|app, event| {
-        if matches!(event, RunEvent::Resumed) {
-            if let Err(error) = dispatch_shell_event(app, ShellEvent::ResumeRequested, None) {
-                eprintln!("QuotaTide: {error}");
-            }
-        }
-    });
+    app.run(|app, event| handle_run_event(app, &event));
 }
 
 #[cfg(unix)]

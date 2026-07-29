@@ -16,11 +16,15 @@ export type LedgerDay = {
 
 export type LedgerFixture = {
   tone: LedgerTone;
+  weeklyUsed: string;
   weeklyRemaining: string;
   todayAvailable: string;
+  todayLimit: string;
   sourceHealth: string;
   windowLabel: string;
   lastSuccess: string;
+  resetAbsolute: string;
+  resetRelative: string;
   radarChance: string;
   days: LedgerDay[];
 };
@@ -44,11 +48,15 @@ const freshDays: LedgerDay[] = [
 
 const freshFixture: LedgerFixture = {
   tone: "fresh",
+  weeklyUsed: "42%",
   weeklyRemaining: "58%",
   todayAvailable: "5.4%",
+  todayLimit: "16.8%",
   sourceHealth: "Codex 额度 · 正常",
   windowLabel: "07/24 至 07/30",
   lastSuccess: "上次成功 10:34",
+  resetAbsolute: "周四 10:01",
+  resetRelative: "约 2 天后",
   radarChance: ">70%",
   days: freshDays,
 };
@@ -86,11 +94,15 @@ export const ledgerFixtures: Record<LedgerTone, LedgerFixture> = {
   },
   unconfigured: {
     tone: "unconfigured",
+    weeklyUsed: "",
     weeklyRemaining: "",
     todayAvailable: "",
+    todayLimit: "",
     sourceHealth: "尚未连接",
     windowLabel: "",
     lastSuccess: "尚未同步",
+    resetAbsolute: "",
+    resetRelative: "",
     radarChance: "",
     days: [],
   },
@@ -136,7 +148,7 @@ const tonePresentations: Record<ConfiguredTone, TonePresentation> = {
     chip: "数据过期",
     banner: {
       title: "数据已过期",
-      detail: "连续 3 次刷新失败，正在显示最后一次完整快照。",
+      detail: "刷新失败或数据已超过 90 分钟，正在显示最后一次完整快照。",
       action: "refresh",
     },
   },
@@ -194,7 +206,7 @@ export function WeeklyLedger({
       <header class="ledger-header">
         <div>
           <h1>QuotaTide</h1>
-          <p>{fixture.sourceHealth}</p>
+          <p>{refreshing ? "Codex 额度 · 正在刷新" : fixture.sourceHealth}</p>
         </div>
         <div class="ledger-header__actions">
           <button
@@ -207,7 +219,7 @@ export function WeeklyLedger({
                   : "立即刷新"
             }
             class={refreshing ? "is-spinning" : undefined}
-            disabled={refreshDisabled}
+            disabled={refreshDisabled || refreshing}
             onClick={requestRefresh}
           >
             ↻
@@ -243,12 +255,19 @@ export function WeeklyLedger({
           <div>
             <span>周剩余</span>
             <strong>{fixture.weeklyRemaining}</strong>
-            <small>周四 10:01 重置</small>
+            <small>
+              已用 {fixture.weeklyUsed} · {fixture.resetAbsolute} 重置
+            </small>
+            <small>{fixture.resetRelative}</small>
           </div>
           <div>
             <span>今天还可用</span>
             <strong>{fixture.todayAvailable}</strong>
-            <small>实际上限 16.8%</small>
+            <small>
+              {fixture.todayLimit === ""
+                ? "等待每日账本"
+                : `实际上限 ${fixture.todayLimit}`}
+            </small>
           </div>
         </section>
 
@@ -293,14 +312,16 @@ export function WeeklyLedger({
           </table>
         </section>
 
-        <section class="radar-card" aria-label="重置雷达">
-          <div>
-            <span>重置雷达 · 第三方预测</span>
-            <strong>{fixture.radarChance}</strong>
-            <small>未来 24 小时</small>
-          </div>
-          <a href="https://codex-resets.com/">查看来源</a>
-        </section>
+        {fixture.radarChance === "" ? null : (
+          <section class="radar-card" aria-label="重置雷达">
+            <div>
+              <span>重置雷达 · 第三方预测</span>
+              <strong>{fixture.radarChance}</strong>
+              <small>未来 24 小时</small>
+            </div>
+            <a href="https://codex-resets.com/">查看来源</a>
+          </section>
+        )}
       </main>
 
       <footer class="ledger-footer">

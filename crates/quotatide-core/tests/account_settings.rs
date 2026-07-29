@@ -1,5 +1,6 @@
 use quotatide_core::AccountSettingsStore;
 use tempfile::tempdir;
+use tokio_rusqlite::rusqlite;
 
 const CANARY_ACCOUNT_ID: &str = "user-ticket16-account-canary";
 const CANARY_PATH: &str = "/private/canary/home/.codex/auth.json";
@@ -105,7 +106,7 @@ async fn newer_schema_is_rejected_without_downgrade() {
         let connection =
             tokio_rusqlite::rusqlite::Connection::open(&database).expect("seed database");
         connection
-            .pragma_update(None, "user_version", 2)
+            .pragma_update(None, "user_version", 3)
             .expect("seed newer schema");
     }
     let before = std::fs::read(&database).expect("snapshot newer database");
@@ -125,7 +126,94 @@ async fn newer_schema_is_rejected_without_downgrade() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read schema version");
+    assert_eq!(version, 3);
+}
+
+#[tokio::test]
+async fn version_one_settings_are_preserved_while_live_quota_tables_are_added() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    seed_version_one_database(&database);
+
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("migrate version one");
+    let settings = store.public_settings().await.expect("migrated settings");
+
+    assert!(settings.configured);
+    assert_eq!(settings.settings_revision, 7);
+    assert_eq!(settings.path_summary.as_deref(), Some("…/auth.json"));
+    assert_eq!(store.account_stream_count().await.expect("stream count"), 1);
+    assert_eq!(
+        store
+            .public_live_quota(1_785_000_000_000)
+            .await
+            .expect("empty live quota"),
+        None
+    );
+
+    drop(store);
+    let connection = rusqlite::Connection::open(database).expect("inspect migrated database");
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("read migrated version");
+    let quota_table: String = connection
+        .query_row(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name = 'usage_observations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("live quota table");
+
     assert_eq!(version, 2);
+    assert_eq!(quota_table, "usage_observations");
+}
+
+fn seed_version_one_database(path: &std::path::Path) {
+    let connection = rusqlite::Connection::open(path).expect("seed version one database");
+    connection
+        .execute_batch(
+            "CREATE TABLE schema_migrations (
+               version INTEGER PRIMARY KEY,
+               applied_at_ms INTEGER NOT NULL,
+               app_version TEXT NOT NULL,
+               checksum TEXT NOT NULL
+             );
+             CREATE TABLE app_meta (
+               singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+               app_instance_id TEXT NOT NULL UNIQUE,
+               local_hash_salt BLOB NOT NULL CHECK (length(local_hash_salt) = 32),
+               settings_revision INTEGER NOT NULL CHECK (settings_revision >= 0),
+               created_at_ms INTEGER NOT NULL,
+               updated_at_ms INTEGER NOT NULL
+             );
+             CREATE TABLE account_streams (
+               id INTEGER PRIMARY KEY,
+               stream_key TEXT NOT NULL UNIQUE,
+               account_key BLOB NOT NULL UNIQUE,
+               first_seen_at_ms INTEGER NOT NULL,
+               last_seen_at_ms INTEGER NOT NULL
+             );
+             CREATE TABLE app_settings (
+               singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+               auth_path TEXT,
+               configured_account_stream_id INTEGER REFERENCES account_streams(id),
+               active_account_stream_id INTEGER REFERENCES account_streams(id),
+               created_at_ms INTEGER NOT NULL,
+               updated_at_ms INTEGER NOT NULL
+             );
+             INSERT INTO schema_migrations VALUES
+               (1, 1785000000000, '0.1.0', 'quotatide-settings-v1-account-path-stream');
+             INSERT INTO app_meta VALUES
+               (1, 'migration-canary', zeroblob(32), 7, 1785000000000, 1785000000000);
+             INSERT INTO account_streams VALUES
+               (1, 'stream-canary', zeroblob(32), 1785000000000, 1785000000000);
+             INSERT INTO app_settings VALUES
+               (1, '/preserved/auth.json', 1, NULL, 1785000000000, 1785000000000);
+             PRAGMA user_version = 1;",
+        )
+        .expect("seed version one schema");
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {

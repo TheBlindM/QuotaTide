@@ -12,7 +12,11 @@ pub use account_settings::{
     PublicAccountSettings, PublicError, PublicErrorCode, SafeErrorContext, SettingsManager,
     SettingsStoreError, ValidatedAccountCandidate,
 };
-pub use live_quota::{QuotaUnits, SourceFreshness, UsageSourceErrorCode, WeeklyUsageObservation};
+pub use live_quota::{
+    Application, Clock, PublicLiveQuota, QuotaUnits, RefreshCoordinator, RefreshCoordinatorError,
+    RefreshOutcome, RefreshReceipt, RefreshTrigger, SourceFreshness, UsageRefreshSource,
+    UsageSourceErrorCode, WeeklyUsageObservation,
+};
 pub use tray_shell::{
     PhysicalPoint, PhysicalRect, PhysicalSize, ShellEffect, ShellEvent, TrayShell,
     place_tray_window,

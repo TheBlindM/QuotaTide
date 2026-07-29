@@ -2509,6 +2509,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tempfile",
  "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]

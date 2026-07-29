@@ -77,13 +77,30 @@ describe("Weekly Ledger overview", () => {
     );
 
     expect(screen.getByRole("alert")).toHaveTextContent("数据已过期");
-    expect(screen.getByText(/连续 3 次刷新失败/)).toBeInTheDocument();
+    expect(screen.getByText(/连续 3 次失败/)).toBeInTheDocument();
     expect(
       screen.getByRole("table", { name: /当前七日窗口/ }),
     ).toBeInTheDocument();
 
     screen.getByRole("button", { name: "重试" }).click();
     expect(onRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("announces the active source refresh without removing the snapshot", () => {
+    render(
+      <WeeklyLedger
+        fixture={ledgerFixtures.fresh}
+        onOpenSettings={vi.fn()}
+        onRefresh={vi.fn()}
+        refreshing
+      />,
+    );
+
+    expect(screen.getByText("Codex 额度 · 正在刷新")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "正在刷新" })).toBeDisabled();
+    expect(
+      screen.getByRole("table", { name: /当前七日窗口/ }),
+    ).toBeInTheDocument();
   });
 
   it("offers auth.json setup without showing invented quota data", () => {
