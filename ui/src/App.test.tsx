@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/preact";
+import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App, projectLiveFixture } from "./App";
+import { selectAuthFile } from "./api/account-settings";
+import { getLiveQuota } from "./api/live-quota";
 
 vi.mock("./api/build-info", () => ({
   loadBuildInfo: vi.fn().mockResolvedValue({
@@ -28,22 +30,25 @@ vi.mock("./api/account-settings", () => ({
 
 vi.mock("./api/live-quota", () => ({
   getLiveQuota: vi.fn().mockResolvedValue({
-    usedMicropoints: 42_000_000,
-    remainingMicropoints: 58_000_000,
-    capturedAtUnixMs: 1_785_000_000_000,
-    resetsAtUnixS: 1_786_000_000,
-    windowStartsAtUnixS: 1_785_395_200,
-    windowEndsAtUnixS: 1_785_999_999,
-    planType: "plus",
-    allowed: true,
-    lastAttemptAtUnixMs: 1_785_000_000_000,
-    lastSuccessAtUnixMs: 1_785_000_000_000,
-    consecutiveFailures: 0,
-    sourceStatus: "fresh",
-    publicError: null,
+    dashboardRevision: 1,
+    refreshing: false,
+    quota: {
+      usedMicropoints: 42_000_000,
+      remainingMicropoints: 58_000_000,
+      capturedAtUnixMs: 1_785_000_000_000,
+      resetsAtUnixS: 1_786_000_000,
+      windowStartsAtUnixS: 1_785_395_200,
+      windowEndsAtUnixS: 1_785_999_999,
+      planType: "plus",
+      allowed: true,
+      lastAttemptAtUnixMs: 1_785_000_000_000,
+      lastSuccessAtUnixMs: 1_785_000_000_000,
+      consecutiveFailures: 0,
+      sourceStatus: "fresh",
+      publicError: null,
+    },
   }),
   onDashboardChanged: vi.fn().mockResolvedValue(vi.fn()),
-  onRefreshActivity: vi.fn().mockResolvedValue(vi.fn()),
 }));
 
 afterEach(() => {
@@ -65,6 +70,32 @@ describe("QuotaTide tray app", () => {
       screen.getByRole("table", { name: /当前七日窗口/ }),
     ).toBeInTheDocument();
     expect(screen.getByText(/已用 42%/)).toBeInTheDocument();
+  });
+
+  it("never combines a newly selected account with the previous account quota", async () => {
+    vi.mocked(selectAuthFile).mockResolvedValueOnce({
+      settingsRevision: 2,
+      configured: true,
+      pathSummary: "…/new-auth.json",
+      accountLabel: "账号 • 991A",
+    });
+    render(<App />);
+    expect(await screen.findByText(/已用 42%/)).toBeInTheDocument();
+    vi.mocked(getLiveQuota).mockResolvedValueOnce({
+      dashboardRevision: 2,
+      refreshing: true,
+      quota: null,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "更换 auth.json" }));
+
+    expect(
+      await screen.findByText("账号 • 991A"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    expect(screen.getByText("Codex 额度 · 正在刷新")).toBeInTheDocument();
+    expect(screen.queryByText(/已用 42%/)).not.toBeInTheDocument();
   });
 
   it("provides deterministic dark and opaque visual fallbacks", () => {

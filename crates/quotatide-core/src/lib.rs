@@ -13,10 +13,10 @@ pub use account_settings::{
     SettingsStoreError, UsageCommitDisposition, ValidatedAccountCandidate,
 };
 pub use live_quota::{
-    Application, Clock, CurrentUsageAuth, PublicLiveQuota, QuotaUnits, RefreshAccountBinding,
-    RefreshCoordinator, RefreshCoordinatorError, RefreshOutcome, RefreshReceipt, RefreshTrigger,
-    SourceStatus, UsageAuthReadFailure, UsageRefreshAttempt, UsageRefreshSource, UsageSourceError,
-    UsageSourceErrorCode, WeeklyUsageObservation,
+    Application, Clock, CurrentUsageAuth, DashboardChanged, PublicLiveQuota, PublicLiveQuotaState,
+    QuotaUnits, RefreshAccountBinding, RefreshCoordinator, RefreshCoordinatorError, RefreshOutcome,
+    RefreshReceipt, RefreshTrigger, SourceStatus, UsageAuthReadFailure, UsageRefreshAttempt,
+    UsageRefreshSource, UsageSourceError, UsageSourceErrorCode, WeeklyUsageObservation,
 };
 pub use tray_shell::{
     PhysicalPoint, PhysicalRect, PhysicalSize, ShellEffect, ShellEvent, TrayShell,

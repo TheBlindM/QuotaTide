@@ -9,11 +9,7 @@ import {
   selectAuthFile,
 } from "./api/account-settings";
 import { loadBuildInfo } from "./api/build-info";
-import {
-  getLiveQuota,
-  onDashboardChanged,
-  onRefreshActivity,
-} from "./api/live-quota";
+import { getLiveQuota, onDashboardChanged } from "./api/live-quota";
 import { hideMainWindow, requestManualRefresh } from "./api/tray-shell";
 import { TrayApp } from "./TrayApp";
 import {
@@ -28,6 +24,7 @@ type ViewState =
       info: BuildInfo;
       accountSettings: PublicAccountSettings;
       liveQuota: PublicLiveQuota | null;
+      refreshing: boolean;
     }
   | { kind: "error" };
 
@@ -51,10 +48,10 @@ export function App() {
             accountLabel: null,
           },
           liveQuota: null,
+          refreshing: false,
         }
       : { kind: "loading" },
   );
-  const [backgroundRefreshes, setBackgroundRefreshes] = useState(0);
 
   useEffect(() => {
     if (isPreview) {
@@ -64,9 +61,15 @@ export function App() {
     let active = true;
 
     void Promise.all([loadBuildInfo(), getAccountSettings(), getLiveQuota()])
-      .then(([info, accountSettings, liveQuota]) => {
+      .then(([info, accountSettings, liveQuotaState]) => {
         if (active) {
-          setState({ kind: "ready", info, accountSettings, liveQuota });
+          setState({
+            kind: "ready",
+            info,
+            accountSettings,
+            liveQuota: liveQuotaState.quota,
+            refreshing: liveQuotaState.refreshing,
+          });
         }
       })
       .catch(() => {
@@ -86,40 +89,18 @@ export function App() {
     }
     let active = true;
     let unlisten: (() => void) | undefined;
-    void onRefreshActivity((refreshing) => {
-      if (active) {
-        setBackgroundRefreshes((current) =>
-          refreshing ? current + 1 : Math.max(0, current - 1),
-        );
-      }
-    })
-      .then((dispose) => {
-        if (active) {
-          unlisten = dispose;
-        } else {
-          dispose();
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-      unlisten?.();
-    };
-  }, [isPreview]);
-
-  useEffect(() => {
-    if (isPreview) {
-      return;
-    }
-    let active = true;
-    let unlisten: (() => void) | undefined;
     const reloadDashboard = () => {
       void Promise.all([getAccountSettings(), getLiveQuota()])
-        .then(([accountSettings, liveQuota]) => {
+        .then(([accountSettings, liveQuotaState]) => {
           if (active) {
             setState((current) =>
               current.kind === "ready"
-                ? { ...current, accountSettings, liveQuota }
+                ? {
+                    ...current,
+                    accountSettings,
+                    liveQuota: liveQuotaState.quota,
+                    refreshing: liveQuotaState.refreshing,
+                  }
                 : current,
             );
           }
@@ -185,23 +166,37 @@ export function App() {
     <TrayApp
       fixture={fixture}
       accountSettings={state.accountSettings}
-      externalRefreshing={backgroundRefreshes > 0}
+      externalRefreshing={state.refreshing}
       onHide={() => {
         void hideMainWindow().catch(() => undefined);
       }}
       onRefresh={() => {
         return requestManualRefresh().then(async (cooldownMs) => {
-          const liveQuota = await getLiveQuota();
+          const liveQuotaState = await getLiveQuota();
           setState((current) =>
-            current.kind === "ready" ? { ...current, liveQuota } : current,
+            current.kind === "ready"
+              ? {
+                  ...current,
+                  liveQuota: liveQuotaState.quota,
+                  refreshing: liveQuotaState.refreshing,
+                }
+              : current,
           );
           return cooldownMs;
         });
       }}
       onSelectAuth={async (revision) => {
         const accountSettings = await selectAuthFile(revision);
+        const liveQuotaState = await getLiveQuota();
         setState((current) =>
-          current.kind === "ready" ? { ...current, accountSettings } : current,
+          current.kind === "ready"
+            ? {
+                ...current,
+                accountSettings,
+                liveQuota: liveQuotaState.quota,
+                refreshing: liveQuotaState.refreshing,
+              }
+            : current,
         );
         return accountSettings;
       }}

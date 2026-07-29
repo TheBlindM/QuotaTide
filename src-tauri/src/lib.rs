@@ -8,10 +8,10 @@ use std::sync::Mutex;
 use auth_file::AuthFileReader;
 use codex_usage::{CodexUsageClient, ConfiguredCodexUsageSource};
 use quotatide_core::{
-    AccountApplication, AccountSettingsStore, Application, BuildInfo, Clock,
+    AccountApplication, AccountSettingsStore, Application, BuildInfo, Clock, DashboardChanged,
     PhysicalRect as CoreRect, PhysicalSize as CoreSize, PublicAccountSettings, PublicError,
-    PublicErrorCode, PublicLiveQuota, RefreshCoordinator, RefreshCoordinatorError, RefreshReceipt,
-    RefreshTrigger, SettingsManager, ShellEffect, ShellEvent, TrayShell, place_tray_window,
+    PublicErrorCode, PublicLiveQuotaState, RefreshCoordinator, RefreshTrigger, SettingsManager,
+    ShellEffect, ShellEvent, TrayShell, place_tray_window,
 };
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
@@ -26,13 +26,6 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const MAIN_TRAY_ID: &str = "main";
 const WINDOW_GAP: f64 = 8.0;
 const DASHBOARD_CHANGED_EVENT: &str = "quotatide://dashboard-changed";
-const REFRESH_ACTIVITY_EVENT: &str = "quotatide://refresh-activity";
-
-#[derive(Clone, Copy, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RefreshActivityEvent {
-    refreshing: bool,
-}
 
 #[derive(Debug, Default)]
 struct DesktopShell {
@@ -70,30 +63,14 @@ fn hide_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
 async fn request_manual_refresh(
-    app: AppHandle,
     application: tauri::State<'_, LiveApplication>,
 ) -> Result<u64, PublicError> {
-    let receipt = track_refresh(&app, application.refresh(RefreshTrigger::Manual))
+    let receipt = application
+        .refresh(RefreshTrigger::Manual)
         .await
         .map_err(|_| storage_public_error())?;
     Ok(u64::from(receipt.retry_after_ms))
-}
-
-async fn track_refresh(
-    app: &AppHandle,
-    refresh: impl std::future::Future<Output = Result<RefreshReceipt, RefreshCoordinatorError>>,
-) -> Result<RefreshReceipt, RefreshCoordinatorError> {
-    let _ = emit_refresh_activity(app, true);
-    let result = refresh.await;
-    let _ = emit_refresh_activity(app, false);
-    let _ = app.emit(DASHBOARD_CHANGED_EVENT, ());
-    result
-}
-
-fn emit_refresh_activity(app: &AppHandle, refreshing: bool) -> tauri::Result<()> {
-    app.emit(REFRESH_ACTIVITY_EVENT, RefreshActivityEvent { refreshing })
 }
 
 #[tauri::command]
@@ -121,7 +98,7 @@ async fn get_account_settings(
 #[tauri::command]
 async fn get_live_quota(
     application: tauri::State<'_, LiveApplication>,
-) -> Result<Option<PublicLiveQuota>, PublicError> {
+) -> Result<PublicLiveQuotaState, PublicError> {
     application
         .live_quota(SystemClock.now_unix_ms())
         .await
@@ -164,10 +141,8 @@ async fn select_auth_file(
         .await
         .map_err(|error| error.public::<AuthFileReader>())?;
     let application = application.inner().clone();
-    let app_for_refresh = app.clone();
     tauri::async_runtime::spawn(async move {
-        let refresh = application.refresh_selected_account();
-        let _ = track_refresh(&app_for_refresh, refresh).await;
+        let _ = application.refresh_selected_account().await;
     });
     Ok(settings)
 }
@@ -224,10 +199,8 @@ fn realize_effect(app: &AppHandle, effect: ShellEffect) -> Result<(), String> {
         ShellEffect::Hide => main_window(app)?.hide().map_err(platform_error),
         ShellEffect::Refresh => {
             let application = app.state::<LiveApplication>().inner().clone();
-            let app_for_refresh = app.clone();
             tauri::async_runtime::spawn(async move {
-                let refresh = application.refresh(RefreshTrigger::Manual);
-                let _ = track_refresh(&app_for_refresh, refresh).await;
+                let _ = application.refresh(RefreshTrigger::Manual).await;
             });
             Ok(())
         }
@@ -370,17 +343,19 @@ fn platform_error(error: impl std::fmt::Display) -> String {
     format!("平台操作失败：{error}")
 }
 
-fn spawn_refresh_scheduler(app: AppHandle, application: LiveApplication, refresh_on_startup: bool) {
+fn spawn_refresh_scheduler(application: LiveApplication, refresh_on_startup: bool) {
     tauri::async_runtime::spawn(async move {
-        let app_for_event = app.clone();
-        application
-            .run_hourly_scheduler(refresh_on_startup, move |refreshing| {
-                let _ = emit_refresh_activity(&app_for_event, refreshing);
-                if !refreshing {
-                    let _ = app_for_event.emit(DASHBOARD_CHANGED_EVENT, ());
-                }
-            })
-            .await;
+        application.run_hourly_scheduler(refresh_on_startup).await;
+    });
+}
+
+fn spawn_dashboard_event_bridge(app: AppHandle, application: LiveApplication) {
+    tauri::async_runtime::spawn(async move {
+        let mut changes = application.subscribe_dashboard_changes();
+        while changes.changed().await.is_ok() {
+            let change: DashboardChanged = *changes.borrow_and_update();
+            let _ = app.emit(DASHBOARD_CHANGED_EVENT, change);
+        }
     });
 }
 
@@ -410,7 +385,8 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let settings = SettingsManager::new(store, AuthFileReader);
     let application = Application::new(AccountApplication::new(settings), refresh);
     app.manage(application.clone());
-    spawn_refresh_scheduler(app.handle().clone(), application, refresh_on_startup);
+    spawn_dashboard_event_bridge(app.handle().clone(), application.clone());
+    spawn_refresh_scheduler(application, refresh_on_startup);
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         apply_platform_material(&window);
     }

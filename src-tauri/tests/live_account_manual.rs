@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use quotatide_core::{AccountSettingsStore, Clock, RefreshCoordinator, RefreshTrigger};
+use quotatide_core::{
+    AccountSettingsStore, Clock, RefreshCoordinator, RefreshOutcome, RefreshTrigger,
+};
 use quotatide_lib::auth_file::read_auth_file;
 use quotatide_lib::codex_usage::{CodexUsageClient, ConfiguredCodexUsageSource};
 
@@ -49,10 +51,15 @@ async fn fetches_one_strict_current_seven_day_observation() {
         FixedClock(captured_at_unix_ms),
     );
 
-    coordinator
+    let receipt = coordinator
         .refresh(RefreshTrigger::Startup)
         .await
         .expect("fetch current weekly usage");
+    assert_eq!(
+        receipt.outcome,
+        RefreshOutcome::Updated,
+        "live source did not return a current weekly observation"
+    );
     let observation = store
         .public_live_quota(captured_at_unix_ms)
         .await

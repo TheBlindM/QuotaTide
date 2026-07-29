@@ -1,29 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { PublicLiveQuota } from "../bindings/PublicLiveQuota";
+import type { DashboardChanged } from "../bindings/DashboardChanged";
+import type { PublicLiveQuotaState } from "../bindings/PublicLiveQuotaState";
 
-export async function getLiveQuota(): Promise<PublicLiveQuota | null> {
-  return await invoke<PublicLiveQuota | null>("get_live_quota");
+export async function getLiveQuota(): Promise<PublicLiveQuotaState> {
+  return await invoke<PublicLiveQuotaState>("get_live_quota");
 }
 
 export async function onDashboardChanged(
-  callback: () => void,
+  callback: (change: DashboardChanged) => void,
 ): Promise<UnlistenFn> {
-  return await listen("quotatide://dashboard-changed", callback);
-}
-
-type RefreshActivityEvent = {
-  refreshing: boolean;
-};
-
-export async function onRefreshActivity(
-  callback: (refreshing: boolean) => void,
-): Promise<UnlistenFn> {
-  return await listen<RefreshActivityEvent>(
-    "quotatide://refresh-activity",
+  return await listen<DashboardChanged>(
+    "quotatide://dashboard-changed",
     (event) => {
-      callback(event.payload.refreshing);
+      callback(event.payload);
     },
   );
 }

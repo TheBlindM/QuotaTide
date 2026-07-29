@@ -207,6 +207,56 @@ async fn concurrent_triggers_share_one_source_attempt_and_result() {
 }
 
 #[tokio::test]
+async fn dashboard_revision_events_invalidate_a_query_owned_refreshing_snapshot() {
+    let (_directory, store) = configured_store().await;
+    let release = Arc::new(Notify::new());
+    let mut source = FakeSource::successful(1_785_000_000_000);
+    source.release = Some(Arc::clone(&release));
+    let calls = Arc::clone(&source.calls);
+    let application = Application::new(
+        AccountApplication::new(SettingsManager::new(store.clone(), UnusedValidator)),
+        RefreshCoordinator::new(store, source, FakeClock::new(1_785_000_000_000)),
+    );
+    let mut changes = application.subscribe_dashboard_changes();
+    let refresh_application = application.clone();
+    let refresh = tokio::spawn(async move {
+        refresh_application
+            .refresh(RefreshTrigger::Startup)
+            .await
+            .expect("startup refresh")
+    });
+
+    wait_for_count(&calls, 1).await;
+    changes.changed().await.expect("refresh-start revision");
+    let started = application
+        .live_quota(1_785_000_000_000)
+        .await
+        .expect("started dashboard state");
+    assert_eq!(changes.borrow_and_update().revision, 1);
+    assert_eq!(started.dashboard_revision, 1);
+    assert!(started.refreshing);
+    assert!(started.quota.is_none());
+
+    release.notify_waiters();
+    assert_eq!(
+        refresh.await.expect("refresh task").outcome,
+        RefreshOutcome::Updated
+    );
+    changes.changed().await.expect("refresh-finish revision");
+    let completed = application
+        .live_quota(1_785_000_000_000)
+        .await
+        .expect("completed dashboard state");
+    assert_eq!(changes.borrow_and_update().revision, 2);
+    assert_eq!(completed.dashboard_revision, 2);
+    assert!(!completed.refreshing);
+    assert_eq!(
+        completed.quota.expect("live quota").used_micropoints,
+        Some(20_000_000)
+    );
+}
+
+#[tokio::test]
 async fn settings_refresh_retries_after_joining_a_superseded_account_flight() {
     let (_directory, store) = configured_store().await;
     let source = SwitchingSource {
@@ -443,24 +493,18 @@ async fn resume_resets_the_next_hourly_deadline_and_shutdown_cancels_the_actor()
         AccountApplication::new(SettingsManager::new(store, UnusedValidator)),
         coordinator,
     );
-    let callbacks = Arc::new(AtomicUsize::new(0));
-    let callbacks_for_task = Arc::clone(&callbacks);
     let application_for_task = application.clone();
     let scheduler = tokio::spawn(async move {
-        application_for_task
-            .run_hourly_scheduler(true, move |refreshing| {
-                if !refreshing {
-                    callbacks_for_task.fetch_add(1, Ordering::SeqCst);
-                }
-            })
-            .await;
+        application_for_task.run_hourly_scheduler(true).await;
     });
 
     wait_for_count(&calls, 1).await;
     clock.set(1_785_001_800_000);
     tokio::time::advance(std::time::Duration::from_secs(30 * 60)).await;
     application.notify_resume();
-    wait_for_count(&callbacks, 2).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     clock.set(1_785_003_600_000);

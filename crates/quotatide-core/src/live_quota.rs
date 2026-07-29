@@ -210,6 +210,26 @@ pub struct PublicLiveQuota {
     pub public_error: Option<UsageSourceErrorCode>,
 }
 
+/// Complete query result for the current dashboard projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct PublicLiveQuotaState {
+    #[ts(type = "number")]
+    pub dashboard_revision: u64,
+    pub refreshing: bool,
+    pub quota: Option<PublicLiveQuota>,
+}
+
+/// Small native event that tells the UI to re-query the dashboard projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct DashboardChanged {
+    #[ts(type = "number")]
+    pub revision: u64,
+}
+
 impl UsageSourceErrorCode {
     const STORAGE_KEYS: &'static [(Self, &'static str)] = &[
         (Self::AuthPathUnavailable, "auth_path_unavailable"),
@@ -333,6 +353,8 @@ pub trait UsageRefreshSource: Clone + Send + Sync + 'static {
 struct RefreshState {
     in_flight: Option<watch::Receiver<Option<Result<RefreshReceipt, RefreshCoordinatorError>>>>,
     last_manual_started_at_unix_ms: Option<i64>,
+    dashboard_revision: u64,
+    refreshing: bool,
 }
 
 /// Core-owned single-flight refresh use case.
@@ -342,6 +364,7 @@ pub struct RefreshCoordinator<S, C> {
     clock: C,
     store: AccountSettingsStore,
     state: std::sync::Arc<Mutex<RefreshState>>,
+    dashboard_changes: watch::Sender<DashboardChanged>,
 }
 
 /// The sole application facade consumed by the native shell.
@@ -410,8 +433,19 @@ where
     pub async fn live_quota(
         &self,
         now_unix_ms: i64,
-    ) -> Result<Option<PublicLiveQuota>, AccountConfigError<V::Error>> {
-        self.account.live_quota(now_unix_ms).await
+    ) -> Result<PublicLiveQuotaState, AccountConfigError<V::Error>> {
+        loop {
+            let before = self.refresh.dashboard_state().await;
+            let quota = self.account.live_quota(now_unix_ms).await?;
+            let after = self.refresh.dashboard_state().await;
+            if before == after {
+                return Ok(PublicLiveQuotaState {
+                    dashboard_revision: after.0,
+                    refreshing: after.1,
+                    quota,
+                });
+            }
+        }
     }
 
     /// Runs or joins one refresh attempt.
@@ -463,10 +497,7 @@ where
     ///
     /// A resume signal performs at most one overdue refresh and resets the next
     /// hourly deadline to one hour after resume.
-    pub async fn run_hourly_scheduler<F>(&self, refresh_on_startup: bool, on_activity: F)
-    where
-        F: Fn(bool) + Send + Sync,
-    {
+    pub async fn run_hourly_scheduler(&self, refresh_on_startup: bool) {
         const HOUR_MS: i64 = 60 * 60 * 1000;
         let cancellation = self.scheduler.cancellation.clone();
         let mut resumes = self.scheduler.resume_sender.subscribe();
@@ -475,10 +506,8 @@ where
         interval.tick().await;
 
         if refresh_on_startup {
-            on_activity(true);
             let completed =
                 run_scheduled_refresh(&cancellation, self.refresh(RefreshTrigger::Startup)).await;
-            on_activity(false);
             if !completed {
                 return;
             }
@@ -488,12 +517,10 @@ where
             tokio::select! {
                 () = cancellation.cancelled() => break,
                 _ = interval.tick() => {
-                    on_activity(true);
                     let completed = run_scheduled_refresh(
                         &cancellation,
                         self.refresh(RefreshTrigger::Hourly),
                     ).await;
-                    on_activity(false);
                     if !completed {
                         break;
                     }
@@ -502,12 +529,10 @@ where
                     if changed.is_err() {
                         break;
                     }
-                    on_activity(true);
                     let completed = run_scheduled_refresh(
                         &cancellation,
                         self.refresh_if_due(RefreshTrigger::Resume, HOUR_MS),
                     ).await;
-                    on_activity(false);
                     if !completed {
                         break;
                     }
@@ -530,6 +555,12 @@ where
     /// Cancels scheduler work so it cannot hold application shutdown open.
     pub fn cancel_scheduler(&self) {
         self.scheduler.cancellation.cancel();
+    }
+
+    /// Subscribes to small revision-only dashboard invalidation events.
+    #[must_use]
+    pub fn subscribe_dashboard_changes(&self) -> watch::Receiver<DashboardChanged> {
+        self.refresh.dashboard_changes.subscribe()
     }
 }
 
@@ -556,12 +587,19 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
 
     #[must_use]
     pub fn new(store: AccountSettingsStore, source: S, clock: C) -> Self {
+        let (dashboard_changes, _) = watch::channel(DashboardChanged { revision: 0 });
         Self {
             source,
             clock,
             store,
             state: std::sync::Arc::new(Mutex::new(RefreshState::default())),
+            dashboard_changes,
         }
+    }
+
+    async fn dashboard_state(&self) -> (u64, bool) {
+        let state = self.state.lock().await;
+        (state.dashboard_revision, state.refreshing)
     }
 
     /// Runs or joins one refresh flight.
@@ -582,7 +620,7 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
         }
 
         let now = self.clock.now_unix_ms();
-        let role = {
+        let (role, started_change) = {
             let mut state = self.state.lock().await;
             if let Some(receiver) = state.in_flight.clone() {
                 if trigger == RefreshTrigger::Manual
@@ -592,22 +630,32 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
                 {
                     state.last_manual_started_at_unix_ms = Some(now);
                 }
-                Role::Follower(receiver)
+                (Role::Follower(receiver), None)
             } else if trigger == RefreshTrigger::Manual
                 && state
                     .last_manual_started_at_unix_ms
                     .is_some_and(|last| now.saturating_sub(last) < Self::MANUAL_COOLDOWN_MS)
             {
-                Role::Cooldown
+                (Role::Cooldown, None)
             } else {
                 if trigger == RefreshTrigger::Manual {
                     state.last_manual_started_at_unix_ms = Some(now);
                 }
                 let (sender, receiver) = watch::channel(None);
                 state.in_flight = Some(receiver);
-                Role::Leader(sender)
+                state.refreshing = true;
+                state.dashboard_revision = state.dashboard_revision.saturating_add(1);
+                (
+                    Role::Leader(sender),
+                    Some(DashboardChanged {
+                        revision: state.dashboard_revision,
+                    }),
+                )
             }
         };
+        if let Some(change) = started_change {
+            self.dashboard_changes.send_replace(change);
+        }
 
         match role {
             Role::Cooldown => Ok(RefreshReceipt {
@@ -627,7 +675,16 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
             },
             Role::Leader(sender) => {
                 let result = self.run_once(now).await;
-                self.state.lock().await.in_flight = None;
+                let completed_change = {
+                    let mut state = self.state.lock().await;
+                    state.in_flight = None;
+                    state.refreshing = false;
+                    state.dashboard_revision = state.dashboard_revision.saturating_add(1);
+                    DashboardChanged {
+                        revision: state.dashboard_revision,
+                    }
+                };
+                self.dashboard_changes.send_replace(completed_change);
                 let _ = sender.send(Some(result.clone()));
                 self.with_trigger_retry_after(result, trigger).await
             }
