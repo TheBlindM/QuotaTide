@@ -63,6 +63,7 @@ vi.mock("./api/account-settings", () => ({
     accountLabel: "账号 • 21B8",
     quotaPolicy,
   }),
+  onSettingsChanged: vi.fn().mockResolvedValue(vi.fn()),
   selectAuthFile: vi.fn(),
 }));
 
@@ -225,6 +226,7 @@ describe("QuotaTide tray app", () => {
     });
     expect(fixture.sourceHealth).toBe("Codex 额度 · 连续 1 次失败（请求超时）");
     expect(fixture.lastSuccess).toContain("上次成功");
+    expect(fixture.todayLimit).toBe("基础 16% + 结转 0% = 实际 16%");
   });
 
   it.each([
@@ -269,6 +271,8 @@ describe("QuotaTide tray app", () => {
     );
 
     expect(fixture.tone).toBe(tone);
-    expect(fixture.todayLimit).toContain("16.8%");
+    expect(fixture.todayLimit).toBe(
+      "基础 16% + 结转 0.8% = 实际 16.8%",
+    );
   });
 });

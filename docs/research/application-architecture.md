@@ -333,6 +333,12 @@ send_test_email
 开机启动随 `save_settings` 原子提交，不另设可绕过设置校验的公共命令。
 退出只能来自原生托盘菜单，不暴露给任意 WebView 脚本。
 
+在完整 `SettingsDraft` 所依赖的通知、邮件、凭证库与开机启动能力尚未进入实现
+里程碑时，允许阶段性暴露与当前 ticket 同范围的窄 mutation command（例如
+`update_quota_policy`）。它仍须执行完整字段替换、乐观 revision 校验，并发送
+revision-only `settings_changed` / `dashboard_changed` 事件；正式 v1 合并设置页
+时必须收敛进上述 `save_settings` 原子提交，不能作为第二条长期写入路径保留。
+
 所有 command 返回 Rust 定义的 serde DTO 或结构化 `PublicError`：
 
 ```text

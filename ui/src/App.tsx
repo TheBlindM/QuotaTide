@@ -7,8 +7,9 @@ import type { PublicLiveQuota } from "./bindings/PublicLiveQuota";
 import type { UsageSourceErrorCode } from "./bindings/UsageSourceErrorCode";
 import {
   getAccountSettings,
+  onSettingsChanged,
   selectAuthFile,
-  saveSettings,
+  updateQuotaPolicy,
 } from "./api/account-settings";
 import { loadBuildInfo } from "./api/build-info";
 import { getLiveQuota, onDashboardChanged } from "./api/live-quota";
@@ -99,7 +100,8 @@ export function App() {
       return;
     }
     let active = true;
-    let unlisten: (() => void) | undefined;
+    let unlistenDashboard: (() => void) | undefined;
+    let unlistenSettings: (() => void) | undefined;
     const reloadDashboard = () => {
       void Promise.all([getAccountSettings(), getLiveQuota()])
         .then(([accountSettings, liveQuotaState]) => {
@@ -118,17 +120,25 @@ export function App() {
         })
         .catch(() => undefined);
     };
-    void onDashboardChanged(reloadDashboard).then((dispose) => {
-      if (active) {
-        unlisten = dispose;
-        reloadDashboard();
-      } else {
-        dispose();
-      }
-    }).catch(() => undefined);
+    void Promise.all([
+      onDashboardChanged(reloadDashboard),
+      onSettingsChanged(reloadDashboard),
+    ])
+      .then(([disposeDashboard, disposeSettings]) => {
+        if (active) {
+          unlistenDashboard = disposeDashboard;
+          unlistenSettings = disposeSettings;
+          reloadDashboard();
+        } else {
+          disposeDashboard();
+          disposeSettings();
+        }
+      })
+      .catch(() => undefined);
     return () => {
       active = false;
-      unlisten?.();
+      unlistenDashboard?.();
+      unlistenSettings?.();
     };
   }, [isPreview]);
 
@@ -213,7 +223,7 @@ export function App() {
       }}
       onReloadAccount={getAccountSettings}
       onUpdatePolicy={async (revision, draft) => {
-        const accountSettings = await saveSettings(revision, draft);
+        const accountSettings = await updateQuotaPolicy(revision, draft);
         const liveQuotaState = await getLiveQuota();
         setState((current) =>
           current.kind === "ready"
@@ -269,9 +279,7 @@ export function projectLiveFixture(
     live.todayBaseMicropoints === null ||
     live.todayCarryMicropoints === null
       ? ""
-      : live.todayCarryMicropoints > 0
-        ? `${formatMicropoints(live.todayLimitMicropoints)}（${formatMicropoints(live.todayBaseMicropoints)} + ${formatMicropoints(live.todayCarryMicropoints)} 动态）`
-        : formatMicropoints(live.todayLimitMicropoints);
+      : `基础 ${formatMicropoints(live.todayBaseMicropoints)} + 结转 ${formatMicropoints(live.todayCarryMicropoints)} = 实际 ${formatMicropoints(live.todayLimitMicropoints)}`;
   const tone =
     live.sourceStatus !== "fresh"
       ? "stale"

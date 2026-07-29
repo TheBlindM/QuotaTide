@@ -1,5 +1,9 @@
+use std::collections::BTreeMap;
+
 use chrono::{Datelike as _, NaiveDate};
 use chrono_tz::Tz;
+
+use super::QuotaLedger;
 
 const DEFAULT_BASE_MICROPOINTS: [i64; 7] = [
     16_000_000, 16_000_000, 16_000_000, 16_000_000, 16_000_000, 10_000_000, 10_000_000,
@@ -124,6 +128,16 @@ pub struct PolicyDayProjection {
     pub finalized: bool,
 }
 
+pub(crate) struct PolicyWindowFacts<'a> {
+    pub anchor: NaiveDate,
+    pub last: NaiveDate,
+    pub today: NaiveDate,
+    pub policy_revision_id: u64,
+    pub usage: &'a BTreeMap<String, Option<i64>>,
+    pub snapshots: &'a mut BTreeMap<String, DailyLimitSnapshot>,
+    pub previous_statuses: &'a mut BTreeMap<String, DailyPolicyStatus>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PolicyError {
     #[error("a quota policy must contain exactly seven daily values")]
@@ -134,6 +148,8 @@ pub enum PolicyError {
     BaseTotalExceeded,
     #[error("policy timezone must be a valid IANA timezone")]
     InvalidTimezone,
+    #[error("daily policy date range overflow")]
+    DateRangeOverflow,
 }
 
 impl QuotaPolicy {
@@ -291,12 +307,52 @@ impl QuotaPolicy {
                 if finalized {
                     let unused = fact
                         .used_micropoints
-                        .map_or(0, |used| limit.saturating_sub(used).max(0));
+                        .map_or(0, |used| base.saturating_sub(used).max(0));
                     carry_bank = carry_bank.saturating_add(unused);
                 }
             }
         }
         Ok(projections)
+    }
+}
+
+impl QuotaLedger {
+    pub(crate) fn default_policy(policy_timezone: &str) -> Result<QuotaPolicy, PolicyError> {
+        QuotaPolicy::default_for_timezone(policy_timezone)
+    }
+
+    pub(crate) fn validate_policy(
+        base_micropoints: [i64; 7],
+        carry_workdays_enabled: bool,
+        policy_timezone: &str,
+    ) -> Result<QuotaPolicy, PolicyError> {
+        QuotaPolicy::new(base_micropoints, carry_workdays_enabled, policy_timezone)
+    }
+
+    pub(crate) fn project_policy_days(
+        policy: &QuotaPolicy,
+        window: &mut PolicyWindowFacts<'_>,
+    ) -> Result<Vec<PolicyDayProjection>, PolicyError> {
+        let mut facts = Vec::new();
+        let mut date = window.anchor;
+        loop {
+            let key = date.to_string();
+            let used = window.usage.get(&key).copied().flatten();
+            let fact = if let Some(snapshot) = window.snapshots.remove(&key) {
+                PolicyDayFact::with_snapshot(date, used, snapshot)
+            } else {
+                PolicyDayFact::new(date, used, date < window.today)
+            };
+            facts.push(match window.previous_statuses.remove(&key) {
+                Some(status) => fact.with_previous_status(status),
+                None => fact,
+            });
+            if date == window.last {
+                break;
+            }
+            date = date.succ_opt().ok_or(PolicyError::DateRangeOverflow)?;
+        }
+        policy.project_days(&facts, window.today, window.policy_revision_id)
     }
 }
 
@@ -311,9 +367,14 @@ fn daily_status(
     if finalized {
         return DailyPolicyStatus::Finalized;
     }
-    if (limit_micropoints == 0 && used > 0)
-        || used.saturating_mul(100) >= limit_micropoints.saturating_mul(100)
-    {
+    if limit_micropoints == 0 {
+        return if used > 0 {
+            DailyPolicyStatus::Exceeded
+        } else {
+            DailyPolicyStatus::Normal
+        };
+    }
+    if used.saturating_mul(100) >= limit_micropoints.saturating_mul(100) {
         DailyPolicyStatus::Exceeded
     } else if used.saturating_mul(100) >= limit_micropoints.saturating_mul(80) {
         DailyPolicyStatus::Warning
@@ -413,6 +474,45 @@ mod tests {
         }
 
         #[test]
+        fn allocated_carry_is_never_minted_again_by_the_next_finalized_day(
+            monday_used in 0_i64..=16_000_000_i64,
+            tuesday_used in 0_i64..=16_000_000_i64,
+        ) {
+            let policy = QuotaPolicy::default_for_timezone("Asia/Shanghai")
+                .expect("valid default policy");
+            let monday = monday();
+            let facts = (0_u64..5)
+                .map(|offset| {
+                    PolicyDayFact::new(
+                        monday.checked_add_days(Days::new(offset)).expect("date in range"),
+                        match offset {
+                            0 => Some(monday_used),
+                            1 => Some(tuesday_used),
+                            _ => None,
+                        },
+                        offset <= 1,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let projected = policy
+                .project_days(
+                    &facts,
+                    monday.checked_add_days(Days::new(2)).expect("Wednesday"),
+                    1,
+                )
+                .expect("valid projection");
+            let allocated = projected[1..]
+                .iter()
+                .map(|day| day.carry_micropoints)
+                .sum::<i64>();
+
+            prop_assert_eq!(
+                allocated,
+                (16_000_000 - monday_used) + (16_000_000 - tuesday_used)
+            );
+        }
+
+        #[test]
         fn completed_snapshot_is_stable_across_policy_and_timezone_edits(
             used in 0_i64..=100_000_000_i64,
             snapshot_base in 0_i64..=100_000_000_i64,
@@ -483,5 +583,17 @@ mod tests {
             prop_assert_eq!(projected[2].carry_micropoints, 0);
             prop_assert_eq!(projected[3].carry_micropoints, 0);
         }
+    }
+
+    #[test]
+    fn known_zero_usage_on_a_zero_limit_is_normal() {
+        let policy =
+            QuotaPolicy::new([0; 7], false, "Asia/Shanghai").expect("zero policy is valid");
+        let today = monday();
+        let projected = policy
+            .project_days(&[PolicyDayFact::new(today, Some(0), false)], today, 1)
+            .expect("valid projection");
+
+        assert_eq!(projected[0].status, DailyPolicyStatus::Normal);
     }
 }

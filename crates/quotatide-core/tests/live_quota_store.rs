@@ -264,6 +264,41 @@ async fn warning_and_exceeded_threshold_candidates_are_durable_and_deduplicated(
             .await
             .expect("record threshold sample");
     }
+    let high_limit = store.public_settings().await.expect("settings");
+    store
+        .update_quota_policy(
+            high_limit.settings_revision,
+            quotatide_core::QuotaPolicyDraft {
+                policy_timezone: "Asia/Shanghai".to_owned(),
+                carry_workdays_enabled: true,
+                base_micropoints: vec![0, 0, 100_000_000, 0, 0, 0, 0],
+            },
+        )
+        .await
+        .expect("raise today's limit");
+    let lower_limit = store.public_settings().await.expect("updated settings");
+    store
+        .update_quota_policy(
+            lower_limit.settings_revision,
+            quotatide_core::QuotaPolicyDraft {
+                policy_timezone: "Asia/Shanghai".to_owned(),
+                carry_workdays_enabled: true,
+                base_micropoints: vec![0, 0, 20_000_000, 0, 0, 0, 0],
+            },
+        )
+        .await
+        .expect("lower today's limit");
+    store
+        .record_usage_success(
+            &binding(
+                lower_limit.settings_revision + 1,
+                "/chosen/auth.json",
+                "account-one",
+            ),
+            observation_with_reset(timestamp_ms("2026-07-29T06:00:00Z"), 19_000_000, reset),
+        )
+        .await
+        .expect("cross warning again under a new policy revision");
     drop(store);
 
     let connection =
@@ -290,7 +325,7 @@ async fn warning_and_exceeded_threshold_candidates_are_durable_and_deduplicated(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .expect("persisted current-day status");
-    assert_eq!(persisted_status.0, "exceeded", "{persisted_status:?}");
+    assert_eq!(persisted_status.0, "warning", "{persisted_status:?}");
     assert_eq!(
         candidates,
         vec![("exceeded".to_owned(), 1), ("warning".to_owned(), 1)]

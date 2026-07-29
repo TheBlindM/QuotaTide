@@ -264,6 +264,14 @@ pub struct DashboardChanged {
     pub revision: u64,
 }
 
+/// Small native event that tells the UI to re-query public settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct SettingsChanged {
+    pub revision: u32,
+}
+
 impl UsageSourceErrorCode {
     const STORAGE_KEYS: &'static [(Self, &'static str)] = &[
         (Self::AuthPathUnavailable, "auth_path_unavailable"),

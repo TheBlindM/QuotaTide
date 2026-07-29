@@ -19,6 +19,15 @@ async fn version_five_policy_facts_are_constrained_and_immutable() {
     drop(store);
 
     let connection = rusqlite::Connection::open(&database).expect("inspect version five");
+    assert_version_five_policy_constraints(&connection);
+}
+
+fn assert_version_five_policy_constraints(connection: &rusqlite::Connection) {
+    assert_required_policy_columns(connection);
+    assert_immutable_policy_facts(connection);
+}
+
+fn assert_required_policy_columns(connection: &rusqlite::Connection) {
     let active_policy_not_null: i64 = connection
         .query_row(
             "SELECT [notnull] FROM pragma_table_info('app_settings')
@@ -44,7 +53,9 @@ async fn version_five_policy_facts_are_constrained_and_immutable() {
             .expect("daily policy fact column");
         assert_eq!(not_null, 1, "{column} must be required");
     }
+}
 
+fn assert_immutable_policy_facts(connection: &rusqlite::Connection) {
     let (stream_id, revision_id): (i64, i64) = connection
         .query_row(
             "SELECT configured_account_stream_id, active_policy_revision_id
@@ -79,6 +90,37 @@ async fn version_five_policy_facts_are_constrained_and_immutable() {
                  WHERE account_stream_id = ?1",
                 [stream_id],
             )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE daily_ledgers SET updated_at_ms = updated_at_ms + 1
+                 WHERE account_stream_id = ?1",
+                [stream_id],
+            )
+            .is_err()
+    );
+    connection
+        .execute(
+            "INSERT INTO daily_threshold_transitions
+             (account_stream_id, local_date, policy_revision_id,
+              transition_kind, created_at_ms)
+             VALUES (?1, '2026-07-28', ?2, 'warning', 1785200000000)",
+            rusqlite::params![stream_id, revision_id],
+        )
+        .expect("insert threshold fact");
+    assert!(
+        connection
+            .execute(
+                "UPDATE daily_threshold_transitions SET created_at_ms = created_at_ms + 1",
+                [],
+            )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute("DELETE FROM daily_threshold_transitions", [])
             .is_err()
     );
     assert!(

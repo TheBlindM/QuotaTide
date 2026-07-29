@@ -6,7 +6,6 @@ use ts_rs::TS;
 mod account_settings;
 mod live_quota;
 mod quota_ledger;
-mod quota_policy;
 mod tray_shell;
 
 pub use account_settings::{
@@ -18,8 +17,8 @@ pub use account_settings::{
 pub use live_quota::{
     Application, Clock, CurrentUsageAuth, DashboardChanged, LedgerDayStatus, PublicLedgerDay,
     PublicLiveQuota, PublicLiveQuotaState, QuotaUnits, RefreshAccountBinding, RefreshCoordinator,
-    RefreshCoordinatorError, RefreshOutcome, RefreshReceipt, RefreshTrigger, SourceStatus,
-    UsageAuthReadFailure, UsageRefreshAttempt, UsageRefreshSource, UsageSourceError,
+    RefreshCoordinatorError, RefreshOutcome, RefreshReceipt, RefreshTrigger, SettingsChanged,
+    SourceStatus, UsageAuthReadFailure, UsageRefreshAttempt, UsageRefreshSource, UsageSourceError,
     UsageSourceErrorCode, WeeklyUsageObservation,
 };
 pub use quota_ledger::{

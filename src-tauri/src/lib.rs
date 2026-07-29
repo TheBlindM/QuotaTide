@@ -11,7 +11,7 @@ use quotatide_core::{
     AccountApplication, AccountSettingsStore, Application, BuildInfo, Clock, DashboardChanged,
     PhysicalRect as CoreRect, PhysicalSize as CoreSize, PublicAccountSettings, PublicError,
     PublicErrorCode, PublicLiveQuotaState, QuotaPolicyDraft, RefreshCoordinator, RefreshTrigger,
-    SettingsManager, ShellEffect, ShellEvent, TrayShell, place_tray_window,
+    SettingsChanged, SettingsManager, ShellEffect, ShellEvent, TrayShell, place_tray_window,
 };
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
@@ -107,7 +107,7 @@ async fn get_live_quota(
 }
 
 #[tauri::command]
-async fn save_settings(
+async fn update_quota_policy(
     app: AppHandle,
     application: tauri::State<'_, LiveApplication>,
     expected_settings_revision: u32,
@@ -122,7 +122,12 @@ async fn save_settings(
         .await
         .map_err(|error| error.public::<AuthFileReader>())?
         .dashboard_revision;
-    let _ = app.emit(SETTINGS_CHANGED_EVENT, settings.clone());
+    let _ = app.emit(
+        SETTINGS_CHANGED_EVENT,
+        SettingsChanged {
+            revision: settings.settings_revision,
+        },
+    );
     let _ = app.emit(
         DASHBOARD_CHANGED_EVENT,
         DashboardChanged {
@@ -497,7 +502,7 @@ pub fn run() {
             get_account_settings,
             get_live_quota,
             select_auth_file,
-            save_settings
+            update_quota_policy
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the QuotaTide desktop shell");

@@ -3,8 +3,13 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use chrono_tz::Tz;
 
-use crate::quota_policy::{PolicyDayFact, PolicyDayProjection, PolicyError, QuotaPolicy};
 use crate::{QuotaUnits, WeeklyUsageObservation};
+
+mod policy;
+pub(crate) use policy::{
+    DailyLimitSnapshot, DailyPolicyStatus, PolicyDayProjection, PolicyError, PolicyWindowFacts,
+    QuotaPolicy, ThresholdTransition,
+};
 
 const WEEK_SECONDS: u32 = 604_800;
 const RESET_DROP_MICROPOINTS: i64 = 10_000;
@@ -100,27 +105,6 @@ pub enum LedgerError {
 }
 
 impl QuotaLedger {
-    pub(crate) fn default_policy(policy_timezone: &str) -> Result<QuotaPolicy, PolicyError> {
-        QuotaPolicy::default_for_timezone(policy_timezone)
-    }
-
-    pub(crate) fn validate_policy(
-        base_micropoints: [i64; 7],
-        carry_workdays_enabled: bool,
-        policy_timezone: &str,
-    ) -> Result<QuotaPolicy, PolicyError> {
-        QuotaPolicy::new(base_micropoints, carry_workdays_enabled, policy_timezone)
-    }
-
-    pub(crate) fn project_policy_days(
-        policy: &QuotaPolicy,
-        facts: &[PolicyDayFact],
-        today: NaiveDate,
-        policy_revision_id: u64,
-    ) -> Result<Vec<PolicyDayProjection>, PolicyError> {
-        policy.project_days(facts, today, policy_revision_id)
-    }
-
     pub(crate) fn persisted_epoch(state: &LedgerState) -> Option<PersistedLedgerEpoch> {
         state
             .active_epoch

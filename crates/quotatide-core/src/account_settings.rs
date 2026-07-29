@@ -10,10 +10,9 @@ use tokio_rusqlite::{Connection, rusqlite};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::quota_ledger::PersistedLedgerEpoch;
-use crate::quota_policy::{
-    DailyLimitSnapshot, DailyPolicyStatus, PolicyDayFact, PolicyDayProjection, PolicyError,
-    QuotaPolicy, ThresholdTransition,
+use crate::quota_ledger::{
+    DailyLimitSnapshot, DailyPolicyStatus, PersistedLedgerEpoch, PolicyDayProjection, PolicyError,
+    PolicyWindowFacts, QuotaPolicy, ThresholdTransition,
 };
 use crate::{
     LedgerApplyKind, LedgerDayStatus, PublicLedgerDay, PublicLiveQuota, QuotaLedger,
@@ -747,7 +746,7 @@ fn migrate_daily_policy_v5(
            transition_kind TEXT NOT NULL
              CHECK (transition_kind IN ('warning', 'exceeded')),
            created_at_ms INTEGER NOT NULL,
-           UNIQUE(account_stream_id, local_date, policy_revision_id, transition_kind)
+           UNIQUE(account_stream_id, local_date, transition_kind)
          );",
     )?;
     let revision_id = insert_default_policy_revision(&transaction, now, policy_timezone.name())?;
@@ -912,23 +911,21 @@ fn create_policy_immutability_triggers_v5(
            END;
          CREATE TRIGGER finalized_daily_ledgers_are_immutable_update
            BEFORE UPDATE ON daily_ledgers
-           WHEN OLD.finalized_at_ms IS NOT NULL AND (
-             NEW.account_stream_id IS NOT OLD.account_stream_id OR
-             NEW.local_date IS NOT OLD.local_date OR
-             NEW.policy_timezone IS NOT OLD.policy_timezone OR
-             NEW.used_micropoints IS NOT OLD.used_micropoints OR
-             NEW.policy_revision_id IS NOT OLD.policy_revision_id OR
-             NEW.base_micropoints IS NOT OLD.base_micropoints OR
-             NEW.carry_micropoints IS NOT OLD.carry_micropoints OR
-             NEW.policy_status IS NOT OLD.policy_status OR
-             NEW.finalized_at_ms IS NOT OLD.finalized_at_ms
-           ) BEGIN
+           WHEN OLD.finalized_at_ms IS NOT NULL BEGIN
              SELECT RAISE(ABORT, 'finalized daily ledgers are immutable');
            END;
          CREATE TRIGGER finalized_daily_ledgers_are_immutable_delete
            BEFORE DELETE ON daily_ledgers
            WHEN OLD.finalized_at_ms IS NOT NULL BEGIN
              SELECT RAISE(ABORT, 'finalized daily ledgers are immutable');
+           END;
+         CREATE TRIGGER daily_threshold_transitions_are_immutable_update
+           BEFORE UPDATE ON daily_threshold_transitions BEGIN
+             SELECT RAISE(ABORT, 'daily threshold transitions are immutable');
+           END;
+         CREATE TRIGGER daily_threshold_transitions_are_immutable_delete
+           BEFORE DELETE ON daily_threshold_transitions BEGIN
+             SELECT RAISE(ABORT, 'daily threshold transitions are immutable');
            END;",
     )
 }
@@ -1788,21 +1785,22 @@ fn project_policy_days(
         policy.policy_timezone(),
         &mut usage,
     )?;
-    let facts = build_policy_day_facts(
-        anchor,
-        last,
-        today,
-        &usage,
-        &mut snapshots,
-        &mut previous_statuses,
-    )?;
-    Ok(
-        QuotaLedger::project_policy_days(&policy, &facts, today, policy_revision_id)
-            .map_err(|_| rusqlite::Error::InvalidQuery)?
-            .into_iter()
-            .filter(|day| current_dates.contains(&day.local_date.to_string()))
-            .collect(),
+    Ok(QuotaLedger::project_policy_days(
+        &policy,
+        &mut PolicyWindowFacts {
+            anchor,
+            last,
+            today,
+            policy_revision_id,
+            usage: &usage,
+            snapshots: &mut snapshots,
+            previous_statuses: &mut previous_statuses,
+        },
     )
+    .map_err(|_| rusqlite::Error::InvalidQuery)?
+    .into_iter()
+    .filter(|day| current_dates.contains(&day.local_date.to_string()))
+    .collect())
 }
 
 fn project_public_ledger_days(
@@ -1878,9 +1876,7 @@ fn load_stored_policy_facts(
         if finalized_at.is_some() {
             usage.insert(date.clone(), used);
         }
-        if let Some(status) = parse_daily_policy_status(&previous_status) {
-            previous_statuses.insert(date.clone(), status);
-        }
+        previous_statuses.insert(date.clone(), parse_daily_policy_status(&previous_status)?);
         if finalized_at.is_some() {
             snapshots.insert(
                 date,
@@ -1895,37 +1891,6 @@ fn load_stored_policy_facts(
         }
     }
     Ok((snapshots, previous_statuses))
-}
-
-fn build_policy_day_facts(
-    anchor: chrono::NaiveDate,
-    last: chrono::NaiveDate,
-    today: chrono::NaiveDate,
-    usage: &BTreeMap<String, Option<i64>>,
-    snapshots: &mut BTreeMap<String, DailyLimitSnapshot>,
-    previous_statuses: &mut BTreeMap<String, DailyPolicyStatus>,
-) -> rusqlite::Result<Vec<PolicyDayFact>> {
-    let mut facts = Vec::new();
-    let mut date = anchor;
-    loop {
-        let key = date.to_string();
-        let used = usage.get(&key).copied().flatten();
-        let fact = if let Some(snapshot) = snapshots.remove(&key) {
-            PolicyDayFact::with_snapshot(date, used, snapshot)
-        } else {
-            PolicyDayFact::new(date, used, date < today)
-        };
-        let fact = match previous_statuses.remove(&key) {
-            Some(status) => fact.with_previous_status(status),
-            None => fact,
-        };
-        facts.push(fact);
-        if date == last {
-            break;
-        }
-        date = date.succ_opt().ok_or(rusqlite::Error::InvalidQuery)?;
-    }
-    Ok(facts)
 }
 
 fn public_ledger_day(
@@ -1955,14 +1920,14 @@ fn public_ledger_day(
     })
 }
 
-fn parse_daily_policy_status(value: &str) -> Option<DailyPolicyStatus> {
+fn parse_daily_policy_status(value: &str) -> rusqlite::Result<DailyPolicyStatus> {
     match value {
-        "unknown" => Some(DailyPolicyStatus::Unknown),
-        "normal" => Some(DailyPolicyStatus::Normal),
-        "warning" => Some(DailyPolicyStatus::Warning),
-        "exceeded" => Some(DailyPolicyStatus::Exceeded),
-        "finalized" => Some(DailyPolicyStatus::Finalized),
-        _ => None,
+        "unknown" => Ok(DailyPolicyStatus::Unknown),
+        "normal" => Ok(DailyPolicyStatus::Normal),
+        "warning" => Ok(DailyPolicyStatus::Warning),
+        "exceeded" => Ok(DailyPolicyStatus::Exceeded),
+        "finalized" => Ok(DailyPolicyStatus::Finalized),
+        _ => Err(rusqlite::Error::InvalidQuery),
     }
 }
 
