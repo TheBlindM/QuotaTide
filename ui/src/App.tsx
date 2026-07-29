@@ -81,7 +81,7 @@ export function App() {
     }
     let active = true;
     let unlisten: (() => void) | undefined;
-    void onDashboardChanged(() => {
+    const reloadLiveQuota = () => {
       void getLiveQuota()
         .then((liveQuota) => {
           if (active) {
@@ -91,9 +91,11 @@ export function App() {
           }
         })
         .catch(() => undefined);
-    }).then((dispose) => {
+    };
+    void onDashboardChanged(reloadLiveQuota).then((dispose) => {
       if (active) {
         unlisten = dispose;
+        reloadLiveQuota();
       } else {
         dispose();
       }
