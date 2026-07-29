@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 use quotatide_core::{
     AccountApplication, AccountSettingsStore, Application, AuthCandidateValidator, Clock,
-    PublicError, QuotaUnits, RefreshAccountBinding, RefreshCoordinator, RefreshOutcome,
-    RefreshTrigger, SettingsManager, UsageRefreshAttempt, UsageRefreshSource, UsageSourceError,
-    UsageSourceErrorCode, ValidatedAccountCandidate, WeeklyUsageObservation,
+    CurrentUsageAuth, PublicError, QuotaUnits, RefreshAccountBinding, RefreshCoordinator,
+    RefreshOutcome, RefreshTrigger, SettingsManager, UsageAuthReadFailure, UsageRefreshSource,
+    UsageSourceError, UsageSourceErrorCode, ValidatedAccountCandidate, WeeklyUsageObservation,
 };
 use tempfile::tempdir;
 use tokio::sync::Notify;
@@ -51,6 +51,49 @@ struct FakeSource {
     result: Result<WeeklyUsageObservation, UsageSourceErrorCode>,
 }
 
+#[derive(Clone)]
+struct SwitchingSource {
+    revision: Arc<AtomicUsize>,
+    calls: Arc<AtomicUsize>,
+    release_first: Arc<Notify>,
+}
+
+impl UsageRefreshSource for SwitchingSource {
+    type AuthMaterial = usize;
+
+    async fn read_current_auth(
+        &self,
+    ) -> Result<CurrentUsageAuth<Self::AuthMaterial>, UsageAuthReadFailure> {
+        let revision = self.revision.load(Ordering::SeqCst);
+        let account = if revision == 1 {
+            "account-one"
+        } else {
+            "account-two"
+        };
+        Ok(CurrentUsageAuth::new(
+            RefreshAccountBinding::selected(
+                u32::try_from(revision).expect("test revision"),
+                std::path::PathBuf::from("/chosen/auth.json"),
+            )
+            .with_account_id(account.to_owned()),
+            revision,
+            [u8::try_from(revision).expect("test fingerprint"); 32],
+        ))
+    }
+
+    async fn fetch_usage<'a>(
+        &'a self,
+        _auth: &'a Self::AuthMaterial,
+        captured_at_unix_ms: i64,
+    ) -> Result<WeeklyUsageObservation, UsageSourceError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            self.release_first.notified().await;
+        }
+        Ok(observation(captured_at_unix_ms))
+    }
+}
+
 impl FakeSource {
     fn successful(captured_at: i64) -> Self {
         Self {
@@ -70,10 +113,25 @@ impl FakeSource {
 }
 
 impl UsageRefreshSource for FakeSource {
-    fn fetch(
+    type AuthMaterial = ();
+
+    async fn read_current_auth(
         &self,
+    ) -> Result<CurrentUsageAuth<Self::AuthMaterial>, UsageAuthReadFailure> {
+        Ok(CurrentUsageAuth::new(
+            RefreshAccountBinding::selected(1, std::path::PathBuf::from("/chosen/auth.json"))
+                .with_account_id("account-one".to_owned()),
+            (),
+            [1; 32],
+        ))
+    }
+
+    fn fetch_usage<'a>(
+        &'a self,
+        _auth: &'a Self::AuthMaterial,
         captured_at_unix_ms: i64,
-    ) -> impl std::future::Future<Output = UsageRefreshAttempt> + Send {
+    ) -> impl std::future::Future<Output = Result<WeeklyUsageObservation, UsageSourceError>> + Send + 'a
+    {
         let calls = Arc::clone(&self.calls);
         let release = self.release.clone();
         let mut result = self.result.clone();
@@ -85,15 +143,7 @@ impl UsageRefreshSource for FakeSource {
             if let Ok(observation) = &mut result {
                 observation.captured_at_unix_ms = captured_at_unix_ms;
             }
-            let binding =
-                RefreshAccountBinding::selected(1, std::path::PathBuf::from("/chosen/auth.json"))
-                    .with_account_id("account-one".to_owned());
-            match result {
-                Ok(observation) => UsageRefreshAttempt::success(binding, observation),
-                Err(error) => {
-                    UsageRefreshAttempt::failure(Some(binding), UsageSourceError::new(error))
-                }
-            }
+            result.map_err(UsageSourceError::new)
         }
     }
 }
@@ -144,13 +194,76 @@ async fn concurrent_triggers_share_one_source_attempt_and_result() {
     release_task.await.expect("release task");
 
     assert_eq!(calls_for_assert.load(Ordering::SeqCst), 1);
+    let startup = startup.expect("startup");
+    let hourly = hourly.expect("hourly");
+    let manual = manual.expect("manual");
+    assert_eq!(startup.outcome, hourly.outcome);
+    assert_eq!(startup.outcome, manual.outcome);
+    assert_eq!(startup.attempted_at_unix_ms, hourly.attempted_at_unix_ms);
+    assert_eq!(startup.attempted_at_unix_ms, manual.attempted_at_unix_ms);
+    assert_eq!(startup.retry_after_ms, 0);
+    assert_eq!(hourly.retry_after_ms, 0);
+    assert_eq!(manual.retry_after_ms, 30_000);
+}
+
+#[tokio::test]
+async fn settings_refresh_retries_after_joining_a_superseded_account_flight() {
+    let (_directory, store) = configured_store().await;
+    let source = SwitchingSource {
+        revision: Arc::new(AtomicUsize::new(1)),
+        calls: Arc::new(AtomicUsize::new(0)),
+        release_first: Arc::new(Notify::new()),
+    };
+    let calls = Arc::clone(&source.calls);
+    let revision = Arc::clone(&source.revision);
+    let release = Arc::clone(&source.release_first);
+    let clock = FakeClock::new(1_785_000_000_000);
+    let application = Application::new(
+        AccountApplication::new(SettingsManager::new(store.clone(), UnusedValidator)),
+        RefreshCoordinator::new(store.clone(), source, clock),
+    );
+
+    let old_application = application.clone();
+    let old_refresh = tokio::spawn(async move {
+        old_application
+            .refresh(RefreshTrigger::Hourly)
+            .await
+            .expect("old account refresh")
+    });
+    wait_for_count(&calls, 1).await;
+
+    store
+        .configure_account(1, "/chosen/auth.json", "account-two")
+        .await
+        .expect("switch account");
+    revision.store(2, Ordering::SeqCst);
+    let selected_application = application.clone();
+    let selected_refresh = tokio::spawn(async move {
+        selected_application
+            .refresh_selected_account()
+            .await
+            .expect("latest account refresh")
+    });
+    tokio::task::yield_now().await;
+    release.notify_waiters();
+
     assert_eq!(
-        startup.as_ref().expect("startup"),
-        hourly.as_ref().expect("hourly")
+        old_refresh.await.expect("old task").outcome,
+        RefreshOutcome::Superseded
     );
     assert_eq!(
-        startup.as_ref().expect("startup"),
-        manual.as_ref().expect("manual")
+        selected_refresh.await.expect("settings task").outcome,
+        RefreshOutcome::Updated
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        store
+            .public_live_quota(1_785_000_000_000)
+            .await
+            .expect("live quota")
+            .expect("new account observation")
+            .used_micropoints,
+        Some(20_000_000)
     );
 }
 
@@ -182,7 +295,11 @@ async fn a_manual_trigger_joining_an_hourly_flight_starts_its_cooldown() {
         .await
         .expect("cooled manual");
 
-    assert_eq!(hourly.expect("hourly"), manual.expect("manual"));
+    let hourly = hourly.expect("hourly");
+    let manual = manual.expect("manual");
+    assert_eq!(hourly.outcome, manual.outcome);
+    assert_eq!(hourly.retry_after_ms, 0);
+    assert_eq!(manual.retry_after_ms, 30_000);
     assert_eq!(cooled.outcome, RefreshOutcome::ManualCooldown);
     assert_eq!(calls_for_assert.load(Ordering::SeqCst), 1);
 }
@@ -211,8 +328,11 @@ async fn manual_refresh_has_a_thirty_second_coordinator_cooldown() {
         .expect("next manual");
 
     assert_eq!(first.outcome, RefreshOutcome::Updated);
+    assert_eq!(first.retry_after_ms, 30_000);
     assert_eq!(cooled.outcome, RefreshOutcome::ManualCooldown);
+    assert_eq!(cooled.retry_after_ms, 1);
     assert_eq!(next.outcome, RefreshOutcome::Updated);
+    assert_eq!(next.retry_after_ms, 30_000);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
@@ -328,8 +448,10 @@ async fn resume_resets_the_next_hourly_deadline_and_shutdown_cancels_the_actor()
     let application_for_task = application.clone();
     let scheduler = tokio::spawn(async move {
         application_for_task
-            .run_hourly_scheduler(true, move || {
-                callbacks_for_task.fetch_add(1, Ordering::SeqCst);
+            .run_hourly_scheduler(true, move |refreshing| {
+                if !refreshing {
+                    callbacks_for_task.fetch_add(1, Ordering::SeqCst);
+                }
             })
             .await;
     });

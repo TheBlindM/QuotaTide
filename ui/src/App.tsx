@@ -9,7 +9,11 @@ import {
   selectAuthFile,
 } from "./api/account-settings";
 import { loadBuildInfo } from "./api/build-info";
-import { getLiveQuota, onDashboardChanged } from "./api/live-quota";
+import {
+  getLiveQuota,
+  onDashboardChanged,
+  onRefreshActivity,
+} from "./api/live-quota";
 import { hideMainWindow, requestManualRefresh } from "./api/tray-shell";
 import { TrayApp } from "./TrayApp";
 import {
@@ -50,6 +54,7 @@ export function App() {
         }
       : { kind: "loading" },
   );
+  const [backgroundRefreshes, setBackgroundRefreshes] = useState(0);
 
   useEffect(() => {
     if (isPreview) {
@@ -72,6 +77,33 @@ export function App() {
 
     return () => {
       active = false;
+    };
+  }, [isPreview]);
+
+  useEffect(() => {
+    if (isPreview) {
+      return;
+    }
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void onRefreshActivity((refreshing) => {
+      if (active) {
+        setBackgroundRefreshes((current) =>
+          refreshing ? current + 1 : Math.max(0, current - 1),
+        );
+      }
+    })
+      .then((dispose) => {
+        if (active) {
+          unlisten = dispose;
+        } else {
+          dispose();
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlisten?.();
     };
   }, [isPreview]);
 
@@ -153,6 +185,7 @@ export function App() {
     <TrayApp
       fixture={fixture}
       accountSettings={state.accountSettings}
+      externalRefreshing={backgroundRefreshes > 0}
       onHide={() => {
         void hideMainWindow().catch(() => undefined);
       }}

@@ -12,3 +12,18 @@ export async function onDashboardChanged(
 ): Promise<UnlistenFn> {
   return await listen("quotatide://dashboard-changed", callback);
 }
+
+type RefreshActivityEvent = {
+  refreshing: boolean;
+};
+
+export async function onRefreshActivity(
+  callback: (refreshing: boolean) => void,
+): Promise<UnlistenFn> {
+  return await listen<RefreshActivityEvent>(
+    "quotatide://refresh-activity",
+    (event) => {
+      callback(event.payload.refreshing);
+    },
+  );
+}

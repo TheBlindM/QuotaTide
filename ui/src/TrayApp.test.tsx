@@ -207,4 +207,23 @@ describe("tray-window navigation", () => {
 
     completeRefresh?.();
   });
+
+  it("shows scheduler and settings refresh activity reported by the native shell", () => {
+    const onRefresh = vi.fn();
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        externalRefreshing
+        onHide={vi.fn()}
+        onRefresh={onRefresh}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "正在刷新" }),
+    ).toBeDisabled();
+    expect(screen.getByText("Codex 额度 · 正在刷新")).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+    expect(onRefresh).not.toHaveBeenCalled();
+  });
 });

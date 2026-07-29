@@ -13,6 +13,7 @@ const unconfiguredAccount: PublicAccountSettings = {
 type TrayAppProps = {
   fixture: LedgerFixture;
   accountSettings?: PublicAccountSettings;
+  externalRefreshing?: boolean;
   onHide: () => void;
   onRefresh: () => unknown;
   onSelectAuth?: (
@@ -164,6 +165,7 @@ function SettingsView({
 export function TrayApp({
   fixture,
   accountSettings = unconfiguredAccount,
+  externalRefreshing = false,
   onHide,
   onRefresh,
   onSelectAuth,
@@ -191,7 +193,11 @@ export function TrayApp({
   }, [accountSettings]);
 
   const handleRefresh = useCallback(() => {
-    if (refreshingRef.current || coolingDownRef.current) {
+    if (
+      refreshingRef.current ||
+      externalRefreshing ||
+      coolingDownRef.current
+    ) {
       return;
     }
 
@@ -218,7 +224,9 @@ export function TrayApp({
           }, cooldownMs);
         }
       });
-  }, [onRefresh]);
+  }, [externalRefreshing, onRefresh]);
+
+  const visibleRefreshing = refreshing || externalRefreshing;
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -284,8 +292,8 @@ export function TrayApp({
         setView("settings");
       }}
       onRefresh={handleRefresh}
-      refreshing={refreshing}
-      refreshDisabled={refreshing || coolingDown}
+      refreshing={visibleRefreshing}
+      refreshDisabled={visibleRefreshing || coolingDown}
     />
   );
 }

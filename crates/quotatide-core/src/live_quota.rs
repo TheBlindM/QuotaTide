@@ -211,35 +211,30 @@ pub struct PublicLiveQuota {
 }
 
 impl UsageSourceErrorCode {
-    pub(crate) const fn as_storage_key(self) -> &'static str {
-        match self {
-            Self::AuthPathUnavailable => "auth_path_unavailable",
-            Self::AuthenticationStale => "authentication_stale",
-            Self::PermissionDenied => "permission_denied",
-            Self::RateLimited => "rate_limited",
-            Self::Timeout => "timeout",
-            Self::UpstreamUnavailable => "upstream_unavailable",
-            Self::ResponseTooLarge => "response_too_large",
-            Self::InvalidJson => "invalid_json",
-            Self::ContractViolation => "contract_violation",
-            Self::WeeklyWindowUnavailable => "weekly_window_unavailable",
-        }
+    const STORAGE_KEYS: &'static [(Self, &'static str)] = &[
+        (Self::AuthPathUnavailable, "auth_path_unavailable"),
+        (Self::AuthenticationStale, "authentication_stale"),
+        (Self::PermissionDenied, "permission_denied"),
+        (Self::RateLimited, "rate_limited"),
+        (Self::Timeout, "timeout"),
+        (Self::UpstreamUnavailable, "upstream_unavailable"),
+        (Self::ResponseTooLarge, "response_too_large"),
+        (Self::InvalidJson, "invalid_json"),
+        (Self::ContractViolation, "contract_violation"),
+        (Self::WeeklyWindowUnavailable, "weekly_window_unavailable"),
+    ];
+
+    pub(crate) fn as_storage_key(self) -> &'static str {
+        Self::STORAGE_KEYS
+            .iter()
+            .find_map(|(candidate, key)| (*candidate == self).then_some(*key))
+            .expect("every usage source error code has one storage key")
     }
 
     pub(crate) fn from_storage_key(value: &str) -> Option<Self> {
-        match value {
-            "auth_path_unavailable" => Some(Self::AuthPathUnavailable),
-            "authentication_stale" => Some(Self::AuthenticationStale),
-            "permission_denied" => Some(Self::PermissionDenied),
-            "rate_limited" => Some(Self::RateLimited),
-            "timeout" => Some(Self::Timeout),
-            "upstream_unavailable" => Some(Self::UpstreamUnavailable),
-            "response_too_large" => Some(Self::ResponseTooLarge),
-            "invalid_json" => Some(Self::InvalidJson),
-            "contract_violation" => Some(Self::ContractViolation),
-            "weekly_window_unavailable" => Some(Self::WeeklyWindowUnavailable),
-            _ => None,
-        }
+        Self::STORAGE_KEYS
+            .iter()
+            .find_map(|(candidate, key)| (*key == value).then_some(*candidate))
     }
 }
 
@@ -267,6 +262,8 @@ pub enum RefreshOutcome {
 pub struct RefreshReceipt {
     pub attempted_at_unix_ms: i64,
     pub outcome: RefreshOutcome,
+    /// Remaining core-owned manual cooldown after this call completes.
+    pub retry_after_ms: u32,
 }
 
 /// Clock seam used by scheduling and deterministic coordinator tests.
@@ -274,13 +271,62 @@ pub trait Clock: Clone + Send + Sync + 'static {
     fn now_unix_ms(&self) -> i64;
 }
 
-/// One complete current-account collection attempt. Production adapters own
-/// auth re-reading and the conditional token-rotation retry.
+/// Current auth material returned by a native adapter.
+///
+/// The material and fingerprint are intentionally opaque and never implement
+/// `Debug` or serialization.
+pub struct CurrentUsageAuth<M> {
+    binding: RefreshAccountBinding,
+    material: M,
+    credential_fingerprint: [u8; 32],
+}
+
+impl<M> CurrentUsageAuth<M> {
+    #[must_use]
+    pub const fn new(
+        binding: RefreshAccountBinding,
+        material: M,
+        credential_fingerprint: [u8; 32],
+    ) -> Self {
+        Self {
+            binding,
+            material,
+            credential_fingerprint,
+        }
+    }
+}
+
+/// Safe auth-read failure returned by a native adapter.
+pub struct UsageAuthReadFailure {
+    binding: Option<RefreshAccountBinding>,
+    error: UsageSourceError,
+}
+
+impl UsageAuthReadFailure {
+    #[must_use]
+    pub const fn new(binding: Option<RefreshAccountBinding>, error: UsageSourceError) -> Self {
+        Self { binding, error }
+    }
+}
+
+/// Native seam for reading current auth and making one fixed-contract request.
+///
+/// The core coordinator owns every-round auth re-reading, credential rotation
+/// comparison, and the single conditional retry.
 pub trait UsageRefreshSource: Clone + Send + Sync + 'static {
-    fn fetch(
+    type AuthMaterial: Send + Sync + 'static;
+
+    fn read_current_auth(
         &self,
+    ) -> impl std::future::Future<
+        Output = Result<CurrentUsageAuth<Self::AuthMaterial>, UsageAuthReadFailure>,
+    > + Send;
+
+    fn fetch_usage<'a>(
+        &'a self,
+        auth: &'a Self::AuthMaterial,
         captured_at_unix_ms: i64,
-    ) -> impl std::future::Future<Output = UsageRefreshAttempt> + Send;
+    ) -> impl std::future::Future<Output = Result<WeeklyUsageObservation, UsageSourceError>> + Send + 'a;
 }
 
 #[derive(Default)]
@@ -380,6 +426,26 @@ where
         self.refresh.refresh(trigger).await
     }
 
+    /// Refreshes the account selected after a settings commit.
+    ///
+    /// If this call initially joins a flight bound to the previous settings
+    /// revision, the superseded result is discarded and one new flight is
+    /// started for the latest selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when refresh state cannot be committed.
+    pub async fn refresh_selected_account(
+        &self,
+    ) -> Result<RefreshReceipt, RefreshCoordinatorError> {
+        loop {
+            let receipt = self.refresh.refresh(RefreshTrigger::Settings).await?;
+            if receipt.outcome != RefreshOutcome::Superseded {
+                return Ok(receipt);
+            }
+        }
+    }
+
     /// Runs one overdue refresh without replaying skipped scheduler ticks.
     ///
     /// # Errors
@@ -397,9 +463,9 @@ where
     ///
     /// A resume signal performs at most one overdue refresh and resets the next
     /// hourly deadline to one hour after resume.
-    pub async fn run_hourly_scheduler<F>(&self, refresh_on_startup: bool, on_refresh: F)
+    pub async fn run_hourly_scheduler<F>(&self, refresh_on_startup: bool, on_activity: F)
     where
-        F: Fn() + Send + Sync,
+        F: Fn(bool) + Send + Sync,
     {
         const HOUR_MS: i64 = 60 * 60 * 1000;
         let cancellation = self.scheduler.cancellation.clone();
@@ -408,22 +474,27 @@ where
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
 
-        if refresh_on_startup
-            && run_scheduled_refresh(&cancellation, self.refresh(RefreshTrigger::Startup)).await
-        {
-            on_refresh();
+        if refresh_on_startup {
+            on_activity(true);
+            let completed =
+                run_scheduled_refresh(&cancellation, self.refresh(RefreshTrigger::Startup)).await;
+            on_activity(false);
+            if !completed {
+                return;
+            }
         }
 
         loop {
             tokio::select! {
                 () = cancellation.cancelled() => break,
                 _ = interval.tick() => {
-                    if run_scheduled_refresh(
+                    on_activity(true);
+                    let completed = run_scheduled_refresh(
                         &cancellation,
                         self.refresh(RefreshTrigger::Hourly),
-                    ).await {
-                        on_refresh();
-                    } else {
+                    ).await;
+                    on_activity(false);
+                    if !completed {
                         break;
                     }
                 }
@@ -431,12 +502,13 @@ where
                     if changed.is_err() {
                         break;
                     }
-                    if run_scheduled_refresh(
+                    on_activity(true);
+                    let completed = run_scheduled_refresh(
                         &cancellation,
                         self.refresh_if_due(RefreshTrigger::Resume, HOUR_MS),
-                    ).await {
-                        on_refresh();
-                    } else {
+                    ).await;
+                    on_activity(false);
+                    if !completed {
                         break;
                     }
                     interval.reset();
@@ -480,6 +552,8 @@ pub enum RefreshCoordinatorError {
 }
 
 impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
+    const MANUAL_COOLDOWN_MS: i64 = 30_000;
+
     #[must_use]
     pub fn new(store: AccountSettingsStore, source: S, clock: C) -> Self {
         Self {
@@ -504,7 +578,7 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
         enum Role {
             Leader(watch::Sender<Option<Result<RefreshReceipt, RefreshCoordinatorError>>>),
             Follower(watch::Receiver<Option<Result<RefreshReceipt, RefreshCoordinatorError>>>),
-            Cooldown(i64),
+            Cooldown,
         }
 
         let now = self.clock.now_unix_ms();
@@ -514,7 +588,7 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
                 if trigger == RefreshTrigger::Manual
                     && state
                         .last_manual_started_at_unix_ms
-                        .is_none_or(|last| now.saturating_sub(last) >= 30_000)
+                        .is_none_or(|last| now.saturating_sub(last) >= Self::MANUAL_COOLDOWN_MS)
                 {
                     state.last_manual_started_at_unix_ms = Some(now);
                 }
@@ -522,9 +596,9 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
             } else if trigger == RefreshTrigger::Manual
                 && state
                     .last_manual_started_at_unix_ms
-                    .is_some_and(|last| now.saturating_sub(last) < 30_000)
+                    .is_some_and(|last| now.saturating_sub(last) < Self::MANUAL_COOLDOWN_MS)
             {
-                Role::Cooldown(now)
+                Role::Cooldown
             } else {
                 if trigger == RefreshTrigger::Manual {
                     state.last_manual_started_at_unix_ms = Some(now);
@@ -536,13 +610,15 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
         };
 
         match role {
-            Role::Cooldown(attempted_at_unix_ms) => Ok(RefreshReceipt {
-                attempted_at_unix_ms,
+            Role::Cooldown => Ok(RefreshReceipt {
+                attempted_at_unix_ms: now,
                 outcome: RefreshOutcome::ManualCooldown,
+                retry_after_ms: self.manual_retry_after_ms().await,
             }),
             Role::Follower(mut receiver) => loop {
-                if let Some(result) = receiver.borrow().clone() {
-                    return result;
+                let published = receiver.borrow().clone();
+                if let Some(result) = published {
+                    return self.with_trigger_retry_after(result, trigger).await;
                 }
                 receiver
                     .changed()
@@ -551,9 +627,9 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
             },
             Role::Leader(sender) => {
                 let result = self.run_once(now).await;
-                let _ = sender.send(Some(result.clone()));
                 self.state.lock().await.in_flight = None;
-                result
+                let _ = sender.send(Some(result.clone()));
+                self.with_trigger_retry_after(result, trigger).await
             }
         }
     }
@@ -578,6 +654,7 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
             return Ok(RefreshReceipt {
                 attempted_at_unix_ms: now,
                 outcome: RefreshOutcome::NotDue,
+                retry_after_ms: 0,
             });
         }
         self.refresh(trigger).await
@@ -587,13 +664,14 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
         &self,
         attempted_at_unix_ms: i64,
     ) -> Result<RefreshReceipt, RefreshCoordinatorError> {
-        let attempt = self.source.fetch(attempted_at_unix_ms).await;
+        let attempt = collect_current_usage(&self.source, attempted_at_unix_ms).await;
         let outcome = match attempt.result {
             Ok(observation) => {
                 let Some(binding) = attempt.binding.as_ref() else {
                     return Ok(RefreshReceipt {
                         attempted_at_unix_ms,
                         outcome: RefreshOutcome::Superseded,
+                        retry_after_ms: 0,
                     });
                 };
                 match self
@@ -619,6 +697,7 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
                     return Ok(RefreshReceipt {
                         attempted_at_unix_ms,
                         outcome: RefreshOutcome::Superseded,
+                        retry_after_ms: 0,
                     });
                 }
                 RefreshOutcome::Failed(code)
@@ -627,7 +706,92 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
         Ok(RefreshReceipt {
             attempted_at_unix_ms,
             outcome,
+            retry_after_ms: 0,
         })
+    }
+
+    async fn with_trigger_retry_after(
+        &self,
+        result: Result<RefreshReceipt, RefreshCoordinatorError>,
+        trigger: RefreshTrigger,
+    ) -> Result<RefreshReceipt, RefreshCoordinatorError> {
+        let mut receipt = result?;
+        if trigger == RefreshTrigger::Manual {
+            receipt.retry_after_ms = self.manual_retry_after_ms().await;
+        }
+        Ok(receipt)
+    }
+
+    async fn manual_retry_after_ms(&self) -> u32 {
+        let now = self.clock.now_unix_ms();
+        let state = self.state.lock().await;
+        let Some(started_at) = state.last_manual_started_at_unix_ms else {
+            return 0;
+        };
+        let remaining = Self::MANUAL_COOLDOWN_MS
+            .saturating_sub(now.saturating_sub(started_at))
+            .max(0);
+        u32::try_from(remaining).unwrap_or(u32::MAX)
+    }
+}
+
+async fn collect_current_usage<S: UsageRefreshSource>(
+    source: &S,
+    captured_at_unix_ms: i64,
+) -> UsageRefreshAttempt {
+    let CurrentUsageAuth {
+        binding,
+        material: first,
+        credential_fingerprint: first_fingerprint,
+    } = match source.read_current_auth().await {
+        Ok(current) => current,
+        Err(failure) => {
+            return UsageRefreshAttempt::failure(failure.binding, failure.error);
+        }
+    };
+
+    match source.fetch_usage(&first, captured_at_unix_ms).await {
+        Ok(observation) => UsageRefreshAttempt::success(binding, observation),
+        Err(error)
+            if matches!(
+                error.code(),
+                UsageSourceErrorCode::AuthenticationStale | UsageSourceErrorCode::PermissionDenied
+            ) =>
+        {
+            let CurrentUsageAuth {
+                binding: refreshed_binding,
+                material: refreshed,
+                credential_fingerprint: refreshed_fingerprint,
+            } = match source.read_current_auth().await {
+                Ok(current) => current,
+                Err(failure) => {
+                    return UsageRefreshAttempt::failure(
+                        failure.binding.or(Some(binding)),
+                        UsageSourceError::with_source(
+                            UsageSourceErrorCode::AuthenticationStale,
+                            failure.error,
+                        ),
+                    );
+                }
+            };
+            if refreshed_fingerprint == first_fingerprint {
+                return UsageRefreshAttempt::failure(
+                    Some(binding),
+                    UsageSourceError::with_source(UsageSourceErrorCode::AuthenticationStale, error),
+                );
+            }
+            match source.fetch_usage(&refreshed, captured_at_unix_ms).await {
+                Ok(observation) => UsageRefreshAttempt::success(refreshed_binding, observation),
+                Err(retry_error) => UsageRefreshAttempt::failure(
+                    Some(refreshed_binding),
+                    UsageSourceError::with_source(
+                        UsageSourceErrorCode::AuthenticationStale,
+                        retry_error,
+                    ),
+                ),
+            }
+        }
+        Err(error) => UsageRefreshAttempt::failure(Some(binding), error),
     }
 }
 
@@ -637,7 +801,15 @@ fn map_store(error: SettingsStoreError) -> RefreshCoordinatorError {
 
 #[cfg(test)]
 mod tests {
-    use super::QuotaUnits;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use super::{
+        CurrentUsageAuth, QuotaUnits, RefreshAccountBinding, UsageAuthReadFailure,
+        UsageRefreshSource, UsageSourceError, UsageSourceErrorCode, WeeklyUsageObservation,
+        collect_current_usage,
+    };
 
     #[test]
     fn quota_units_are_bounded_and_exact() {
@@ -649,5 +821,141 @@ mod tests {
         );
         assert!(QuotaUnits::from_micropoints(-1).is_none());
         assert!(QuotaUnits::from_micropoints(100_000_001).is_none());
+    }
+
+    #[derive(Clone)]
+    struct RotationSource {
+        reads: Arc<AtomicUsize>,
+        calls: Arc<AtomicUsize>,
+        auth: Arc<Mutex<VecDeque<u8>>>,
+        results: Arc<Mutex<VecDeque<Result<WeeklyUsageObservation, UsageSourceError>>>>,
+    }
+
+    impl UsageRefreshSource for RotationSource {
+        type AuthMaterial = u8;
+
+        async fn read_current_auth(
+            &self,
+        ) -> Result<CurrentUsageAuth<Self::AuthMaterial>, UsageAuthReadFailure> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let auth = self
+                .auth
+                .lock()
+                .expect("auth queue")
+                .pop_front()
+                .ok_or_else(|| {
+                    UsageAuthReadFailure::new(
+                        None,
+                        UsageSourceError::new(UsageSourceErrorCode::AuthPathUnavailable),
+                    )
+                })?;
+            Ok(CurrentUsageAuth::new(
+                RefreshAccountBinding::selected(1, std::path::PathBuf::from("/chosen/auth.json"))
+                    .with_account_id("account-ticket17".to_owned()),
+                auth,
+                [auth; 32],
+            ))
+        }
+
+        async fn fetch_usage<'a>(
+            &'a self,
+            _auth: &'a Self::AuthMaterial,
+            _captured_at_unix_ms: i64,
+        ) -> Result<WeeklyUsageObservation, UsageSourceError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.results
+                .lock()
+                .expect("result queue")
+                .pop_front()
+                .expect("queued result")
+        }
+    }
+
+    #[tokio::test]
+    async fn auth_failure_retries_once_only_after_core_detects_rotation() {
+        let source = rotation_source(
+            [1, 2],
+            [
+                Err(UsageSourceError::new(
+                    UsageSourceErrorCode::AuthenticationStale,
+                )),
+                Ok(test_observation()),
+            ],
+        );
+
+        let result = collect_current_usage(&source, 1_785_000_000_000)
+            .await
+            .into_result();
+
+        assert!(result.is_ok());
+        assert_eq!(source.reads.load(Ordering::SeqCst), 2);
+        assert_eq!(source.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn unchanged_credentials_normalize_permission_failure_as_stale_authentication() {
+        let source = rotation_source(
+            [1, 1],
+            [Err(UsageSourceError::new(
+                UsageSourceErrorCode::PermissionDenied,
+            ))],
+        );
+
+        let error = collect_current_usage(&source, 1_785_000_000_000)
+            .await
+            .into_result()
+            .expect_err("stale authentication");
+
+        assert_eq!(error.code(), UsageSourceErrorCode::AuthenticationStale);
+        assert_eq!(source.reads.load(Ordering::SeqCst), 2);
+        assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_rotation_retry_is_normalized_and_retains_source_chain() {
+        let source = rotation_source(
+            [1, 2],
+            [
+                Err(UsageSourceError::new(
+                    UsageSourceErrorCode::AuthenticationStale,
+                )),
+                Err(UsageSourceError::new(
+                    UsageSourceErrorCode::PermissionDenied,
+                )),
+            ],
+        );
+
+        let error = collect_current_usage(&source, 1_785_000_000_000)
+            .await
+            .into_result()
+            .expect_err("retry remains stale");
+
+        assert_eq!(error.code(), UsageSourceErrorCode::AuthenticationStale);
+        assert!(std::error::Error::source(&error).is_some());
+        assert_eq!(source.reads.load(Ordering::SeqCst), 2);
+        assert_eq!(source.calls.load(Ordering::SeqCst), 2);
+    }
+
+    fn rotation_source(
+        auth: impl IntoIterator<Item = u8>,
+        results: impl IntoIterator<Item = Result<WeeklyUsageObservation, UsageSourceError>>,
+    ) -> RotationSource {
+        RotationSource {
+            reads: Arc::new(AtomicUsize::new(0)),
+            calls: Arc::new(AtomicUsize::new(0)),
+            auth: Arc::new(Mutex::new(auth.into_iter().collect())),
+            results: Arc::new(Mutex::new(results.into_iter().collect())),
+        }
+    }
+
+    fn test_observation() -> WeeklyUsageObservation {
+        WeeklyUsageObservation {
+            captured_at_unix_ms: 1_785_000_000_000,
+            used: QuotaUnits::from_micropoints(20_000_000).expect("valid quota"),
+            window_seconds: 604_800,
+            resets_at_unix_s: 1_786_000_000,
+            plan_type: Some("plus".to_owned()),
+            allowed: Some(true),
+        }
     }
 }

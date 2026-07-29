@@ -43,6 +43,7 @@ vi.mock("./api/live-quota", () => ({
     publicError: null,
   }),
   onDashboardChanged: vi.fn().mockResolvedValue(vi.fn()),
+  onRefreshActivity: vi.fn().mockResolvedValue(vi.fn()),
 }));
 
 afterEach(() => {

@@ -4,15 +4,14 @@ pub mod auth_file;
 pub mod codex_usage;
 
 use std::sync::Mutex;
-use std::time::Duration;
 
 use auth_file::AuthFileReader;
-use codex_usage::{CodexUsageClient, CodexUsageCollector, ConfiguredAuthFile};
+use codex_usage::{CodexUsageClient, ConfiguredCodexUsageSource};
 use quotatide_core::{
     AccountApplication, AccountSettingsStore, Application, BuildInfo, Clock,
     PhysicalRect as CoreRect, PhysicalSize as CoreSize, PublicAccountSettings, PublicError,
-    PublicErrorCode, PublicLiveQuota, RefreshCoordinator, RefreshTrigger, SettingsManager,
-    ShellEffect, ShellEvent, TrayShell, place_tray_window,
+    PublicErrorCode, PublicLiveQuota, RefreshCoordinator, RefreshCoordinatorError, RefreshReceipt,
+    RefreshTrigger, SettingsManager, ShellEffect, ShellEvent, TrayShell, place_tray_window,
 };
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
@@ -26,7 +25,14 @@ use tauri_plugin_dialog::DialogExt;
 const MAIN_WINDOW_LABEL: &str = "main";
 const MAIN_TRAY_ID: &str = "main";
 const WINDOW_GAP: f64 = 8.0;
-const MANUAL_REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
+const DASHBOARD_CHANGED_EVENT: &str = "quotatide://dashboard-changed";
+const REFRESH_ACTIVITY_EVENT: &str = "quotatide://refresh-activity";
+
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RefreshActivityEvent {
+    refreshing: bool,
+}
 
 #[derive(Debug, Default)]
 struct DesktopShell {
@@ -49,7 +55,7 @@ impl Clock for SystemClock {
     }
 }
 
-type LiveApplication = Application<AuthFileReader, CodexUsageCollector, SystemClock>;
+type LiveApplication = Application<AuthFileReader, ConfiguredCodexUsageSource, SystemClock>;
 
 /// Returns public metadata that proves the Rust core is connected to the UI.
 #[tauri::command]
@@ -69,17 +75,25 @@ async fn request_manual_refresh(
     app: AppHandle,
     application: tauri::State<'_, LiveApplication>,
 ) -> Result<u64, PublicError> {
-    application
-        .refresh(RefreshTrigger::Manual)
+    let receipt = track_refresh(&app, application.refresh(RefreshTrigger::Manual))
         .await
         .map_err(|_| storage_public_error())?;
-    app.emit("quotatide://dashboard-changed", ())
-        .map_err(|_| storage_public_error())?;
-    Ok(manual_refresh_cooldown_ms())
+    Ok(u64::from(receipt.retry_after_ms))
 }
 
-fn manual_refresh_cooldown_ms() -> u64 {
-    u64::try_from(MANUAL_REFRESH_COOLDOWN.as_millis()).unwrap_or(u64::MAX)
+async fn track_refresh(
+    app: &AppHandle,
+    refresh: impl std::future::Future<Output = Result<RefreshReceipt, RefreshCoordinatorError>>,
+) -> Result<RefreshReceipt, RefreshCoordinatorError> {
+    let _ = emit_refresh_activity(app, true);
+    let result = refresh.await;
+    let _ = emit_refresh_activity(app, false);
+    let _ = app.emit(DASHBOARD_CHANGED_EVENT, ());
+    result
+}
+
+fn emit_refresh_activity(app: &AppHandle, refreshing: bool) -> tauri::Result<()> {
+    app.emit(REFRESH_ACTIVITY_EVENT, RefreshActivityEvent { refreshing })
 }
 
 #[tauri::command]
@@ -152,8 +166,8 @@ async fn select_auth_file(
     let application = application.inner().clone();
     let app_for_refresh = app.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = application.refresh(RefreshTrigger::Settings).await;
-        let _ = app_for_refresh.emit("quotatide://dashboard-changed", ());
+        let refresh = application.refresh_selected_account();
+        let _ = track_refresh(&app_for_refresh, refresh).await;
     });
     Ok(settings)
 }
@@ -212,8 +226,8 @@ fn realize_effect(app: &AppHandle, effect: ShellEffect) -> Result<(), String> {
             let application = app.state::<LiveApplication>().inner().clone();
             let app_for_refresh = app.clone();
             tauri::async_runtime::spawn(async move {
-                let _ = application.refresh(RefreshTrigger::Manual).await;
-                let _ = app_for_refresh.emit("quotatide://dashboard-changed", ());
+                let refresh = application.refresh(RefreshTrigger::Manual);
+                let _ = track_refresh(&app_for_refresh, refresh).await;
             });
             Ok(())
         }
@@ -360,8 +374,11 @@ fn spawn_refresh_scheduler(app: AppHandle, application: LiveApplication, refresh
     tauri::async_runtime::spawn(async move {
         let app_for_event = app.clone();
         application
-            .run_hourly_scheduler(refresh_on_startup, move || {
-                let _ = app_for_event.emit("quotatide://dashboard-changed", ());
+            .run_hourly_scheduler(refresh_on_startup, move |refreshing| {
+                let _ = emit_refresh_activity(&app_for_event, refreshing);
+                if !refreshing {
+                    let _ = app_for_event.emit(DASHBOARD_CHANGED_EVENT, ());
+                }
             })
             .await;
     });
@@ -387,7 +404,7 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         CodexUsageClient::new().map_err(|_| "failed to initialize Codex usage client")?;
     let refresh = RefreshCoordinator::new(
         store.clone(),
-        CodexUsageCollector::new(ConfiguredAuthFile::new(store.clone()), usage_client),
+        ConfiguredCodexUsageSource::new(store.clone(), usage_client),
         SystemClock,
     );
     let settings = SettingsManager::new(store, AuthFileReader);
@@ -666,10 +683,7 @@ mod tests {
     use quotatide_core::{AccountApplication, AccountSettingsStore, SettingsManager, ShellEvent};
     use tempfile::tempdir;
 
-    use super::{
-        AuthFileReader, configure_selected_auth, get_build_info, manual_refresh_cooldown_ms,
-        menu_event_for_id,
-    };
+    use super::{AuthFileReader, configure_selected_auth, get_build_info, menu_event_for_id};
 
     #[test]
     fn command_returns_the_public_core_contract() {
@@ -689,11 +703,6 @@ mod tests {
         );
         assert_eq!(menu_event_for_id("exit"), Some(ShellEvent::ExitRequested));
         assert_eq!(menu_event_for_id("unknown"), None);
-    }
-
-    #[test]
-    fn manual_refresh_command_exposes_the_core_cooldown_duration() {
-        assert_eq!(manual_refresh_cooldown_ms(), 30_000);
     }
 
     #[test]
