@@ -1,12 +1,16 @@
 //! `QuotaTide` desktop shell.
 
+pub mod auth_file;
+
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use auth_file::read_auth_file;
 use quotatide_core::{
-    BuildInfo, PhysicalRect as CoreRect, PhysicalSize as CoreSize, ShellEffect, ShellEvent,
-    TrayShell, place_tray_window,
+    AccountSettingsStore, BuildInfo, PhysicalRect as CoreRect, PhysicalSize as CoreSize,
+    PublicAccountSettings, ShellEffect, ShellEvent, TrayShell, place_tray_window,
 };
+use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::utils::WindowEffect;
@@ -14,6 +18,7 @@ use tauri::utils::config::WindowEffectsConfig;
 use tauri::{
     App, AppHandle, Emitter, Manager, PhysicalPosition, Rect, RunEvent, WebviewWindow, WindowEvent,
 };
+use tauri_plugin_dialog::DialogExt;
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const MAIN_TRAY_ID: &str = "main";
@@ -48,6 +53,34 @@ struct DesktopShell {
 
 type SharedDesktopShell = Mutex<DesktopShell>;
 
+#[derive(Clone)]
+struct AccountConfigState {
+    store: AccountSettingsStore,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountCommandError {
+    code: &'static str,
+    message_key: &'static str,
+}
+
+impl AccountCommandError {
+    const fn storage() -> Self {
+        Self {
+            code: "storage_unavailable",
+            message_key: "settings.storage_unavailable",
+        }
+    }
+
+    const fn invalid_path() -> Self {
+        Self {
+            code: "invalid_path",
+            message_key: "auth.path.invalid",
+        }
+    }
+}
+
 /// Returns public metadata that proves the Rust core is connected to the UI.
 #[tauri::command]
 fn get_build_info() -> BuildInfo {
@@ -81,6 +114,68 @@ fn begin_external_dialog(app: AppHandle) -> Result<(), String> {
 #[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
 fn end_external_dialog(app: AppHandle) -> Result<(), String> {
     dispatch_shell_event(&app, ShellEvent::ExternalDialogClosed, None)
+}
+
+#[tauri::command]
+async fn get_account_settings(
+    state: tauri::State<'_, AccountConfigState>,
+) -> Result<PublicAccountSettings, AccountCommandError> {
+    state
+        .store
+        .public_settings()
+        .await
+        .map_err(|_| AccountCommandError::storage())
+}
+
+#[tauri::command]
+async fn select_auth_file(
+    app: AppHandle,
+    state: tauri::State<'_, AccountConfigState>,
+) -> Result<PublicAccountSettings, AccountCommandError> {
+    dispatch_shell_event(&app, ShellEvent::ExternalDialogOpened, None)
+        .map_err(|_| AccountCommandError::storage())?;
+    let selection = app
+        .dialog()
+        .file()
+        .add_filter("JSON", &["json"])
+        .set_title("选择 Codex auth.json")
+        .blocking_pick_file();
+    dispatch_shell_event(&app, ShellEvent::ExternalDialogClosed, None)
+        .map_err(|_| AccountCommandError::storage())?;
+
+    let Some(selection) = selection else {
+        return get_account_settings(state).await;
+    };
+    let path = selection
+        .into_path()
+        .map_err(|_| AccountCommandError::invalid_path())?;
+    let material = read_auth_file(&path).map_err(|error| {
+        let public = error.public();
+        AccountCommandError {
+            code: match public.code {
+                auth_file::AuthFileErrorCode::NotFound => "auth_not_found",
+                auth_file::AuthFileErrorCode::PermissionDenied => "auth_permission_denied",
+                auth_file::AuthFileErrorCode::NotRegularFile => "auth_not_regular_file",
+                auth_file::AuthFileErrorCode::TooLarge => "auth_too_large",
+                auth_file::AuthFileErrorCode::InvalidUtf8 => "auth_invalid_utf8",
+                auth_file::AuthFileErrorCode::InvalidJson => "auth_invalid_json",
+                auth_file::AuthFileErrorCode::UnsupportedAuthMode => "auth_unsupported_mode",
+                auth_file::AuthFileErrorCode::MissingAccessToken => "auth_missing_access_token",
+                auth_file::AuthFileErrorCode::MissingAccountId => "auth_missing_account_id",
+                auth_file::AuthFileErrorCode::InvalidAccountId => "auth_invalid_account_id",
+            },
+            message_key: public.message_key,
+        }
+    })?;
+    let canonical_path = material
+        .canonical_path()
+        .to_str()
+        .ok_or_else(AccountCommandError::invalid_path)?;
+    state
+        .store
+        .configure_account(canonical_path, material.account_id())
+        .await
+        .map_err(|_| AccountCommandError::storage())
 }
 
 fn menu_event_for_id(id: &str) -> Option<ShellEvent> {
@@ -267,12 +362,37 @@ fn platform_error(error: impl std::fmt::Display) -> String {
 /// Panics when the desktop runtime cannot be initialized or its event loop fails.
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(SharedDesktopShell::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             setup_tray(app)?;
+            let app_data = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&app_data)?;
+            secure_app_data_directory(&app_data)?;
+            let database_path = app_data.join("state.sqlite3");
+            let store = tauri::async_runtime::block_on(AccountSettingsStore::open(&database_path))
+                .map_err(|_| "failed to open the account settings store")?;
+            secure_database_files(&database_path)?;
+            let existing = tauri::async_runtime::block_on(store.public_settings())
+                .map_err(|_| "failed to read account settings")?;
+            if !existing.configured {
+                if let Ok(home) = app.path().home_dir() {
+                    let default_auth = home.join(".codex").join("auth.json");
+                    if default_auth.is_file()
+                        && let Ok(material) = read_auth_file(&default_auth)
+                    {
+                        if let Some(path) = material.canonical_path().to_str() {
+                            let _ = tauri::async_runtime::block_on(
+                                store.configure_account(path, material.account_id()),
+                            );
+                        }
+                    }
+                }
+            }
+            app.manage(AccountConfigState { store });
             if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 apply_platform_material(&window);
             }
@@ -326,7 +446,9 @@ pub fn run() {
             hide_main_window,
             request_manual_refresh,
             begin_external_dialog,
-            end_external_dialog
+            end_external_dialog,
+            get_account_settings,
+            select_auth_file
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the QuotaTide desktop shell");
@@ -338,6 +460,39 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(unix)]
+fn secure_app_data_directory(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn secure_app_data_directory(_path: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn secure_database_files(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    for candidate in [
+        path.to_path_buf(),
+        path.with_extension("sqlite3-wal"),
+        path.with_extension("sqlite3-shm"),
+    ] {
+        if candidate.exists() {
+            std::fs::set_permissions(candidate, std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn secure_database_files(_path: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,6 +1,11 @@
 import { useEffect, useState } from "preact/hooks";
 
 import type { BuildInfo } from "./bindings/BuildInfo";
+import type { PublicAccountSettings } from "./bindings/PublicAccountSettings";
+import {
+  getAccountSettings,
+  selectAuthFile,
+} from "./api/account-settings";
 import { loadBuildInfo } from "./api/build-info";
 import { hideMainWindow, requestManualRefresh } from "./api/tray-shell";
 import { TrayApp } from "./TrayApp";
@@ -11,7 +16,11 @@ import {
 
 type ViewState =
   | { kind: "loading" }
-  | { kind: "ready"; info: BuildInfo }
+  | {
+      kind: "ready";
+      info: BuildInfo;
+      accountSettings: PublicAccountSettings;
+    }
   | { kind: "error" };
 
 export function App() {
@@ -27,6 +36,12 @@ export function App() {
             identifier: "dev.theblind.quotatide",
             stage: "weekly-ledger-preview",
           },
+          accountSettings: {
+            settingsRevision: 0,
+            configured: false,
+            pathSummary: null,
+            accountLabel: null,
+          },
         }
       : { kind: "loading" },
   );
@@ -38,10 +53,10 @@ export function App() {
 
     let active = true;
 
-    void loadBuildInfo()
-      .then((info) => {
+    void Promise.all([loadBuildInfo(), getAccountSettings()])
+      .then(([info, accountSettings]) => {
         if (active) {
-          setState({ kind: "ready", info });
+          setState({ kind: "ready", info, accountSettings });
         }
       })
       .catch(() => {
@@ -96,12 +111,14 @@ export function App() {
   return (
     <TrayApp
       fixture={ledgerFixtures[tone]}
+      accountSettings={state.accountSettings}
       onHide={() => {
         void hideMainWindow().catch(() => undefined);
       }}
       onRefresh={() => {
         return requestManualRefresh().catch(() => undefined);
       }}
+      onSelectAuth={selectAuthFile}
     />
   );
 }

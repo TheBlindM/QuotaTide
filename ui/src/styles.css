@@ -609,6 +609,44 @@ progress::-moz-progress-bar {
   line-height: 1.45;
 }
 
+.account-status {
+  display: grid;
+  min-height: 58px;
+  align-content: center;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--glass-strong);
+}
+
+.account-status span {
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.account-status strong {
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 560;
+}
+
+.primary-action {
+  width: 100%;
+  margin-top: 10px;
+  background: var(--accent);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.settings-error {
+  margin: 8px 0 0;
+  color: var(--red);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .settings-description {
   margin: 0;
   color: var(--muted);

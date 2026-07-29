@@ -1,17 +1,52 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 
+import type { PublicAccountSettings } from "./bindings/PublicAccountSettings";
 import { WeeklyLedger, type LedgerFixture } from "./WeeklyLedger";
+
+const unconfiguredAccount: PublicAccountSettings = {
+  settingsRevision: 0,
+  configured: false,
+  pathSummary: null,
+  accountLabel: null,
+};
 
 type TrayAppProps = {
   fixture: LedgerFixture;
+  accountSettings?: PublicAccountSettings;
   onHide: () => void;
   onRefresh: () => unknown;
+  onSelectAuth?: () => Promise<PublicAccountSettings>;
 };
 
-function SettingsView({ onBack }: { onBack: () => void }) {
+function SettingsView({
+  accountSettings,
+  onBack,
+  onSelectAuth,
+}: {
+  accountSettings: PublicAccountSettings;
+  onBack: () => void;
+  onSelectAuth: () => Promise<void>;
+}) {
   const [activeTab, setActiveTab] = useState<
     "quota" | "account" | "notifications"
   >("account");
+  const [selectingAuth, setSelectingAuth] = useState(false);
+  const [authError, setAuthError] = useState(false);
+
+  const handleSelectAuth = () => {
+    if (selectingAuth) {
+      return;
+    }
+    setSelectingAuth(true);
+    setAuthError(false);
+    void onSelectAuth()
+      .catch(() => {
+        setAuthError(true);
+      })
+      .finally(() => {
+        setSelectingAuth(false);
+      });
+  };
 
   return (
     <article class="settings-view">
@@ -54,15 +89,33 @@ function SettingsView({ onBack }: { onBack: () => void }) {
               <span>账号</span>
               <h2 id="account-settings">Codex 数据源</h2>
             </div>
-            <label>
-              <span>auth.json 路径</span>
-              <input
-                aria-label="auth.json 路径"
-                type="text"
-                defaultValue="~/.codex/auth.json"
-                spellcheck={false}
-              />
-            </label>
+            <div class="account-status" aria-live="polite">
+              <span>
+                {accountSettings.configured
+                  ? accountSettings.accountLabel
+                  : "尚未配置 Codex 账号"}
+              </span>
+              {accountSettings.pathSummary ? (
+                <strong>{accountSettings.pathSummary}</strong>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              class="primary-action"
+              disabled={selectingAuth}
+              onClick={handleSelectAuth}
+            >
+              {selectingAuth
+                ? "正在验证…"
+                : accountSettings.configured
+                  ? "更换 auth.json"
+                  : "选择 auth.json"}
+            </button>
+            {authError ? (
+              <p class="settings-error" role="alert">
+                无法验证该文件。请选择 Codex 自动维护的 auth.json。
+              </p>
+            ) : null}
             <p class="privacy-note">
               只读访问。QuotaTide 不会修改 auth.json，也不会上传令牌。
             </p>
@@ -105,8 +158,15 @@ function SettingsView({ onBack }: { onBack: () => void }) {
   );
 }
 
-export function TrayApp({ fixture, onHide, onRefresh }: TrayAppProps) {
+export function TrayApp({
+  fixture,
+  accountSettings = unconfiguredAccount,
+  onHide,
+  onRefresh,
+  onSelectAuth,
+}: TrayAppProps) {
   const [view, setView] = useState<"ledger" | "settings">("ledger");
+  const [currentAccount, setCurrentAccount] = useState(accountSettings);
   const [refreshing, setRefreshing] = useState(false);
   const [coolingDown, setCoolingDown] = useState(false);
   const refreshingRef = useRef(false);
@@ -121,6 +181,10 @@ export function TrayApp({ fixture, onHide, onRefresh }: TrayAppProps) {
     },
     [],
   );
+
+  useEffect(() => {
+    setCurrentAccount(accountSettings);
+  }, [accountSettings]);
 
   const handleRefresh = useCallback(() => {
     if (refreshingRef.current || coolingDownRef.current) {
@@ -187,8 +251,14 @@ export function TrayApp({ fixture, onHide, onRefresh }: TrayAppProps) {
   if (view === "settings") {
     return (
       <SettingsView
+        accountSettings={currentAccount}
         onBack={() => {
           setView("ledger");
+        }}
+        onSelectAuth={async () => {
+          if (onSelectAuth) {
+            setCurrentAccount(await onSelectAuth());
+          }
         }}
       />
     );

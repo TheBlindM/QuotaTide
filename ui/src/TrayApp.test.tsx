@@ -21,7 +21,10 @@ describe("tray-window navigation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
     expect(screen.getByRole("heading", { name: "设置" })).toBeInTheDocument();
-    expect(screen.getByLabelText("auth.json 路径")).toBeInTheDocument();
+    expect(screen.getByText("尚未配置 Codex 账号")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "选择 auth.json" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "额度" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "账号" })).toHaveAttribute(
       "aria-selected",
@@ -33,6 +36,67 @@ describe("tray-window navigation", () => {
     expect(
       screen.getByRole("table", { name: /当前七日窗口/ }),
     ).toBeInTheDocument();
+  });
+
+  it("selects auth.json through the native command and only renders safe account data", async () => {
+    const onSelectAuth = vi.fn().mockResolvedValue({
+      settingsRevision: 1,
+      configured: true,
+      pathSummary: "…/auth.json",
+      accountLabel: "账号 • 9A2F",
+    });
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.unconfigured}
+        accountSettings={{
+          settingsRevision: 0,
+          configured: false,
+          pathSummary: null,
+          accountLabel: null,
+        }}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+        onSelectAuth={onSelectAuth}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "选择 auth.json" }));
+    fireEvent.click(screen.getByRole("button", { name: "选择 auth.json" }));
+
+    expect(await screen.findByText("账号 • 9A2F")).toBeInTheDocument();
+    expect(screen.getByText("…/auth.json")).toBeInTheDocument();
+    expect(onSelectAuth).toHaveBeenCalledOnce();
+    expect(document.body).not.toHaveTextContent("access-ticket16-canary");
+  });
+
+  it("keeps the previous account projection when native validation fails", async () => {
+    const onSelectAuth = vi.fn().mockRejectedValue({
+      code: "auth_invalid_json",
+      messageKey: "auth.format.invalid_json",
+    });
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        accountSettings={{
+          settingsRevision: 4,
+          configured: true,
+          pathSummary: "…/auth.json",
+          accountLabel: "账号 • 21B8",
+        }}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+        onSelectAuth={onSelectAuth}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "更换 auth.json" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "无法验证该文件",
+    );
+    expect(screen.getByText("账号 • 21B8")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("auth.format.invalid_json");
   });
 
   it("supports platform keyboard shortcuts without opening another window", () => {

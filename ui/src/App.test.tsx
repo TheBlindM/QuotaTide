@@ -16,6 +16,16 @@ vi.mock("./api/build-info", () => ({
   }),
 }));
 
+vi.mock("./api/account-settings", () => ({
+  getAccountSettings: vi.fn().mockResolvedValue({
+    settingsRevision: 0,
+    configured: false,
+    pathSummary: null,
+    accountLabel: null,
+  }),
+  selectAuthFile: vi.fn(),
+}));
+
 afterEach(() => {
   cleanup();
   window.history.replaceState({}, "", "/");

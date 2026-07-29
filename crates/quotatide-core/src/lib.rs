@@ -3,8 +3,10 @@
 use serde::Serialize;
 use ts_rs::TS;
 
+mod account_settings;
 mod tray_shell;
 
+pub use account_settings::{AccountSettingsStore, PublicAccountSettings, SettingsStoreError};
 pub use tray_shell::{
     PhysicalPoint, PhysicalRect, PhysicalSize, ShellEffect, ShellEvent, TrayShell,
     place_tray_window,
