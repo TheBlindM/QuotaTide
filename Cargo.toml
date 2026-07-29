@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/quota-core", "src-tauri"]
+members = ["crates/quotatide-core", "src-tauri"]
 resolver = "2"
 
 [workspace.package]
@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.88"
 authors = ["TheBlind"]
 license = "MIT"
-repository = ""
+repository = "__GITHUB_REPOSITORY__"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -1,0 +1,10 @@
+{
+  "app": {
+    "trayIcon": {
+      "id": "main",
+      "iconPath": "icons/tray/tray-windows.ico",
+      "iconAsTemplate": false,
+      "tooltip": "QuotaTide"
+    }
+  }
+}

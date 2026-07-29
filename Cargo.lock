@@ -2302,7 +2302,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "quota-core"
+name = "quotatide-core"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -2310,10 +2310,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "quotatide"
+name = "quotatide-desktop"
 version = "0.1.0"
 dependencies = [
- "quota-core",
+ "quotatide-core",
  "tauri",
  "tauri-build",
 ]

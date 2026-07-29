@@ -1,5 +1,5 @@
 [package]
-name = "quotatide"
+name = "quotatide-desktop"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,11 +12,15 @@ build = "build.rs"
 name = "quotatide_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "quotatide"
+path = "src/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
-quota-core = { path = "../crates/quota-core", version = "=0.1.0" }
+quotatide-core = { path = "../crates/quotatide-core", version = "=0.1.0" }
 tauri = { version = "=2.11.5", features = ["image-png", "tray-icon"] }
 
 [lints]

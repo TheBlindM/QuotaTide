@@ -1,8 +1,8 @@
-use quota_core::{BuildInfo, build_info};
+use quotatide_core::{BuildInfo, build_info};
 use ts_rs::{Config, TS};
 
 #[test]
-fn build_info_exposes_only_public_product_metadata() {
+fn build_info_exposes_only_public_product_identity() {
     assert_eq!(
         build_info(),
         BuildInfo {

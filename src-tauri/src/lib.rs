@@ -1,11 +1,11 @@
 //! `QuotaTide` desktop shell.
 
-use quota_core::BuildInfo;
+use quotatide_core::BuildInfo;
 
 /// Returns public metadata that proves the Rust core is connected to the UI.
 #[tauri::command]
 fn get_build_info() -> BuildInfo {
-    quota_core::build_info()
+    quotatide_core::build_info()
 }
 
 /// Starts the `QuotaTide` desktop runtime.

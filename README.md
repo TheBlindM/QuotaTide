@@ -13,7 +13,7 @@ License：MIT
 项目正在从旧 Node/Docker 原型重构为 Rust/Tauri 桌面应用。目前只完成
 **Ticket 14 的应用骨架**：
 
-- Rust workspace 与框架无关的 `quota-core`；
+- Rust workspace 与框架无关的 `quotatide-core`；
 - Tauri 2 隐藏窗口和单一 Tide Dial 托盘入口；
 - Vite + Preact + TypeScript UI；
 - 类型化的公开构建信息 command；
@@ -50,7 +50,19 @@ cargo test --workspace
 cargo deny check
 npm --prefix ui run check
 node scripts/check-desktop-versions.mjs
+node scripts/check-desktop-identity.mjs
 git diff --exit-code -- ui/src/bindings
+```
+
+`src-tauri/tauri.conf.json` 是 0.1.x 的版本来源；检查脚本要求 Rust workspace
+和前端元数据与它保持一致。
+
+当前 GitHub 远程身份仍是显式占位符 `__GITHUB_REPOSITORY__`。普通 CI 中的
+macOS/Windows bundle 仅用于构建 smoke，不上传或发布产物。真正的发布工作流
+必须先运行下面的门禁；仓库未绑定时它会按设计失败：
+
+```bash
+node scripts/check-release-identity.mjs
 ```
 
 生成 Tide Dial 平台图标并启动桌面开发模式：

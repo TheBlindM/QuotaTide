@@ -1,4 +1,4 @@
-//! Framework-independent `QuotaTide` application core.
+//! Framework-independent `QuotaTide` domain core.
 
 use serde::Serialize;
 use ts_rs::TS;
