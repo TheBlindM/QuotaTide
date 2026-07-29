@@ -39,6 +39,7 @@ Type: wayfinder:map
 - [决定本地化与可访问性范围](./issues/11-decide-localization-and-accessibility.md) — v1 完整支持 `zh-CN`/`en`，分离界面语言、格式区域和策略时区，采用提醒语言快照与 WCAG 2.2 AA 门禁，并固定键盘、读屏和辅助显示降级契约。
 - [验证最低系统版本与发布 QA 矩阵](./issues/12-verify-minimum-os-and-release-qa.md) — v1 候选最低正式支持 macOS 15 Sequoia universal（Apple Silicon + Intel）与 Windows 11 25H2 x64；macOS 14、Windows 10 22H2 和 Windows 11 24H2 只作扩大兼容 smoke，并以六类证据覆盖安装、平台集成、数据/安全、更新、双语/可访问性与资源预算。
 - [搭建 Rust/Tauri 可运行骨架](./issues/14-bootstrap-rust-tauri-workspace.md) — 已建立 Rust 1.88 的 `quotatide-core`、Tauri/Preact 壳、类型化 BuildInfo seam、双平台 Tide Dial 托盘资产、最小权限/CSP、依赖门禁和无发布秘密的三平台 CI bundle smoke。
+- [打通 Weekly Ledger 托盘窗口](./issues/15-build-weekly-ledger-tray-shell.md) — 已交付单实例 420×680 托盘弹层、跨显示器物理定位、双平台毛玻璃与不透明降级、完整七日静态状态、设置/键盘交互，以及刷新冷却和系统对话框失焦 seams。
 
 ## Not yet specified
 
