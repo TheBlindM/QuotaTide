@@ -6,7 +6,11 @@ use ts_rs::TS;
 mod account_settings;
 mod tray_shell;
 
-pub use account_settings::{AccountSettingsStore, PublicAccountSettings, SettingsStoreError};
+pub use account_settings::{
+    AccountApplication, AccountConfigError, AccountSettingsStore, AuthCandidateValidator,
+    PublicAccountSettings, PublicError, PublicErrorCode, SafeErrorContext, SettingsManager,
+    SettingsStoreError, ValidatedAccountCandidate,
+};
 pub use tray_shell::{
     PhysicalPoint, PhysicalRect, PhysicalSize, ShellEffect, ShellEvent, TrayShell,
     place_tray_window,

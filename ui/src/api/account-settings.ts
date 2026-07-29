@@ -6,6 +6,10 @@ export async function getAccountSettings(): Promise<PublicAccountSettings> {
   return await invoke<PublicAccountSettings>("get_account_settings");
 }
 
-export async function selectAuthFile(): Promise<PublicAccountSettings> {
-  return await invoke<PublicAccountSettings>("select_auth_file");
+export async function selectAuthFile(
+  expectedSettingsRevision: number,
+): Promise<PublicAccountSettings> {
+  return await invoke<PublicAccountSettings>("select_auth_file", {
+    expectedSettingsRevision,
+  });
 }

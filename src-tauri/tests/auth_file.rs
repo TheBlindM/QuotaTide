@@ -1,6 +1,7 @@
 use std::fs;
 
-use quotatide_lib::auth_file::{AuthFileErrorCode, read_auth_file};
+use quotatide_core::{AccountApplication, AccountSettingsStore, SettingsManager};
+use quotatide_lib::auth_file::{AuthFileErrorCode, AuthFileReader, read_auth_file};
 use secrecy::ExposeSecret;
 use sha2::{Digest, Sha256};
 use tempfile::tempdir;
@@ -152,6 +153,67 @@ fn rejects_non_files_and_non_canonical_account_ids() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn reports_permission_denied_without_echoing_the_candidate_path() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("permission-canary-auth.json");
+    fs::write(
+        &path,
+        format!(
+            r#"{{"auth_mode":"chatgpt","tokens":{{"access_token":"{ACCESS_CANARY}","account_id":"{ACCOUNT_CANARY}"}}}}"#
+        ),
+    )
+    .expect("write fixture");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).expect("remove read access");
+
+    let error = read_auth_file(&path).err().expect("permission error");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("restore read access");
+
+    assert_eq!(error.code(), AuthFileErrorCode::PermissionDenied);
+    let public = serde_json::to_string(&error.public()).expect("serialize public error");
+    assert!(!public.contains(path.to_string_lossy().as_ref()));
+    assert!(!public.contains(ACCESS_CANARY));
+}
+
+#[test]
+fn application_boundary_and_sqlite_artifacts_never_expose_auth_canaries() {
+    let directory = tempdir().expect("temporary directory");
+    let auth_directory = directory.path().join("auth-source");
+    let state_directory = directory.path().join("state");
+    fs::create_dir_all(&auth_directory).expect("auth directory");
+    fs::create_dir_all(&state_directory).expect("state directory");
+    let auth_path = auth_directory.join("auth.json");
+    fs::write(
+        &auth_path,
+        format!(
+            r#"{{"auth_mode":"chatgpt","tokens":{{"access_token":"{ACCESS_CANARY}","account_id":"{ACCOUNT_CANARY}","id_token":"{ID_TOKEN_CANARY}"}}}}"#
+        ),
+    )
+    .expect("write auth fixture");
+
+    let application = tauri::async_runtime::block_on(async {
+        let store = AccountSettingsStore::open(state_directory.join("state.sqlite3"))
+            .await
+            .expect("open store");
+        AccountApplication::new(SettingsManager::new(store, AuthFileReader))
+    });
+    let response = tauri::async_runtime::block_on(application.select_account(0, &auth_path))
+        .expect("configure account");
+    let serialized = serde_json::to_vec(&response).expect("serialize command response");
+    assert_canaries_absent(&serialized);
+    drop(application);
+
+    for entry in fs::read_dir(&state_directory).expect("list sqlite artifacts") {
+        let path = entry.expect("artifact entry").path();
+        if path.is_file() {
+            assert_canaries_absent(&fs::read(path).expect("read sqlite artifact"));
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct FileSnapshot {
     hash: Vec<u8>,
@@ -165,5 +227,16 @@ fn snapshot(path: &std::path::Path) -> FileSnapshot {
         hash: Sha256::digest(fs::read(path).expect("fixture bytes")).to_vec(),
         permissions: metadata.permissions(),
         modified: metadata.modified().expect("modified time"),
+    }
+}
+
+fn assert_canaries_absent(bytes: &[u8]) {
+    for canary in [ACCESS_CANARY, ACCOUNT_CANARY, ID_TOKEN_CANARY] {
+        assert!(
+            !bytes
+                .windows(canary.len())
+                .any(|candidate| candidate == canary.as_bytes()),
+            "secret canary crossed a public boundary"
+        );
     }
 }

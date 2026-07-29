@@ -17,7 +17,7 @@ async fn account_configuration_is_atomic_persistent_and_secret_free() {
     assert!(!initial.configured);
 
     let configured = store
-        .configure_account(CANARY_PATH, CANARY_ACCOUNT_ID)
+        .configure_account(0, CANARY_PATH, CANARY_ACCOUNT_ID)
         .await
         .expect("configure account");
     assert_eq!(configured.settings_revision, 1);
@@ -36,8 +36,14 @@ async fn account_configuration_is_atomic_persistent_and_secret_free() {
         configured
     );
 
-    let database_bytes = std::fs::read(database).expect("read database for canary scan");
-    assert!(!contains(&database_bytes, CANARY_ACCOUNT_ID.as_bytes()));
+    drop(reopened);
+    for entry in std::fs::read_dir(directory.path()).expect("list database artifacts") {
+        let path = entry.expect("artifact entry").path();
+        if path.is_file() {
+            let bytes = std::fs::read(path).expect("read database artifact");
+            assert!(!contains(&bytes, CANARY_ACCOUNT_ID.as_bytes()));
+        }
+    }
 }
 
 #[tokio::test]
@@ -48,21 +54,47 @@ async fn switching_accounts_uses_distinct_stable_streams_without_merging() {
         .expect("open settings store");
 
     let first = store
-        .configure_account("/one/auth.json", "account-one")
+        .configure_account(0, "/one/auth.json", "account-one")
         .await
         .expect("first account");
     let second = store
-        .configure_account("/two/auth.json", "account-two")
+        .configure_account(1, "/two/auth.json", "account-two")
         .await
         .expect("second account");
     let first_again = store
-        .configure_account("/one/auth.json", "account-one")
+        .configure_account(2, "/one/auth.json", "account-one")
         .await
         .expect("first account again");
 
     assert_ne!(first.account_label, second.account_label);
     assert_eq!(first.account_label, first_again.account_label);
     assert_eq!(store.account_stream_count().await.expect("stream count"), 2);
+}
+
+#[tokio::test]
+async fn stale_revision_is_rejected_without_overwriting_the_selected_account() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open settings store");
+
+    let accepted = store
+        .configure_account(0, "/one/auth.json", "account-one")
+        .await
+        .expect("first account");
+    let rejected = store
+        .configure_account(0, "/two/auth.json", "account-two")
+        .await;
+
+    assert!(matches!(
+        rejected,
+        Err(quotatide_core::SettingsStoreError::Conflict)
+    ));
+    assert_eq!(
+        store.public_settings().await.expect("current settings"),
+        accepted
+    );
+    assert_eq!(store.account_stream_count().await.expect("stream count"), 1);
 }
 
 #[tokio::test]

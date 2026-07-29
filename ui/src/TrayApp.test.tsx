@@ -65,14 +65,19 @@ describe("tray-window navigation", () => {
 
     expect(await screen.findByText("账号 • 9A2F")).toBeInTheDocument();
     expect(screen.getByText("…/auth.json")).toBeInTheDocument();
-    expect(onSelectAuth).toHaveBeenCalledOnce();
-    expect(document.body).not.toHaveTextContent("access-ticket16-canary");
+    expect(onSelectAuth).toHaveBeenCalledExactlyOnceWith(0);
   });
 
   it("keeps the previous account projection when native validation fails", async () => {
+    const canaries = {
+      accessToken: "access-ticket16-command-canary",
+      accountId: "account-ticket16-command-canary",
+      idToken: "jwt-ticket16-command-canary",
+    };
     const onSelectAuth = vi.fn().mockRejectedValue({
       code: "auth_invalid_json",
       messageKey: "auth.format.invalid_json",
+      nested: canaries,
     });
     render(
       <TrayApp
@@ -97,6 +102,9 @@ describe("tray-window navigation", () => {
     );
     expect(screen.getByText("账号 • 21B8")).toBeInTheDocument();
     expect(document.body).not.toHaveTextContent("auth.format.invalid_json");
+    for (const canary of Object.values(canaries)) {
+      expect(document.body).not.toHaveTextContent(canary);
+    }
   });
 
   it("supports platform keyboard shortcuts without opening another window", () => {

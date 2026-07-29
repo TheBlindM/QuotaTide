@@ -28,6 +28,9 @@ serde_json = "=1.0.149"
 tauri = { version = "=2.11.5", features = ["image-png", "macos-private-api", "tray-icon"] }
 tauri-plugin-dialog = "=2.7.2"
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.31.3", default-features = false, features = ["user"] }
+
 [dev-dependencies]
 sha2 = "=0.10.9"
 tempfile = "=3.25.0"

@@ -15,7 +15,9 @@ type TrayAppProps = {
   accountSettings?: PublicAccountSettings;
   onHide: () => void;
   onRefresh: () => unknown;
-  onSelectAuth?: () => Promise<PublicAccountSettings>;
+  onSelectAuth?: (
+    expectedSettingsRevision: number,
+  ) => Promise<PublicAccountSettings>;
 };
 
 function SettingsView({
@@ -257,7 +259,9 @@ export function TrayApp({
         }}
         onSelectAuth={async () => {
           if (onSelectAuth) {
-            setCurrentAccount(await onSelectAuth());
+            setCurrentAccount(
+              await onSelectAuth(currentAccount.settingsRevision),
+            );
           }
         }}
       />

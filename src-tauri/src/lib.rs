@@ -5,12 +5,12 @@ pub mod auth_file;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use auth_file::read_auth_file;
+use auth_file::AuthFileReader;
 use quotatide_core::{
-    AccountSettingsStore, BuildInfo, PhysicalRect as CoreRect, PhysicalSize as CoreSize,
-    PublicAccountSettings, ShellEffect, ShellEvent, TrayShell, place_tray_window,
+    AccountApplication, AccountSettingsStore, BuildInfo, PhysicalRect as CoreRect,
+    PhysicalSize as CoreSize, PublicAccountSettings, PublicError, PublicErrorCode, SettingsManager,
+    ShellEffect, ShellEvent, TrayShell, place_tray_window,
 };
-use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::utils::WindowEffect;
@@ -55,30 +55,7 @@ type SharedDesktopShell = Mutex<DesktopShell>;
 
 #[derive(Clone)]
 struct AccountConfigState {
-    store: AccountSettingsStore,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AccountCommandError {
-    code: &'static str,
-    message_key: &'static str,
-}
-
-impl AccountCommandError {
-    const fn storage() -> Self {
-        Self {
-            code: "storage_unavailable",
-            message_key: "settings.storage_unavailable",
-        }
-    }
-
-    const fn invalid_path() -> Self {
-        Self {
-            code: "invalid_path",
-            message_key: "auth.path.invalid",
-        }
-    }
+    application: AccountApplication<AuthFileReader>,
 }
 
 /// Returns public metadata that proves the Rust core is connected to the UI.
@@ -119,63 +96,57 @@ fn end_external_dialog(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn get_account_settings(
     state: tauri::State<'_, AccountConfigState>,
-) -> Result<PublicAccountSettings, AccountCommandError> {
+) -> Result<PublicAccountSettings, PublicError> {
     state
-        .store
-        .public_settings()
+        .application
+        .account_settings()
         .await
-        .map_err(|_| AccountCommandError::storage())
+        .map_err(|error| error.public::<AuthFileReader>())
 }
 
 #[tauri::command]
 async fn select_auth_file(
     app: AppHandle,
     state: tauri::State<'_, AccountConfigState>,
-) -> Result<PublicAccountSettings, AccountCommandError> {
-    dispatch_shell_event(&app, ShellEvent::ExternalDialogOpened, None)
-        .map_err(|_| AccountCommandError::storage())?;
+    expected_settings_revision: u32,
+) -> Result<PublicAccountSettings, PublicError> {
+    dispatch_shell_event(&app, ShellEvent::ExternalDialogOpened, None).map_err(|_| {
+        PublicError::new(
+            PublicErrorCode::StorageUnavailable,
+            "settings.storage_unavailable",
+        )
+    })?;
     let selection = app
         .dialog()
         .file()
         .add_filter("JSON", &["json"])
         .set_title("选择 Codex auth.json")
         .blocking_pick_file();
-    dispatch_shell_event(&app, ShellEvent::ExternalDialogClosed, None)
-        .map_err(|_| AccountCommandError::storage())?;
+    dispatch_shell_event(&app, ShellEvent::ExternalDialogClosed, None).map_err(|_| {
+        PublicError::new(
+            PublicErrorCode::StorageUnavailable,
+            "settings.storage_unavailable",
+        )
+    })?;
 
     let Some(selection) = selection else {
         return get_account_settings(state).await;
     };
     let path = selection
         .into_path()
-        .map_err(|_| AccountCommandError::invalid_path())?;
-    let material = read_auth_file(&path).map_err(|error| {
-        let public = error.public();
-        AccountCommandError {
-            code: match public.code {
-                auth_file::AuthFileErrorCode::NotFound => "auth_not_found",
-                auth_file::AuthFileErrorCode::PermissionDenied => "auth_permission_denied",
-                auth_file::AuthFileErrorCode::NotRegularFile => "auth_not_regular_file",
-                auth_file::AuthFileErrorCode::TooLarge => "auth_too_large",
-                auth_file::AuthFileErrorCode::InvalidUtf8 => "auth_invalid_utf8",
-                auth_file::AuthFileErrorCode::InvalidJson => "auth_invalid_json",
-                auth_file::AuthFileErrorCode::UnsupportedAuthMode => "auth_unsupported_mode",
-                auth_file::AuthFileErrorCode::MissingAccessToken => "auth_missing_access_token",
-                auth_file::AuthFileErrorCode::MissingAccountId => "auth_missing_account_id",
-                auth_file::AuthFileErrorCode::InvalidAccountId => "auth_invalid_account_id",
-            },
-            message_key: public.message_key,
-        }
-    })?;
-    let canonical_path = material
-        .canonical_path()
-        .to_str()
-        .ok_or_else(AccountCommandError::invalid_path)?;
-    state
-        .store
-        .configure_account(canonical_path, material.account_id())
+        .map_err(|_| PublicError::new(PublicErrorCode::InvalidPath, "auth.path.invalid"))?;
+    configure_selected_auth(&state.application, expected_settings_revision, &path).await
+}
+
+async fn configure_selected_auth(
+    application: &AccountApplication<AuthFileReader>,
+    expected_settings_revision: u32,
+    path: &std::path::Path,
+) -> Result<PublicAccountSettings, PublicError> {
+    application
+        .select_account(expected_settings_revision, path)
         .await
-        .map_err(|_| AccountCommandError::storage())
+        .map_err(|error| error.public::<AuthFileReader>())
 }
 
 fn menu_event_for_id(id: &str) -> Option<ShellEvent> {
@@ -373,26 +344,14 @@ pub fn run() {
             std::fs::create_dir_all(&app_data)?;
             secure_app_data_directory(&app_data)?;
             let database_path = app_data.join("state.sqlite3");
+            validate_database_targets(&database_path)?;
             let store = tauri::async_runtime::block_on(AccountSettingsStore::open(&database_path))
                 .map_err(|_| "failed to open the account settings store")?;
             secure_database_files(&database_path)?;
-            let existing = tauri::async_runtime::block_on(store.public_settings())
-                .map_err(|_| "failed to read account settings")?;
-            if !existing.configured {
-                if let Ok(home) = app.path().home_dir() {
-                    let default_auth = home.join(".codex").join("auth.json");
-                    if default_auth.is_file()
-                        && let Ok(material) = read_auth_file(&default_auth)
-                    {
-                        if let Some(path) = material.canonical_path().to_str() {
-                            let _ = tauri::async_runtime::block_on(
-                                store.configure_account(path, material.account_id()),
-                            );
-                        }
-                    }
-                }
-            }
-            app.manage(AccountConfigState { store });
+            let settings = SettingsManager::new(store, AuthFileReader);
+            app.manage(AccountConfigState {
+                application: AccountApplication::new(settings),
+            });
             if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 apply_platform_material(&window);
             }
@@ -464,14 +423,25 @@ pub fn run() {
 
 #[cfg(unix)]
 fn secure_app_data_directory(path: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || metadata.uid() != nix::unistd::Uid::effective().as_raw()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "application data directory is not a current-user-owned directory",
+        ));
+    }
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
-#[cfg(not(unix))]
-fn secure_app_data_directory(_path: &std::path::Path) -> std::io::Result<()> {
-    Ok(())
+#[cfg(windows)]
+fn secure_app_data_directory(path: &std::path::Path) -> std::io::Result<()> {
+    reject_symlink_or_wrong_kind(path, true)?;
+    apply_windows_dacl(path, true)
 }
 
 #[cfg(unix)]
@@ -490,18 +460,124 @@ fn secure_database_files(path: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn secure_database_files(_path: &std::path::Path) -> std::io::Result<()> {
+#[cfg(windows)]
+fn secure_database_files(path: &std::path::Path) -> std::io::Result<()> {
+    for candidate in database_candidates(path) {
+        if candidate.exists() {
+            reject_symlink_or_wrong_kind(&candidate, false)?;
+            apply_windows_dacl(&candidate, false)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_database_targets(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    for candidate in database_candidates(path) {
+        let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.uid() != nix::unistd::Uid::effective().as_raw()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "database target is not a current-user-owned regular file",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_database_targets(path: &std::path::Path) -> std::io::Result<()> {
+    for candidate in database_candidates(path) {
+        if candidate.exists() {
+            reject_symlink_or_wrong_kind(&candidate, false)?;
+        }
+    }
+    Ok(())
+}
+
+fn database_candidates(path: &std::path::Path) -> [std::path::PathBuf; 3] {
+    [
+        path.to_path_buf(),
+        path.with_extension("sqlite3-wal"),
+        path.with_extension("sqlite3-shm"),
+    ]
+}
+
+#[cfg(windows)]
+fn reject_symlink_or_wrong_kind(path: &std::path::Path, directory: bool) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    let valid_kind = if directory {
+        metadata.is_dir()
+    } else {
+        metadata.is_file()
+    };
+    if metadata.file_type().is_symlink() || !valid_kind {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "security target has an invalid kind",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn apply_windows_dacl(path: &std::path::Path, directory: bool) -> std::io::Result<()> {
+    use std::process::Command;
+
+    let identity = Command::new("whoami")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .output()?;
+    if !identity.status.success() {
+        return Err(std::io::Error::other("could not resolve current user SID"));
+    }
+    let output = String::from_utf8(identity.stdout)
+        .map_err(|_| std::io::Error::other("current user SID was not UTF-8"))?;
+    let current_sid = output
+        .trim()
+        .split(',')
+        .nth(1)
+        .map(|value| value.trim().trim_matches('"'))
+        .filter(|value| value.starts_with("S-1-"))
+        .ok_or_else(|| std::io::Error::other("could not parse current user SID"))?;
+    let permission = if directory { "(OI)(CI)F" } else { "F" };
+    let grants = [
+        format!("{current_sid}:{permission}"),
+        format!("*S-1-5-18:{permission}"),
+        format!("*S-1-5-32-544:{permission}"),
+    ];
+    let status = Command::new("icacls")
+        .arg(path)
+        .arg("/inheritance:r")
+        .arg("/grant:r")
+        .args(grants)
+        .status()?;
+    if !status.success() {
+        return Err(std::io::Error::other(
+            "could not apply the protected application DACL",
+        ));
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::time::{Duration, Instant};
 
-    use quotatide_core::ShellEvent;
+    use quotatide_core::{AccountApplication, AccountSettingsStore, SettingsManager, ShellEvent};
+    use tempfile::tempdir;
 
-    use super::{RefreshGate, get_build_info, manual_refresh_cooldown_ms, menu_event_for_id};
+    use super::{
+        AuthFileReader, RefreshGate, configure_selected_auth, get_build_info,
+        manual_refresh_cooldown_ms, menu_event_for_id,
+    };
 
     #[test]
     fn command_returns_the_public_core_contract() {
@@ -532,5 +608,48 @@ mod tests {
         assert!(!gate.try_start(now + Duration::from_secs(29)));
         assert!(gate.try_start(now + Duration::from_secs(30)));
         assert_eq!(manual_refresh_cooldown_ms(), 30_000);
+    }
+
+    #[test]
+    fn command_boundary_serializes_no_auth_canaries_on_success_or_failure() {
+        const ACCESS: &str = "access-ticket16-command-canary";
+        const ACCOUNT: &str = "account-ticket16-command-canary";
+        const JWT: &str = "jwt-ticket16-command-canary";
+
+        let directory = tempdir().expect("temporary directory");
+        let valid = directory.path().join("auth.json");
+        let invalid = directory.path().join("invalid.json");
+        fs::write(
+            &valid,
+            format!(
+                r#"{{"auth_mode":"chatgpt","tokens":{{"access_token":"{ACCESS}","account_id":"{ACCOUNT}","id_token":"{JWT}"}}}}"#
+            ),
+        )
+        .expect("valid auth fixture");
+        fs::write(&invalid, format!(r#"{{"access_token":"{ACCESS}""#))
+            .expect("invalid auth fixture");
+
+        let application = tauri::async_runtime::block_on(async {
+            let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+                .await
+                .expect("settings store");
+            AccountApplication::new(SettingsManager::new(store, AuthFileReader))
+        });
+        let success =
+            tauri::async_runtime::block_on(configure_selected_auth(&application, 0, &valid))
+                .expect("success response");
+        let failure =
+            tauri::async_runtime::block_on(configure_selected_auth(&application, 1, &invalid))
+                .expect_err("failure response");
+
+        for payload in [
+            serde_json::to_string(&success).expect("serialize success"),
+            serde_json::to_string(&failure).expect("serialize failure"),
+        ] {
+            for canary in [ACCESS, ACCOUNT, JWT] {
+                assert!(!payload.contains(canary));
+            }
+            assert!(!payload.contains(directory.path().to_string_lossy().as_ref()));
+        }
     }
 }
