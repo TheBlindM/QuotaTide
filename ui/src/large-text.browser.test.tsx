@@ -29,8 +29,8 @@ function revealIn(
   element.scrollIntoView({ block: "center", inline: "nearest" });
   const containerRect = scrollContainer.getBoundingClientRect();
   const elementRect = element.getBoundingClientRect();
-  expect(elementRect.bottom).toBeGreaterThan(containerRect.top);
-  expect(elementRect.top).toBeLessThan(containerRect.bottom);
+  expect(elementRect.top).toBeGreaterThanOrEqual(containerRect.top - 1);
+  expect(elementRect.bottom).toBeLessThanOrEqual(containerRect.bottom + 1);
   if (focus) {
     expect(document.activeElement).toBe(element);
   }
@@ -78,9 +78,11 @@ test("keeps every core English workflow reachable at 420×680 and 200% text", as
     requireElement("#window-heading"),
     false,
   );
-  for (const link of document.querySelectorAll<HTMLAnchorElement>(
+  const radarLinks = document.querySelectorAll<HTMLAnchorElement>(
     ".radar-card a",
-  )) {
+  );
+  expect(radarLinks).toHaveLength(2);
+  for (const link of radarLinks) {
     revealIn(ledgerContent, link);
   }
 
