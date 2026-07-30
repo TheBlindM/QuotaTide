@@ -1,16 +1,16 @@
 import { useEffect, useState } from "preact/hooks";
 
+import type { AlertEventKind } from "./bindings/AlertEventKind";
 import type { BuildInfo } from "./bindings/BuildInfo";
-import type { PublicAccountSettings } from "./bindings/PublicAccountSettings";
 import type { PublicLedgerDay } from "./bindings/PublicLedgerDay";
 import type { PublicLiveQuota } from "./bindings/PublicLiveQuota";
 import type { PublicResetRadar } from "./bindings/PublicResetRadar";
+import type { PublicSettings } from "./bindings/PublicSettings";
 import type { UsageSourceErrorCode } from "./bindings/UsageSourceErrorCode";
 import {
-  getAccountSettings,
+  getSettings,
   onSettingsChanged,
-  selectAuthFile,
-  updateQuotaPolicy,
+  saveSettings,
 } from "./api/account-settings";
 import { loadBuildInfo } from "./api/build-info";
 import { getLiveQuota, onDashboardChanged } from "./api/live-quota";
@@ -26,12 +26,22 @@ type ViewState =
   | {
       kind: "ready";
       info: BuildInfo;
-      accountSettings: PublicAccountSettings;
+      settings: PublicSettings;
       liveQuota: PublicLiveQuota | null;
       radar: PublicResetRadar;
       refreshing: boolean;
     }
   | { kind: "error" };
+
+const previewAlertKinds: AlertEventKind[] = [
+  "daily_80",
+  "daily_100",
+  "weekly_remaining_20",
+  "weekly_remaining_10",
+  "radar_chance_70",
+  "quota_reset_confirmed",
+  "source_failures_3",
+];
 
 export function App() {
   const isPreview = new URLSearchParams(window.location.search).has("preview");
@@ -46,7 +56,7 @@ export function App() {
             identifier: "dev.theblind.quotatide",
             stage: "weekly-ledger-preview",
           },
-          accountSettings: {
+          settings: {
             settingsRevision: 0,
             configured: false,
             pathSummary: null,
@@ -60,6 +70,11 @@ export function App() {
                 16_000_000, 10_000_000, 10_000_000,
               ],
             },
+            alertPreferences: previewAlertKinds.flatMap((eventKind) => [
+              { eventKind, channel: "system", enabled: true },
+              { eventKind, channel: "email", enabled: false },
+            ]),
+            autostartEnabled: false,
           },
           liveQuota: null,
           radar: emptyRadarState,
@@ -75,13 +90,13 @@ export function App() {
 
     let active = true;
 
-    void Promise.all([loadBuildInfo(), getAccountSettings(), getLiveQuota()])
-      .then(([info, accountSettings, liveQuotaState]) => {
+    void Promise.all([loadBuildInfo(), getSettings(), getLiveQuota()])
+      .then(([info, settings, liveQuotaState]) => {
         if (active) {
           setState({
             kind: "ready",
             info,
-            accountSettings,
+            settings,
             liveQuota: liveQuotaState.quota,
             radar: liveQuotaState.radar,
             refreshing: liveQuotaState.refreshing,
@@ -107,14 +122,14 @@ export function App() {
     let unlistenDashboard: (() => void) | undefined;
     let unlistenSettings: (() => void) | undefined;
     const reloadDashboard = () => {
-      void Promise.all([getAccountSettings(), getLiveQuota()])
-        .then(([accountSettings, liveQuotaState]) => {
+      void Promise.all([getSettings(), getLiveQuota()])
+        .then(([settings, liveQuotaState]) => {
           if (active) {
             setState((current) =>
               current.kind === "ready"
                 ? {
                     ...current,
-                    accountSettings,
+                    settings,
                     liveQuota: liveQuotaState.quota,
                     radar: liveQuotaState.radar,
                     refreshing: liveQuotaState.refreshing,
@@ -194,7 +209,7 @@ export function App() {
             : ledgerFixtures[tone].radar,
       }
     : projectLiveFixture(
-        state.accountSettings,
+        state.settings,
         state.liveQuota,
         Date.now(),
         state.radar,
@@ -203,7 +218,7 @@ export function App() {
   return (
     <TrayApp
       fixture={fixture}
-      accountSettings={state.accountSettings}
+      settings={state.settings}
       externalRefreshing={state.refreshing}
       onHide={() => {
         void hideMainWindow().catch(() => undefined);
@@ -224,44 +239,32 @@ export function App() {
           return cooldownMs;
         });
       }}
-      onSelectAuth={async (revision) => {
-        const accountSettings = await selectAuthFile(revision);
+      onReloadSettings={getSettings}
+      onSaveSettings={async (draft) => {
+        const settings = await saveSettings(draft);
         const liveQuotaState = await getLiveQuota();
         setState((current) =>
           current.kind === "ready"
             ? {
                 ...current,
-                accountSettings,
+                settings,
                 liveQuota: liveQuotaState.quota,
                 radar: liveQuotaState.radar,
                 refreshing: liveQuotaState.refreshing,
               }
             : current,
         );
-        return accountSettings;
-      }}
-      onReloadAccount={getAccountSettings}
-      onUpdatePolicy={async (revision, draft) => {
-        const accountSettings = await updateQuotaPolicy(revision, draft);
-        const liveQuotaState = await getLiveQuota();
-        setState((current) =>
-          current.kind === "ready"
-            ? {
-                ...current,
-                accountSettings,
-                liveQuota: liveQuotaState.quota,
-                radar: liveQuotaState.radar,
-              }
-            : current,
-        );
-        return accountSettings;
+        return settings;
       }}
     />
   );
 }
 
 export function projectLiveFixture(
-  account: PublicAccountSettings,
+  account: Pick<
+    PublicSettings,
+    "configured" | "quotaPolicy" | "settingsRevision" | "pathSummary" | "accountLabel"
+  >,
   live: PublicLiveQuota | null,
   now = Date.now(),
   radar: PublicResetRadar = emptyRadarState,

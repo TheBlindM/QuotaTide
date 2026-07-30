@@ -655,6 +655,14 @@ progress::-moz-progress-bar {
   color: var(--ink);
 }
 
+.auth-path-field {
+  margin-top: 12px;
+}
+
+.auth-path-field input {
+  margin-top: 1px;
+}
+
 .privacy-note {
   margin: 8px 0 0;
   color: var(--faint);
@@ -810,6 +818,11 @@ progress::-moz-progress-bar {
   border-top: 1px solid var(--line);
 }
 
+.settings-row--separated {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
 .settings-row > span {
   display: grid;
   gap: 2px;
@@ -865,8 +878,92 @@ progress::-moz-progress-bar {
 }
 
 .settings-footer {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.settings-footer > span {
+  justify-self: center;
+  text-align: center;
+}
+
+.settings-footer .settings-save {
+  min-width: 126px;
+  background: var(--accent);
+  color: white;
+  font-weight: 720;
+}
+
+.settings-error--floating {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--red) 28%, transparent);
+  border-radius: 11px;
+  background: var(--red-soft);
+}
+
+.alert-heading {
   display: flex;
+  align-items: end;
   justify-content: space-between;
+  gap: 12px;
+}
+
+.alert-channel-headings {
+  display: grid;
+  width: 78px;
+  grid-template-columns: 1fr 1fr;
+  text-align: center;
+}
+
+.alert-channel-headings span {
+  font-size: 9px;
+}
+
+.alert-matrix {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--glass-strong);
+}
+
+.alert-row {
+  display: grid;
+  min-height: 58px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
+}
+
+.alert-row + .alert-row {
+  border-top: 1px solid var(--line);
+}
+
+.alert-row > span {
+  display: grid;
+  gap: 2px;
+}
+
+.alert-row strong {
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.alert-row small {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alert-row input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  justify-self: center;
+  accent-color: var(--accent);
 }
 
 .is-spinning {

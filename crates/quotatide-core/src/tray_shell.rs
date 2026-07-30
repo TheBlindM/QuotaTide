@@ -170,10 +170,10 @@ pub enum ShellEvent {
     OpenRequested,
     /// The transient window lost focus.
     FocusLost,
-    /// A system-owned dialog was opened from the tray window.
-    ExternalDialogOpened,
-    /// The last system-owned dialog opened from the tray window was closed.
-    ExternalDialogClosed,
+    /// A system-owned modal interaction was opened from the tray window.
+    ModalActivityOpened,
+    /// The last system-owned modal interaction was closed.
+    ModalActivityClosed,
     /// The operating system requested that the window close.
     CloseRequested,
     /// The native menu requested a manual data refresh.
@@ -205,7 +205,7 @@ pub enum ShellEffect {
 #[derive(Debug, Default)]
 pub struct TrayShell {
     visible: bool,
-    external_dialog_depth: u16,
+    modal_activity_depth: u16,
 }
 
 impl TrayShell {
@@ -240,7 +240,7 @@ impl TrayShell {
                     ShellEffect::Show
                 }
             }
-            ShellEvent::FocusLost if self.external_dialog_depth > 0 => ShellEffect::None,
+            ShellEvent::FocusLost if self.modal_activity_depth > 0 => ShellEffect::None,
             ShellEvent::FocusLost | ShellEvent::CloseRequested => {
                 if self.visible {
                     self.visible = false;
@@ -249,12 +249,12 @@ impl TrayShell {
                     ShellEffect::None
                 }
             }
-            ShellEvent::ExternalDialogOpened => {
-                self.external_dialog_depth = self.external_dialog_depth.saturating_add(1);
+            ShellEvent::ModalActivityOpened => {
+                self.modal_activity_depth = self.modal_activity_depth.saturating_add(1);
                 ShellEffect::None
             }
-            ShellEvent::ExternalDialogClosed => {
-                self.external_dialog_depth = self.external_dialog_depth.saturating_sub(1);
+            ShellEvent::ModalActivityClosed => {
+                self.modal_activity_depth = self.modal_activity_depth.saturating_sub(1);
                 ShellEffect::None
             }
             ShellEvent::RefreshRequested => ShellEffect::Refresh,

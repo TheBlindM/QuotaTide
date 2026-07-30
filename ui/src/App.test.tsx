@@ -5,20 +5,35 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App, projectLiveFixture, projectRadarFixture } from "./App";
-import { selectAuthFile } from "./api/account-settings";
+import { saveSettings } from "./api/account-settings";
 import { getLiveQuota } from "./api/live-quota";
 
-const { quotaPolicy } = vi.hoisted(() => ({
-  quotaPolicy: {
-    policyRevision: 1,
-    policyTimezone: "Asia/Shanghai",
-    carryWorkdaysEnabled: true,
-    baseMicropoints: [
-      16_000_000, 16_000_000, 16_000_000, 16_000_000, 16_000_000,
-      10_000_000, 10_000_000,
-    ],
-  },
-}));
+const { quotaPolicy, appAlertPreferences } = vi.hoisted(() => {
+  const alertKinds = [
+    "daily_80",
+    "daily_100",
+    "weekly_remaining_20",
+    "weekly_remaining_10",
+    "radar_chance_70",
+    "quota_reset_confirmed",
+    "source_failures_3",
+  ] as const;
+  return {
+    quotaPolicy: {
+      policyRevision: 1,
+      policyTimezone: "Asia/Shanghai",
+      carryWorkdaysEnabled: true,
+      baseMicropoints: [
+        16_000_000, 16_000_000, 16_000_000, 16_000_000, 16_000_000,
+        10_000_000, 10_000_000,
+      ],
+    },
+    appAlertPreferences: alertKinds.flatMap((eventKind) => [
+      { eventKind, channel: "system" as const, enabled: true },
+      { eventKind, channel: "email" as const, enabled: false },
+    ]),
+  };
+});
 
 function ledgerDay(
   localDate: string,
@@ -56,15 +71,17 @@ vi.mock("./api/build-info", () => ({
 }));
 
 vi.mock("./api/account-settings", () => ({
-  getAccountSettings: vi.fn().mockResolvedValue({
+  getSettings: vi.fn().mockResolvedValue({
     settingsRevision: 1,
     configured: true,
     pathSummary: "…/auth.json",
     accountLabel: "账号 • 21B8",
     quotaPolicy,
+    alertPreferences: appAlertPreferences,
+    autostartEnabled: false,
   }),
   onSettingsChanged: vi.fn().mockResolvedValue(vi.fn()),
-  selectAuthFile: vi.fn(),
+  saveSettings: vi.fn(),
 }));
 
 vi.mock("./api/live-quota", () => ({
@@ -133,13 +150,15 @@ describe("QuotaTide tray app", () => {
     expect(screen.getByText(/已用 42%/)).toBeInTheDocument();
   });
 
-  it("never combines a newly selected account with the previous account quota", async () => {
-    vi.mocked(selectAuthFile).mockResolvedValueOnce({
+  it("never combines a newly saved account with the previous account quota", async () => {
+    vi.mocked(saveSettings).mockResolvedValueOnce({
       settingsRevision: 2,
       configured: true,
       pathSummary: "…/new-auth.json",
       accountLabel: "账号 • 991A",
       quotaPolicy,
+      alertPreferences: appAlertPreferences,
+      autostartEnabled: false,
     });
     render(<App />);
     expect(await screen.findByText(/已用 42%/)).toBeInTheDocument();
@@ -159,12 +178,15 @@ describe("QuotaTide tray app", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
-    fireEvent.click(screen.getByRole("button", { name: "更换 auth.json" }));
+    fireEvent.input(screen.getByLabelText("auth.json 路径"), {
+      target: { value: "/Users/me/.codex/new-auth.json" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存全部设置" }));
 
     expect(
       await screen.findByText("账号 • 991A"),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(screen.getByText("Codex 额度 · 正在刷新")).toBeInTheDocument();
     expect(screen.queryByText(/已用 42%/)).not.toBeInTheDocument();
   });

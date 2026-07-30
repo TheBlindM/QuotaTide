@@ -8,10 +8,10 @@ export async function requestManualRefresh(): Promise<number> {
   return await invoke<number>("request_manual_refresh");
 }
 
-export async function beginExternalDialog(): Promise<void> {
-  await invoke("begin_external_dialog");
+export async function beginModalActivity(): Promise<void> {
+  await invoke("begin_modal_activity");
 }
 
-export async function endExternalDialog(): Promise<void> {
-  await invoke("end_external_dialog");
+export async function endModalActivity(): Promise<void> {
+  await invoke("end_modal_activity");
 }

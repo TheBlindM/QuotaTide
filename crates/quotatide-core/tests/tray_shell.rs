@@ -49,19 +49,19 @@ fn repeated_open_and_resume_reuse_and_reposition_the_existing_window() {
 }
 
 #[test]
-fn external_dialogs_suspend_focus_loss_auto_hide() {
+fn modal_activities_suspend_focus_loss_auto_hide() {
     let mut shell = TrayShell::new();
     shell.handle(ShellEvent::OpenRequested);
 
     assert_eq!(
-        shell.handle(ShellEvent::ExternalDialogOpened),
+        shell.handle(ShellEvent::ModalActivityOpened),
         ShellEffect::None
     );
     assert_eq!(shell.handle(ShellEvent::FocusLost), ShellEffect::None);
     assert!(shell.is_visible());
 
     assert_eq!(
-        shell.handle(ShellEvent::ExternalDialogClosed),
+        shell.handle(ShellEvent::ModalActivityClosed),
         ShellEffect::None
     );
     assert_eq!(shell.handle(ShellEvent::FocusLost), ShellEffect::Hide);

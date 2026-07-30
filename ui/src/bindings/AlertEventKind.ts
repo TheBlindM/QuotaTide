@@ -3,4 +3,4 @@
 /**
  * One stable alert event configurable by the user.
  */
-export type AlertEventKind = "daily80" | "daily100" | "weekly_remaining20" | "weekly_remaining10" | "radar_chance70" | "quota_reset_confirmed" | "source_failures3";
+export type AlertEventKind = "daily_80" | "daily_100" | "weekly_remaining_20" | "weekly_remaining_10" | "radar_chance_70" | "quota_reset_confirmed" | "source_failures_3";

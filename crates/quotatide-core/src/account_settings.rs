@@ -75,12 +75,18 @@ pub struct QuotaPolicyDraft {
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "../../../ui/src/bindings/")]
 pub enum AlertEventKind {
+    #[serde(rename = "daily_80")]
     Daily80,
+    #[serde(rename = "daily_100")]
     Daily100,
+    #[serde(rename = "weekly_remaining_20")]
     WeeklyRemaining20,
+    #[serde(rename = "weekly_remaining_10")]
     WeeklyRemaining10,
+    #[serde(rename = "radar_chance_70")]
     RadarChance70,
     QuotaResetConfirmed,
+    #[serde(rename = "source_failures_3")]
     SourceFailures3,
 }
 
@@ -286,11 +292,14 @@ impl<V: AuthCandidateValidator, A: AutostartControl> AtomicSettingsManager<V, A>
                 return Err(AtomicSettingsError::Autostart(error));
             }
         }
-        let confirmed_autostart = self
-            .autostart
-            .is_enabled()
-            .await
-            .map_err(AtomicSettingsError::Autostart)?;
+        let confirmed_autostart = match self.autostart.is_enabled().await {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                self.restore_prepared_autostart(&operation_key, old_autostart_enabled)
+                    .await;
+                return Err(AtomicSettingsError::Autostart(error));
+            }
+        };
         if confirmed_autostart != autostart_enabled {
             self.restore_prepared_autostart(&operation_key, old_autostart_enabled)
                 .await;

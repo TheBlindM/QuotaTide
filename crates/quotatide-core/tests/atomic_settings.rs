@@ -74,6 +74,29 @@ struct BlockingAutostart {
     release: Arc<Notify>,
 }
 
+#[derive(Clone)]
+struct ReadbackFailingAutostart {
+    enabled: Arc<AtomicBool>,
+    reads: Arc<AtomicUsize>,
+}
+
+impl AutostartControl for ReadbackFailingAutostart {
+    type Error = FakeAutostartError;
+
+    async fn is_enabled(&self) -> Result<bool, Self::Error> {
+        if self.reads.fetch_add(1, Ordering::SeqCst) == 1 {
+            Err(FakeAutostartError)
+        } else {
+            Ok(self.enabled.load(Ordering::SeqCst))
+        }
+    }
+
+    async fn set_enabled(&self, enabled: bool) -> Result<(), Self::Error> {
+        self.enabled.store(enabled, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 impl AutostartControl for BlockingAutostart {
     type Error = FakeAutostartError;
 
@@ -240,4 +263,130 @@ async fn restart_recovers_a_prepared_external_change_interrupted_before_sqlite_c
     assert_eq!(settings.settings_revision, 0);
     assert!(!settings.configured);
     assert!(!settings.autostart_enabled);
+}
+
+#[tokio::test]
+async fn failed_autostart_readback_restores_the_old_external_and_sqlite_state() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    let enabled = Arc::new(AtomicBool::new(false));
+    let service = AtomicSettingsManager::new(
+        store,
+        ValidAuth,
+        ReadbackFailingAutostart {
+            enabled: enabled.clone(),
+            reads: Arc::new(AtomicUsize::new(0)),
+        },
+    );
+
+    assert!(service.save_settings(draft(0, true)).await.is_err());
+    assert!(!enabled.load(Ordering::SeqCst));
+    let settings = service.public_settings().await.expect("old settings");
+    assert_eq!(settings.settings_revision, 0);
+    assert!(!settings.autostart_enabled);
+}
+
+#[tokio::test]
+async fn invalid_complete_preferences_are_rejected_before_external_state_changes() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    let autostart = FakeAutostart::new(false);
+    let service = AtomicSettingsManager::new(store, ValidAuth, autostart.clone());
+    let mut invalid = draft(0, true);
+    invalid.alert_preferences.pop();
+
+    assert!(service.save_settings(invalid).await.is_err());
+    assert_eq!(autostart.changes.load(Ordering::SeqCst), 0);
+    let settings = service.public_settings().await.expect("old settings");
+    assert_eq!(settings.settings_revision, 0);
+    assert!(!settings.configured);
+    assert!(!settings.autostart_enabled);
+}
+
+#[tokio::test]
+async fn sqlite_commit_failure_rolls_back_external_state_and_every_setting() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open store");
+    {
+        let connection =
+            tokio_rusqlite::rusqlite::Connection::open(&database).expect("open fault injector");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_atomic_settings_commit
+                 BEFORE UPDATE ON app_settings
+                 WHEN NEW.autostart_enabled = 1
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected atomic settings failure');
+                 END;",
+            )
+            .expect("install fault injector");
+    }
+    let autostart = FakeAutostart::new(false);
+    let service = AtomicSettingsManager::new(store, ValidAuth, autostart.clone());
+
+    assert!(service.save_settings(draft(0, true)).await.is_err());
+    assert!(!autostart.enabled.load(Ordering::SeqCst));
+    let settings = service.public_settings().await.expect("old settings");
+    assert_eq!(settings.settings_revision, 0);
+    assert!(!settings.configured);
+    assert!(!settings.autostart_enabled);
+    assert!(
+        settings
+            .alert_preferences
+            .iter()
+            .filter(|preference| preference.channel == AlertChannel::Email)
+            .all(|preference| !preference.enabled)
+    );
+}
+
+#[tokio::test]
+async fn restart_reapplies_a_committed_external_change_before_cleaning_its_journal() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open store");
+    {
+        let connection =
+            tokio_rusqlite::rusqlite::Connection::open(&database).expect("open crash fixture");
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 UPDATE app_settings SET autostart_enabled = 1 WHERE singleton_id = 1;
+                 UPDATE app_meta SET settings_revision = 1 WHERE singleton_id = 1;
+                 INSERT INTO external_change_journal
+                   (operation_key, kind, phase, old_credential_ref,
+                    new_credential_ref, old_autostart_enabled,
+                    new_autostart_enabled, created_at_ms, updated_at_ms)
+                 VALUES
+                   ('committed-crash', 'settings', 'committed', NULL, NULL,
+                    0, 1, 1785000000000, 1785000000000);
+                 COMMIT;",
+            )
+            .expect("seed committed crash point");
+    }
+    let autostart = FakeAutostart::new(false);
+    let restarted = AtomicSettingsManager::new(store, ValidAuth, autostart.clone());
+
+    restarted
+        .recover_external_changes()
+        .await
+        .expect("reapply committed change");
+    assert!(autostart.enabled.load(Ordering::SeqCst));
+    assert_eq!(autostart.changes.load(Ordering::SeqCst), 1);
+    restarted
+        .recover_external_changes()
+        .await
+        .expect("journal was cleaned");
+    assert_eq!(autostart.changes.load(Ordering::SeqCst), 1);
+    let settings = restarted.public_settings().await.expect("new settings");
+    assert_eq!(settings.settings_revision, 1);
+    assert!(settings.autostart_enabled);
 }

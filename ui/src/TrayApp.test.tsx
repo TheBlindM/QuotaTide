@@ -10,6 +10,9 @@ import {
 } from "@testing-library/preact";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { AlertEventKind } from "./bindings/AlertEventKind";
+import type { PublicSettings } from "./bindings/PublicSettings";
+import type { SettingsDraft } from "./bindings/SettingsDraft";
 import { TrayApp } from "./TrayApp";
 import { ledgerFixtures } from "./WeeklyLedger";
 
@@ -25,11 +28,91 @@ const quotaPolicy = {
   ],
 };
 
+const alertKinds: AlertEventKind[] = [
+  "daily_80",
+  "daily_100",
+  "weekly_remaining_20",
+  "weekly_remaining_10",
+  "radar_chance_70",
+  "quota_reset_confirmed",
+  "source_failures_3",
+];
+
+const alertPreferences = alertKinds.flatMap((eventKind) => [
+  { eventKind, channel: "system" as const, enabled: true },
+  { eventKind, channel: "email" as const, enabled: false },
+]);
+
+const atomicSettings: PublicSettings = {
+  settingsRevision: 4,
+  configured: true,
+  pathSummary: "…/auth.json",
+  accountLabel: "账号 • 21B8",
+  quotaPolicy,
+  alertPreferences,
+  autostartEnabled: false,
+};
+
 describe("tray-window navigation", () => {
+  it("saves account policy alerts and autostart as one revisioned draft", async () => {
+    const onSaveSettings = vi
+      .fn<(draft: SettingsDraft) => Promise<PublicSettings>>()
+      .mockResolvedValue({
+        ...atomicSettings,
+        settingsRevision: 5,
+        autostartEnabled: true,
+      });
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        settings={atomicSettings}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+        onSaveSettings={onSaveSettings}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.input(screen.getByLabelText("auth.json 路径"), {
+      target: { value: "/Users/me/.codex/auth.json" },
+    });
+    fireEvent.click(screen.getByLabelText("登录后自动启动"));
+    fireEvent.click(screen.getByRole("tab", { name: "额度" }));
+    fireEvent.input(screen.getByLabelText("周一额度"), {
+      target: { value: "15" },
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "提醒" }));
+    fireEvent.click(screen.getByLabelText("每日额度达到 80% 邮件提醒"));
+    fireEvent.click(screen.getByRole("button", { name: "保存全部设置" }));
+
+    await waitFor(() => {
+      expect(onSaveSettings).toHaveBeenCalledWith({
+        expectedSettingsRevision: 4,
+        authPath: "/Users/me/.codex/auth.json",
+        quotaPolicy: {
+          policyTimezone: "Asia/Shanghai",
+          carryWorkdaysEnabled: true,
+          baseMicropoints: [
+            15_000_000, 16_000_000, 16_000_000, 16_000_000, 16_000_000,
+            10_000_000, 10_000_000,
+          ],
+        },
+        alertPreferences: alertPreferences.map((preference) =>
+          preference.eventKind === "daily_80" &&
+          preference.channel === "email"
+            ? { ...preference, enabled: true }
+            : preference,
+        ),
+        autostartEnabled: true,
+      });
+    });
+  });
+
   it("opens settings and returns to the weekly ledger", () => {
     render(
       <TrayApp
         fixture={ledgerFixtures.fresh}
+        settings={{ ...atomicSettings, configured: false, accountLabel: null }}
         onHide={vi.fn()}
         onRefresh={vi.fn()}
       />,
@@ -38,141 +121,48 @@ describe("tray-window navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
     expect(screen.getByRole("heading", { name: "设置" })).toBeInTheDocument();
     expect(screen.getByText("尚未配置 Codex 账号")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "选择 auth.json" }),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText("auth.json 路径")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "额度" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "账号" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    expect(screen.getByRole("tab", { name: "通知" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "提醒" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(
       screen.getByRole("table", { name: /当前七日窗口/ }),
     ).toBeInTheDocument();
   });
 
-  it("selects auth.json through the native command and only renders safe account data", async () => {
-    const onSelectAuth = vi.fn().mockResolvedValue({
-      settingsRevision: 1,
-      configured: true,
-      pathSummary: "…/auth.json",
-      accountLabel: "账号 • 9A2F",
-      quotaPolicy,
+  it("reloads the public revision after an atomic settings conflict", async () => {
+    const onSaveSettings = vi.fn().mockRejectedValue({
+      code: "settings_conflict",
+      messageKey: "settings.revision_conflict",
+      safeContext: { maxBytes: null },
     });
-    render(
-      <TrayApp
-        fixture={ledgerFixtures.unconfigured}
-        accountSettings={{
-          settingsRevision: 0,
-          configured: false,
-          pathSummary: null,
-          accountLabel: null,
-          quotaPolicy,
-        }}
-        onHide={vi.fn()}
-        onRefresh={vi.fn()}
-        onSelectAuth={onSelectAuth}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "选择 auth.json" }));
-    fireEvent.click(screen.getByRole("button", { name: "选择 auth.json" }));
-
-    expect(await screen.findByText("账号 • 9A2F")).toBeInTheDocument();
-    expect(screen.getByText("…/auth.json")).toBeInTheDocument();
-    expect(onSelectAuth).toHaveBeenCalledExactlyOnceWith(0);
-  });
-
-  it("keeps the previous account projection when native validation fails", async () => {
-    const canaries = {
-      accessToken: "access-ticket16-command-canary",
-      accountId: "account-ticket16-command-canary",
-      idToken: "jwt-ticket16-command-canary",
-    };
-    const onSelectAuth = vi.fn().mockRejectedValue({
-      code: "auth_invalid_json",
-      messageKey: "auth.format.invalid_json",
-      nested: canaries,
-    });
-    render(
-      <TrayApp
-        fixture={ledgerFixtures.fresh}
-        accountSettings={{
-          settingsRevision: 4,
-          configured: true,
-          pathSummary: "…/auth.json",
-          accountLabel: "账号 • 21B8",
-          quotaPolicy,
-        }}
-        onHide={vi.fn()}
-        onRefresh={vi.fn()}
-        onSelectAuth={onSelectAuth}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
-    fireEvent.click(screen.getByRole("button", { name: "更换 auth.json" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "无法验证该文件",
-    );
-    expect(screen.getByText("账号 • 21B8")).toBeInTheDocument();
-    expect(document.body).not.toHaveTextContent("auth.format.invalid_json");
-    for (const canary of Object.values(canaries)) {
-      expect(document.body).not.toHaveTextContent(canary);
-    }
-  });
-
-  it("reloads the public revision after a settings conflict before retrying", async () => {
-    const onSelectAuth = vi
-      .fn()
-      .mockRejectedValueOnce({
-        code: "settings_conflict",
-        messageKey: "settings.revision_conflict",
-        safeContext: { maxBytes: null },
-      })
-      .mockResolvedValueOnce({
-        settingsRevision: 6,
-        configured: true,
-        pathSummary: "…/auth.json",
-        accountLabel: "账号 • 66AA",
-        quotaPolicy,
-      });
-    const onReloadAccount = vi.fn().mockResolvedValue({
+    const onReloadSettings = vi.fn().mockResolvedValue({
+      ...atomicSettings,
       settingsRevision: 5,
-      configured: true,
-      pathSummary: "…/auth.json",
       accountLabel: "账号 • 55AA",
-      quotaPolicy,
     });
     render(
       <TrayApp
         fixture={ledgerFixtures.fresh}
-        accountSettings={{
-          settingsRevision: 4,
-          configured: true,
-          pathSummary: "…/auth.json",
-          accountLabel: "账号 • 44AA",
-          quotaPolicy,
-        }}
+        settings={atomicSettings}
         onHide={vi.fn()}
         onRefresh={vi.fn()}
-        onSelectAuth={onSelectAuth}
-        onReloadAccount={onReloadAccount}
+        onSaveSettings={onSaveSettings}
+        onReloadSettings={onReloadSettings}
       />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
-    fireEvent.click(screen.getByRole("button", { name: "更换 auth.json" }));
-    expect(await screen.findByText("账号 • 55AA")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "保存全部设置" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "更换 auth.json" }));
-    expect(await screen.findByText("账号 • 66AA")).toBeInTheDocument();
-    expect(onSelectAuth).toHaveBeenNthCalledWith(1, 4);
-    expect(onSelectAuth).toHaveBeenNthCalledWith(2, 5);
+    expect(await screen.findByText("账号 • 55AA")).toBeInTheDocument();
+    expect(onReloadSettings).toHaveBeenCalledOnce();
+    expect(screen.getByRole("alert")).toHaveTextContent("设置未保存");
   });
 
   it("supports platform keyboard shortcuts without opening another window", () => {
@@ -199,64 +189,6 @@ describe("tray-window navigation", () => {
     expect(onHide).toHaveBeenCalledOnce();
   });
 
-  it("validates and saves a complete seven-day quota policy", async () => {
-    const onUpdatePolicy = vi.fn().mockResolvedValue({
-      settingsRevision: 1,
-      configured: false,
-      pathSummary: null,
-      accountLabel: null,
-      quotaPolicy: {
-        ...quotaPolicy,
-        policyRevision: 2,
-        baseMicropoints: [
-          15_000_000, 16_000_000, 16_000_000, 16_000_000, 16_000_000,
-          10_000_000, 10_000_000,
-        ],
-      },
-    });
-    render(
-      <TrayApp
-        fixture={ledgerFixtures.fresh}
-        accountSettings={{
-          settingsRevision: 0,
-          configured: false,
-          pathSummary: null,
-          accountLabel: null,
-          quotaPolicy,
-        }}
-        onHide={vi.fn()}
-        onRefresh={vi.fn()}
-        onUpdatePolicy={onUpdatePolicy}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
-    fireEvent.click(screen.getByRole("tab", { name: "额度" }));
-    fireEvent.input(screen.getByLabelText("周一额度"), {
-      target: { value: "20" },
-    });
-    expect(
-      screen.getByRole("button", { name: "保存额度策略" }),
-    ).toBeDisabled();
-    expect(screen.getByRole("alert")).toHaveTextContent("不能超过 100%");
-
-    fireEvent.input(screen.getByLabelText("周一额度"), {
-      target: { value: "15" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存额度策略" }));
-
-    await waitFor(() => {
-      expect(onUpdatePolicy).toHaveBeenCalledWith(0, {
-        policyTimezone: "Asia/Shanghai",
-        carryWorkdaysEnabled: true,
-        baseMicropoints: [
-          15_000_000, 16_000_000, 16_000_000, 16_000_000, 16_000_000,
-          10_000_000, 10_000_000,
-        ],
-      });
-    });
-  });
-
   it("keeps data visible and coalesces refreshes while one is running", () => {
     let completeRefresh: (() => void) | undefined;
     const onRefresh = vi.fn(
@@ -278,9 +210,7 @@ describe("tray-window navigation", () => {
     fireEvent.click(refresh);
 
     expect(onRefresh).toHaveBeenCalledOnce();
-    expect(
-      screen.getByRole("button", { name: "正在刷新" }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "正在刷新" })).toBeDisabled();
     expect(
       screen.getByRole("table", { name: /当前七日窗口/ }),
     ).toBeInTheDocument();
@@ -299,9 +229,7 @@ describe("tray-window navigation", () => {
       />,
     );
 
-    expect(
-      screen.getByRole("button", { name: "正在刷新" }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "正在刷新" })).toBeDisabled();
     expect(screen.getByText("Codex 额度 · 正在刷新")).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "r", ctrlKey: true });
     expect(onRefresh).not.toHaveBeenCalled();

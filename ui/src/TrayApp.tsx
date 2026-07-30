@@ -1,10 +1,62 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 
-import type { PublicAccountSettings } from "./bindings/PublicAccountSettings";
-import type { QuotaPolicyDraft } from "./bindings/QuotaPolicyDraft";
+import type { AlertChannel } from "./bindings/AlertChannel";
+import type { AlertEventKind } from "./bindings/AlertEventKind";
+import type { AlertPreferenceDraft } from "./bindings/AlertPreferenceDraft";
+import type { PublicSettings } from "./bindings/PublicSettings";
+import type { SettingsDraft } from "./bindings/SettingsDraft";
 import { WeeklyLedger, type LedgerFixture } from "./WeeklyLedger";
 
-const unconfiguredAccount: PublicAccountSettings = {
+const alertEvents: ReadonlyArray<{
+  kind: AlertEventKind;
+  label: string;
+  detail: string;
+}> = [
+  {
+    kind: "daily_80",
+    label: "每日额度达到 80%",
+    detail: "今日实际使用接近动态上限",
+  },
+  {
+    kind: "daily_100",
+    label: "每日额度达到 100%",
+    detail: "今日实际使用达到动态上限",
+  },
+  {
+    kind: "weekly_remaining_20",
+    label: "周额度剩余 20%",
+    detail: "当前七日窗口进入注意区间",
+  },
+  {
+    kind: "weekly_remaining_10",
+    label: "周额度剩余 10%",
+    detail: "当前七日窗口接近耗尽",
+  },
+  {
+    kind: "radar_chance_70",
+    label: "重置预测达到 70%",
+    detail: "Reset Radar 预测近期可能重置",
+  },
+  {
+    kind: "quota_reset_confirmed",
+    label: "额度重置已确认",
+    detail: "本机连续观测确认新额度窗口",
+  },
+  {
+    kind: "source_failures_3",
+    label: "连续 3 次采集失败",
+    detail: "Codex 或 Reset Radar 暂时不可用",
+  },
+];
+
+const defaultAlertPreferences: AlertPreferenceDraft[] = alertEvents.flatMap(
+  ({ kind }) => [
+    { eventKind: kind, channel: "system", enabled: true },
+    { eventKind: kind, channel: "email", enabled: false },
+  ],
+);
+
+const unconfiguredSettings: PublicSettings = {
   settingsRevision: 0,
   configured: false,
   pathSummary: null,
@@ -18,51 +70,64 @@ const unconfiguredAccount: PublicAccountSettings = {
       10_000_000, 10_000_000,
     ],
   },
+  alertPreferences: defaultAlertPreferences,
+  autostartEnabled: false,
 };
 
 type TrayAppProps = {
   fixture: LedgerFixture;
-  accountSettings?: PublicAccountSettings;
+  settings?: PublicSettings;
   externalRefreshing?: boolean;
   onHide: () => void;
   onRefresh: () => unknown;
-  onSelectAuth?: (
-    expectedSettingsRevision: number,
-  ) => Promise<PublicAccountSettings>;
-  onReloadAccount?: () => Promise<PublicAccountSettings>;
-  onUpdatePolicy?: (
-    expectedSettingsRevision: number,
-    draft: QuotaPolicyDraft,
-  ) => Promise<PublicAccountSettings>;
+  onSaveSettings?: (draft: SettingsDraft) => Promise<PublicSettings>;
+  onReloadSettings?: () => Promise<PublicSettings>;
 };
 
 function SettingsView({
-  accountSettings,
+  settings,
   onBack,
-  onSelectAuth,
-  onUpdatePolicy,
+  onSave,
 }: {
-  accountSettings: PublicAccountSettings;
+  settings: PublicSettings;
   onBack: () => void;
-  onSelectAuth: () => Promise<void>;
-  onUpdatePolicy: (draft: QuotaPolicyDraft) => Promise<void>;
+  onSave: (draft: SettingsDraft) => Promise<void>;
 }) {
-  const [activeTab, setActiveTab] = useState<
-    "quota" | "account" | "notifications"
-  >("account");
-  const [selectingAuth, setSelectingAuth] = useState(false);
-  const [authError, setAuthError] = useState(false);
+  const [activeTab, setActiveTab] = useState<"account" | "quota" | "alerts">(
+    "account",
+  );
+  const [authPath, setAuthPath] = useState("");
   const [dailyLimits, setDailyLimits] = useState(() =>
-    accountSettings.quotaPolicy.baseMicropoints.map((value) => value / 1_000_000),
+    settings.quotaPolicy.baseMicropoints.map((value) => value / 1_000_000),
   );
   const [policyTimezone, setPolicyTimezone] = useState(
-    accountSettings.quotaPolicy.policyTimezone,
+    settings.quotaPolicy.policyTimezone,
   );
   const [carryEnabled, setCarryEnabled] = useState(
-    accountSettings.quotaPolicy.carryWorkdaysEnabled,
+    settings.quotaPolicy.carryWorkdaysEnabled,
   );
-  const [savingPolicy, setSavingPolicy] = useState(false);
-  const [policyError, setPolicyError] = useState(false);
+  const [alertPreferences, setAlertPreferences] = useState<
+    AlertPreferenceDraft[]
+  >(() => settings.alertPreferences.map((preference) => ({ ...preference })));
+  const [autostartEnabled, setAutostartEnabled] = useState(
+    settings.autostartEnabled,
+  );
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+
+  useEffect(() => {
+    setAuthPath("");
+    setDailyLimits(
+      settings.quotaPolicy.baseMicropoints.map((value) => value / 1_000_000),
+    );
+    setPolicyTimezone(settings.quotaPolicy.policyTimezone);
+    setCarryEnabled(settings.quotaPolicy.carryWorkdaysEnabled);
+    setAlertPreferences(
+      settings.alertPreferences.map((preference) => ({ ...preference })),
+    );
+    setAutostartEnabled(settings.autostartEnabled);
+  }, [settings]);
+
   const total = dailyLimits.reduce((sum, value) => sum + value, 0);
   const policyValid =
     dailyLimits.length === 7 &&
@@ -70,18 +135,45 @@ function SettingsView({
     total <= 100 &&
     policyTimezone.trim().length > 0;
 
-  const handleSelectAuth = () => {
-    if (selectingAuth) {
+  const setAlertPreference = (
+    eventKind: AlertEventKind,
+    channel: AlertChannel,
+    enabled: boolean,
+  ) => {
+    setAlertPreferences((current) =>
+      current.map((preference) =>
+        preference.eventKind === eventKind && preference.channel === channel
+          ? { ...preference, enabled }
+          : preference,
+      ),
+    );
+    setSaveError(false);
+  };
+
+  const save = () => {
+    if (!policyValid || saving) {
       return;
     }
-    setSelectingAuth(true);
-    setAuthError(false);
-    void onSelectAuth()
+    setSaving(true);
+    setSaveError(false);
+    void onSave({
+      expectedSettingsRevision: settings.settingsRevision,
+      authPath: authPath.trim() || null,
+      quotaPolicy: {
+        policyTimezone: policyTimezone.trim(),
+        carryWorkdaysEnabled: carryEnabled,
+        baseMicropoints: dailyLimits.map((value) =>
+          Math.round(value * 1_000_000),
+        ),
+      },
+      alertPreferences,
+      autostartEnabled,
+    })
       .catch(() => {
-        setAuthError(true);
+        setSaveError(true);
       })
       .finally(() => {
-        setSelectingAuth(false);
+        setSaving(false);
       });
   };
 
@@ -93,7 +185,7 @@ function SettingsView({
         </button>
         <div>
           <h1>设置</h1>
-          <p>QuotaTide 偏好设置</p>
+          <p>所有更改将作为一个版本保存</p>
         </div>
       </header>
 
@@ -101,9 +193,9 @@ function SettingsView({
         <div class="settings-tabs" role="tablist" aria-label="设置分类">
           {(
             [
-              ["quota", "额度"],
               ["account", "账号"],
-              ["notifications", "通知"],
+              ["quota", "额度"],
+              ["alerts", "提醒"],
             ] as const
           ).map(([tab, label]) => (
             <button
@@ -123,48 +215,63 @@ function SettingsView({
         {activeTab === "account" ? (
           <section aria-labelledby="account-settings">
             <div class="settings-section__heading">
-              <span>账号</span>
-              <h2 id="account-settings">Codex 数据源</h2>
+              <span>数据源</span>
+              <h2 id="account-settings">当前 Codex 账号</h2>
             </div>
             <div class="account-status" aria-live="polite">
               <span>
-                {accountSettings.configured
-                  ? accountSettings.accountLabel
+                {settings.configured
+                  ? settings.accountLabel
                   : "尚未配置 Codex 账号"}
               </span>
-              {accountSettings.pathSummary ? (
-                <strong>{accountSettings.pathSummary}</strong>
-              ) : null}
+              {settings.pathSummary ? <strong>{settings.pathSummary}</strong> : null}
             </div>
-            <button
-              type="button"
-              class="primary-action"
-              disabled={selectingAuth}
-              onClick={handleSelectAuth}
-            >
-              {selectingAuth
-                ? "正在验证…"
-                : accountSettings.configured
-                  ? "更换 auth.json"
-                  : "选择 auth.json"}
-            </button>
-            {authError ? (
-              <p class="settings-error" role="alert">
-                无法验证该文件。请选择 Codex 自动维护的 auth.json。
-              </p>
-            ) : null}
+            <label class="auth-path-field">
+              <span>auth.json 路径</span>
+              <input
+                type="text"
+                aria-label="auth.json 路径"
+                value={authPath}
+                placeholder={
+                  settings.configured
+                    ? "留空以保留当前文件"
+                    : "/Users/name/.codex/auth.json"
+                }
+                autocomplete="off"
+                spellcheck={false}
+                onInput={(event) => {
+                  setAuthPath(event.currentTarget.value);
+                  setSaveError(false);
+                }}
+              />
+            </label>
             <p class="privacy-note">
-              只读访问。QuotaTide 不会修改 auth.json，也不会上传令牌。
+              只读访问。QuotaTide 不会修改 auth.json，也不会把路径或令牌发给网页。
             </p>
+            <label class="settings-row settings-row--separated">
+              <span>
+                <strong>登录后自动启动</strong>
+                <small>仅在当前 macOS 或 Windows 用户下运行</small>
+              </span>
+              <input
+                aria-label="登录后自动启动"
+                type="checkbox"
+                checked={autostartEnabled}
+                onChange={(event) => {
+                  setAutostartEnabled(event.currentTarget.checked);
+                  setSaveError(false);
+                }}
+              />
+            </label>
           </section>
         ) : activeTab === "quota" ? (
           <section aria-labelledby="quota-settings">
             <div class="settings-section__heading">
-              <span>额度</span>
-              <h2 id="quota-settings">当前七日策略模板</h2>
+              <span>七日模板</span>
+              <h2 id="quota-settings">每日基础额度</h2>
             </div>
             <p class="settings-description">
-              每日基础额度合计不超过 100%。已确认的工作日余量只会平分给同一自然周后续工作日。
+              七天合计不超过 100%。未用完的工作日额度可平分给同一周后续工作日。
             </p>
             <div class="quota-day-grid">
               {["周一", "周二", "周三", "周四", "周五", "周六", "周日"].map(
@@ -183,7 +290,7 @@ function SettingsView({
                           const next = [...dailyLimits];
                           next[index] = event.currentTarget.valueAsNumber;
                           setDailyLimits(next);
-                          setPolicyError(false);
+                          setSaveError(false);
                         }}
                       />
                       <small>%</small>
@@ -207,6 +314,7 @@ function SettingsView({
                 checked={carryEnabled}
                 onChange={(event) => {
                   setCarryEnabled(event.currentTarget.checked);
+                  setSaveError(false);
                 }}
               />
             </label>
@@ -219,69 +327,87 @@ function SettingsView({
                 spellcheck={false}
                 onInput={(event) => {
                   setPolicyTimezone(event.currentTarget.value);
-                  setPolicyError(false);
+                  setSaveError(false);
                 }}
               />
             </label>
-            <button
-              type="button"
-              class="primary-action"
-              disabled={!policyValid || savingPolicy}
-              onClick={() => {
-                if (!policyValid || savingPolicy) {
-                  return;
-                }
-                setSavingPolicy(true);
-                setPolicyError(false);
-                void onUpdatePolicy({
-                  policyTimezone: policyTimezone.trim(),
-                  carryWorkdaysEnabled: carryEnabled,
-                  baseMicropoints: dailyLimits.map((value) =>
-                    Math.round(value * 1_000_000),
-                  ),
-                })
-                  .catch(() => {
-                    setPolicyError(true);
-                  })
-                  .finally(() => {
-                    setSavingPolicy(false);
-                  });
-              }}
-            >
-              {savingPolicy ? "正在保存…" : "保存额度策略"}
-            </button>
             {!policyValid ? (
               <p class="settings-error" role="alert">
                 请填写 7 天非负额度，基础额度合计不能超过 100%。
               </p>
-            ) : policyError ? (
-              <p class="settings-error" role="alert">
-                策略未保存，请检查时区或重新载入后再试。
-              </p>
             ) : null}
           </section>
         ) : (
-          <section aria-labelledby="notification-settings">
-            <div class="settings-section__heading">
-              <span>通知</span>
-              <h2 id="notification-settings">额度与重置提醒</h2>
+          <section aria-labelledby="alert-settings">
+            <div class="settings-section__heading alert-heading">
+              <div>
+                <span>通知路由</span>
+                <h2 id="alert-settings">额度与重置提醒</h2>
+              </div>
+              <div class="alert-channel-headings" aria-hidden="true">
+                <span>系统</span>
+                <span>邮件</span>
+              </div>
             </div>
-            <label class="settings-row">
-              <span>
-                <strong>系统通知</strong>
-                <small>接近额度或预计重置时提醒</small>
-              </span>
-              <input type="checkbox" defaultChecked />
-            </label>
+            <div class="alert-matrix">
+              {alertEvents.map((event) => (
+                <div class="alert-row" key={event.kind}>
+                  <span>
+                    <strong>{event.label}</strong>
+                    <small>{event.detail}</small>
+                  </span>
+                  {(["system", "email"] as const).map((channel) => {
+                    const preference = alertPreferences.find(
+                      (candidate) =>
+                        candidate.eventKind === event.kind &&
+                        candidate.channel === channel,
+                    );
+                    return (
+                      <input
+                        key={channel}
+                        type="checkbox"
+                        aria-label={`${event.label} ${
+                          channel === "system" ? "系统" : "邮件"
+                        }提醒`}
+                        checked={preference?.enabled ?? false}
+                        onChange={(change) => {
+                          setAlertPreference(
+                            event.kind,
+                            channel,
+                            change.currentTarget.checked,
+                          );
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+            <p class="privacy-note">
+              邮件渠道会在完成发件邮箱配置后生效；偏好可先保存。
+            </p>
           </section>
         )}
+        {saveError ? (
+          <p class="settings-error settings-error--floating" role="alert">
+            设置未保存。若其他窗口已修改设置，当前值已重新载入，请确认后再试。
+          </p>
+        ) : null}
       </main>
 
       <footer class="ledger-footer settings-footer">
         <button type="button" onClick={onBack}>
-          完成
+          取消
         </button>
-        <span>⌘/Ctrl + , 打开设置</span>
+        <span>账号、策略与提醒一次提交</span>
+        <button
+          type="button"
+          class="settings-save"
+          disabled={!policyValid || saving}
+          onClick={save}
+        >
+          {saving ? "正在保存…" : "保存全部设置"}
+        </button>
       </footer>
     </article>
   );
@@ -289,16 +415,15 @@ function SettingsView({
 
 export function TrayApp({
   fixture,
-  accountSettings = unconfiguredAccount,
+  settings = unconfiguredSettings,
   externalRefreshing = false,
   onHide,
   onRefresh,
-  onSelectAuth,
-  onReloadAccount,
-  onUpdatePolicy,
+  onSaveSettings,
+  onReloadSettings,
 }: TrayAppProps) {
   const [view, setView] = useState<"ledger" | "settings">("ledger");
-  const [currentAccount, setCurrentAccount] = useState(accountSettings);
+  const [currentSettings, setCurrentSettings] = useState(settings);
   const [refreshing, setRefreshing] = useState(false);
   const [coolingDown, setCoolingDown] = useState(false);
   const refreshingRef = useRef(false);
@@ -315,15 +440,11 @@ export function TrayApp({
   );
 
   useEffect(() => {
-    setCurrentAccount(accountSettings);
-  }, [accountSettings]);
+    setCurrentSettings(settings);
+  }, [settings]);
 
   const handleRefresh = useCallback(() => {
-    if (
-      refreshingRef.current ||
-      externalRefreshing ||
-      coolingDownRef.current
-    ) {
+    if (refreshingRef.current || externalRefreshing || coolingDownRef.current) {
       return;
     }
 
@@ -389,35 +510,19 @@ export function TrayApp({
   if (view === "settings") {
     return (
       <SettingsView
-        accountSettings={currentAccount}
+        settings={currentSettings}
         onBack={() => {
           setView("ledger");
         }}
-        onSelectAuth={async () => {
-          if (onSelectAuth) {
-            try {
-              setCurrentAccount(
-                await onSelectAuth(currentAccount.settingsRevision),
-              );
-            } catch (error) {
-              if (isSettingsConflict(error) && onReloadAccount) {
-                setCurrentAccount(await onReloadAccount());
-              }
-              throw error;
-            }
-          }
-        }}
-        onUpdatePolicy={async (draft) => {
-          if (!onUpdatePolicy) {
+        onSave={async (draft) => {
+          if (!onSaveSettings) {
             return;
           }
           try {
-            setCurrentAccount(
-              await onUpdatePolicy(currentAccount.settingsRevision, draft),
-            );
+            setCurrentSettings(await onSaveSettings(draft));
           } catch (error) {
-            if (isSettingsConflict(error) && onReloadAccount) {
-              setCurrentAccount(await onReloadAccount());
+            if (isSettingsConflict(error) && onReloadSettings) {
+              setCurrentSettings(await onReloadSettings());
             }
             throw error;
           }
