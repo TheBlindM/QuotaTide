@@ -363,6 +363,8 @@ describe("QuotaTide tray app", () => {
 
     expect(screen.getByText("Weekly remaining")).toBeInTheDocument();
     expect(screen.getByText(/2026年7月31日/u)).toBeInTheDocument();
+    expect(screen.getByText("周五")).toBeInTheDocument();
+    expect(screen.queryByText("Fri")).not.toBeInTheDocument();
   });
 
   it("does not overwrite a native opaque fallback during startup", () => {

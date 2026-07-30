@@ -250,10 +250,18 @@ function localizeFixture(
             },
     days: fixture.days.map((day) => ({
       ...day,
-      label: localizeKnownValue(day.label, locale),
+      label: day.today ? textForLocale(locale, "今天", "Today") : day.label,
       status: localizeKnownValue(day.status, locale),
     })),
   };
+}
+
+function textForLocale(
+  locale: InterfaceLocale,
+  zh: string,
+  en: string,
+): string {
+  return locale === "zh-CN" ? zh : en;
 }
 
 type TonePresentation = {
