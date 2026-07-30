@@ -788,6 +788,76 @@ progress::-moz-progress-bar {
   font-weight: 560;
 }
 
+.update-settings {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+}
+
+.update-settings .settings-section__heading {
+  margin-bottom: 0;
+}
+
+.update-settings .settings-section__heading small {
+  display: block;
+  margin-top: 3px;
+  color: var(--faint);
+  font-size: 9px;
+}
+
+.update-actions {
+  display: grid;
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.update-actions p,
+.update-available p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.update-actions button,
+.update-confirm button,
+.primary-update {
+  min-height: 44px;
+  padding-inline: 12px;
+  border: 1px solid var(--line);
+  background: var(--glass-strong);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.update-available {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--accent-soft);
+}
+
+.update-confirm {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.update-confirm p {
+  grid-column: 1 / -1;
+}
+
+.update-confirm .primary-update,
+.update-available > .primary-update {
+  background: var(--accent);
+  color: white;
+}
+
 .primary-action {
   width: 100%;
   margin-top: 10px;
@@ -1583,7 +1653,8 @@ progress::-moz-progress-bar {
   .smtp-grid,
   .smtp-grid--sender,
   .smtp-recipient,
-  .alert-row {
+  .alert-row,
+  .update-actions {
     grid-template-columns: 1fr;
   }
 

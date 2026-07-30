@@ -92,6 +92,7 @@ vi.mock("./api/account-settings", () => ({
     quotaPolicy,
     alertPreferences: appAlertPreferences,
     autostartEnabled: false,
+    autoUpdateEnabled: true,
     interfaceLocale: "zh-CN",
     formatLocale: "zh-CN",
     smtp: {
@@ -184,6 +185,20 @@ vi.mock("./api/tray-shell", () => ({
   setAccessibleSurface: vi.fn().mockResolvedValue(true),
 }));
 
+vi.mock("./api/updater", () => ({
+  getUpdateState: vi.fn().mockResolvedValue({
+    status: "idle",
+    currentVersion: "0.1.0",
+    availableVersion: null,
+    notes: null,
+    lastCheckedAtUnixMs: null,
+    errorCode: null,
+  }),
+  requestUpdateCheck: vi.fn(),
+  installPendingUpdate: vi.fn(),
+  onUpdateState: vi.fn().mockResolvedValue(vi.fn()),
+}));
+
 afterEach(() => {
   cleanup();
   vi.mocked(getStartupState).mockResolvedValue({
@@ -258,6 +273,7 @@ describe("QuotaTide tray app", () => {
       quotaPolicy,
       alertPreferences: appAlertPreferences,
       autostartEnabled: false,
+      autoUpdateEnabled: true,
       interfaceLocale: "zh-CN",
       formatLocale: "zh-CN",
       smtp: {

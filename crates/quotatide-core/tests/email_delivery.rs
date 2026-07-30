@@ -158,6 +158,7 @@ fn settings_draft() -> SettingsDraft {
         },
         alert_preferences: preferences(),
         autostart_enabled: false,
+        auto_update_enabled: true,
         interface_locale: InterfaceLocalePreference::System,
         format_locale: "en-US".to_owned(),
         smtp: SmtpSettingsDraft {

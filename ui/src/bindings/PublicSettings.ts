@@ -8,4 +8,4 @@ import type { PublicSmtpSettings } from "./PublicSmtpSettings";
 /**
  * Every non-secret setting returned as one revisioned projection.
  */
-export type PublicSettings = { settingsRevision: number, configured: boolean, pathSummary: string | null, accountLabel: string | null, notificationPermissionStatus: NotificationPermissionStatus, quotaPolicy: PublicQuotaPolicy, alertPreferences: Array<AlertPreference>, autostartEnabled: boolean, interfaceLocale: InterfaceLocalePreference, formatLocale: string, smtp: PublicSmtpSettings, };
+export type PublicSettings = { settingsRevision: number, configured: boolean, pathSummary: string | null, accountLabel: string | null, notificationPermissionStatus: NotificationPermissionStatus, quotaPolicy: PublicQuotaPolicy, alertPreferences: Array<AlertPreference>, autostartEnabled: boolean, autoUpdateEnabled: boolean, interfaceLocale: InterfaceLocalePreference, formatLocale: string, smtp: PublicSmtpSettings, };

@@ -53,6 +53,7 @@ const atomicSettings: PublicSettings = {
   quotaPolicy,
   alertPreferences,
   autostartEnabled: false,
+  autoUpdateEnabled: true,
   interfaceLocale: "system",
   formatLocale: "zh-CN",
   smtp: {
@@ -76,6 +77,7 @@ describe("tray-window navigation", () => {
         ...atomicSettings,
         settingsRevision: 5,
         autostartEnabled: true,
+        autoUpdateEnabled: true,
       });
     render(
       <TrayApp
@@ -119,6 +121,7 @@ describe("tray-window navigation", () => {
             : preference,
         ),
         autostartEnabled: true,
+        autoUpdateEnabled: true,
         interfaceLocale: "system",
         formatLocale: "en",
         smtp: {
@@ -248,6 +251,52 @@ describe("tray-window navigation", () => {
 
     expect(await screen.findByText("已发送到 2 个地址")).toBeInTheDocument();
     expect(onSendTestEmail).toHaveBeenCalledOnce();
+  });
+
+  it("checks and installs an available update only after explicit confirmation", () => {
+    const onCheckForUpdate = vi.fn().mockResolvedValue({
+      status: "available",
+      currentVersion: "0.1.0",
+      availableVersion: "0.1.1",
+      notes: "Security and reliability fixes.",
+      lastCheckedAtUnixMs: 1,
+      errorCode: null,
+    });
+    const onInstallUpdate = vi.fn().mockResolvedValue({
+      status: "installing",
+      currentVersion: "0.1.0",
+      availableVersion: "0.1.1",
+      notes: "Security and reliability fixes.",
+      lastCheckedAtUnixMs: 1,
+      errorCode: null,
+    });
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        settings={atomicSettings}
+        updateState={{
+          status: "available",
+          currentVersion: "0.1.0",
+          availableVersion: "0.1.1",
+          notes: "Security and reliability fixes.",
+          lastCheckedAtUnixMs: 1,
+          errorCode: null,
+        }}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+        onCheckForUpdate={onCheckForUpdate}
+        onInstallUpdate={onInstallUpdate}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "手动检查" }));
+    expect(onCheckForUpdate).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole("button", { name: "安装并重新启动" }));
+    expect(onInstallUpdate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "确认安装" }));
+    expect(onInstallUpdate).toHaveBeenCalledOnce();
   });
 
   it("opens settings and returns to the weekly ledger", () => {

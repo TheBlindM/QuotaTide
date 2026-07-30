@@ -1,18 +1,16 @@
 {
-  "name": "codex-shared-quota-monitor",
+  "name": "quotatide",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "单账号 Codex 共享额度监控、每日阈值和邮件告警服务",
+  "description": "Build and release tooling for the QuotaTide Rust/Tauri desktop app",
+  "author": "TheBlind",
+  "license": "MIT",
+  "repository": "__GITHUB_REPOSITORY__",
   "scripts": {
-    "start": "node --env-file-if-exists=.env --use-env-proxy src/server.js",
-    "dev": "node --env-file-if-exists=.env --use-env-proxy --watch src/server.js",
     "icons": "node scripts/generate-icons.mjs",
-    "test": "node --test",
-    "check": "node --check src/server.js && node --check public/app.js && node --check scripts/generate-icons.mjs"
-  },
-  "dependencies": {
-    "nodemailer": "^9.0.3"
+    "test": "node --test scripts/release/*.test.mjs",
+    "check": "npm test && node scripts/check-desktop-versions.mjs && node scripts/check-desktop-identity.mjs && node scripts/check-updater-key.mjs"
   },
   "engines": {
     "node": ">=22.13"

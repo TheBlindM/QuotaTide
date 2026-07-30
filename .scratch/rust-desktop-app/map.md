@@ -26,6 +26,11 @@ Type: wayfinder:map
 
 ## Decisions so far
 
+- [Ticket 26](./issues/26-package-update-and-open-source.md)：完成 Rust updater、
+  universal DMG/NSIS release pipeline、三平台 manifest、最终字节签名/
+  checksum/provenance、双语开源文档与 legacy Node/Docker 清理；未确认的
+  GitHub 仓库和最终 key 继续作为 production build-failing gate。
+
 - [Ticket 25](./issues/25-complete-localization-and-accessibility.md)：完成
   `zh-CN`/English、locale snapshot、键盘/axe、200% 布局与辅助显示材质桥接；
   VoiceOver/Narrator 的最终候选包人工证据统一由 Ticket 27 执行。

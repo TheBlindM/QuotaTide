@@ -29,6 +29,13 @@ import {
   setAccessibleSurface,
 } from "./api/tray-shell";
 import {
+  getUpdateState,
+  installPendingUpdate,
+  onUpdateState,
+  requestUpdateCheck,
+  type PublicUpdateState,
+} from "./api/updater";
+import {
   getStartupState,
   clearAllLocalData,
   exportDiagnostics,
@@ -61,6 +68,7 @@ type ViewState =
       radar: PublicResetRadar;
       refreshing: boolean;
       recoveredFromBackup: boolean;
+      updateState: PublicUpdateState;
     }
   | { kind: "recovery"; startup: PublicStartupState }
   | { kind: "error" };
@@ -128,6 +136,7 @@ export function App() {
               { eventKind, channel: "email", enabled: false },
             ]),
             autostartEnabled: false,
+            autoUpdateEnabled: true,
             interfaceLocale:
               new URLSearchParams(window.location.search).get("lang") === "en"
                 ? "en"
@@ -168,6 +177,14 @@ export function App() {
           radar: emptyRadarState,
           refreshing: false,
           recoveredFromBackup: false,
+          updateState: {
+            status: "idle",
+            currentVersion: "0.1.0",
+            availableVersion: null,
+            notes: null,
+            lastCheckedAtUnixMs: null,
+            errorCode: null,
+          },
           }
       : { kind: "loading" },
   );
@@ -187,12 +204,14 @@ export function App() {
           }
           return;
         }
-        const [info, settings, liveQuotaState, alerts] = await Promise.all([
+        const [info, settings, liveQuotaState, alerts, updateState] =
+          await Promise.all([
           loadBuildInfo(),
           getSettings(),
           getLiveQuota(),
           getAlerts(),
-        ]);
+            getUpdateState(),
+          ]);
         if (active) {
           setState({
             kind: "ready",
@@ -204,6 +223,7 @@ export function App() {
             radar: liveQuotaState.radar,
             refreshing: liveQuotaState.refreshing,
             recoveredFromBackup: startup.recoveredFromBackup,
+            updateState,
           });
         }
       })
@@ -227,6 +247,7 @@ export function App() {
     let unlistenSettings: (() => void) | undefined;
     let unlistenNotification: (() => void) | undefined;
     let unlistenAlerts: (() => void) | undefined;
+    let unlistenUpdate: (() => void) | undefined;
     const reloadDashboard = () => {
       void Promise.all([getSettings(), getLiveQuota(), getAlerts()])
         .then(([settings, liveQuotaState, alerts]) => {
@@ -260,6 +281,13 @@ export function App() {
           );
         }
       }),
+      onUpdateState((updateState) => {
+        if (active) {
+          setState((current) =>
+            current.kind === "ready" ? { ...current, updateState } : current,
+          );
+        }
+      }),
     ])
       .then(
         ([
@@ -267,17 +295,20 @@ export function App() {
           disposeSettings,
           disposeAlerts,
           disposeNotification,
+          disposeUpdate,
         ]) => {
         if (active) {
           unlistenDashboard = disposeDashboard;
           unlistenSettings = disposeSettings;
           unlistenAlerts = disposeAlerts;
           unlistenNotification = disposeNotification;
+          unlistenUpdate = disposeUpdate;
         } else {
           disposeDashboard();
           disposeSettings();
           disposeAlerts();
           disposeNotification();
+          disposeUpdate();
         }
         },
       )
@@ -288,6 +319,7 @@ export function App() {
       unlistenSettings?.();
       unlistenAlerts?.();
       unlistenNotification?.();
+      unlistenUpdate?.();
     };
   }, [isPreview, state.kind]);
 
@@ -431,6 +463,7 @@ export function App() {
       focusRequest={state.focusRequest}
       externalRefreshing={state.refreshing}
       recoveredFromBackup={state.recoveredFromBackup}
+      updateState={state.updateState}
       onHide={() => {
         void hideMainWindow().catch(() => undefined);
       }}
@@ -455,6 +488,20 @@ export function App() {
       onExportDiagnostics={exportDiagnostics}
       onClearLocalData={clearAllLocalData}
       onReloadSettings={getSettings}
+      onCheckForUpdate={async () => {
+        const updateState = await requestUpdateCheck();
+        setState((current) =>
+          current.kind === "ready" ? { ...current, updateState } : current,
+        );
+        return updateState;
+      }}
+      onInstallUpdate={async () => {
+        const updateState = await installPendingUpdate();
+        setState((current) =>
+          current.kind === "ready" ? { ...current, updateState } : current,
+        );
+        return updateState;
+      }}
       onSaveSettings={async (draft) => {
         const settings = await saveSettings(draft);
         const liveQuotaState = await getLiveQuota();

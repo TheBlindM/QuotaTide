@@ -8,6 +8,7 @@ mod platform_notifications;
 mod privacy;
 pub mod reset_radar;
 mod smtp;
+mod updater;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -713,6 +714,7 @@ async fn save_settings(
     permission: tauri::State<'_, SharedNotificationPermission>,
     notifier: tauri::State<'_, PlatformNotifier>,
     delivery_worker: tauri::State<'_, DeliveryWorkerLifecycle>,
+    update_runtime: tauri::State<'_, updater::UpdateRuntime>,
     draft: SettingsDraft,
 ) -> Result<PublicSettings, PublicError> {
     let previous = settings
@@ -769,6 +771,7 @@ async fn save_settings(
     );
     let _ = setup_tray(&app, saved.interface_locale, &saved.format_locale);
     delivery_worker.wake();
+    update_runtime.wake();
     if refresh_selected_account {
         let application = application.inner().clone();
         tauri::async_runtime::spawn(async move {
@@ -1199,6 +1202,8 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(LocalDataContext { app_data });
     app.manage(PublicStartupState::ready(store.recovered_at_startup()));
     app.manage(store.clone());
+    let update_runtime = updater::UpdateRuntime::new(env!("CARGO_PKG_VERSION"));
+    app.manage(update_runtime.clone());
     app.manage(notification_permission.clone());
     app.manage(atomic_settings);
     let usage_client =
@@ -1275,6 +1280,11 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         application.clone(),
         delivery_worker.clone(),
     );
+    tauri::async_runtime::spawn(updater::run_scheduler(
+        app.handle().clone(),
+        update_runtime,
+        store.clone(),
+    ));
     let launch_mode = LaunchMode::from_args(std::env::args());
     start_primary(
         launch_mode,
@@ -1318,6 +1328,9 @@ fn handle_run_event(app: &AppHandle, event: &RunEvent) {
             if let Some(worker) = app.try_state::<DeliveryWorkerLifecycle>() {
                 worker.wake();
             }
+            if let Some(runtime) = app.try_state::<updater::UpdateRuntime>() {
+                runtime.wake();
+            }
         }
         RunEvent::Exit | RunEvent::ExitRequested { .. } => {
             if let Some(application) = app.try_state::<LiveApplication>() {
@@ -1325,6 +1338,9 @@ fn handle_run_event(app: &AppHandle, event: &RunEvent) {
             }
             if let Some(worker) = app.try_state::<DeliveryWorkerLifecycle>() {
                 worker.cancel();
+            }
+            if let Some(runtime) = app.try_state::<updater::UpdateRuntime>() {
+                runtime.cancel();
             }
         }
         _ => {}
@@ -1369,6 +1385,7 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec![AUTOSTART_ARGUMENT]),
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(SharedDesktopShell::default())
         .setup(setup_application)
         .on_menu_event(|app, event| {
@@ -1445,7 +1462,10 @@ pub fn run() {
             get_alerts,
             request_system_notification_permission,
             save_settings,
-            send_test_email
+            send_test_email,
+            updater::get_update_state,
+            updater::request_update_check,
+            updater::install_pending_update
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the QuotaTide desktop shell");

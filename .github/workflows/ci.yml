@@ -5,8 +5,7 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -16,6 +15,8 @@ jobs:
   core-and-ui:
     name: Core and UI
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88.0
@@ -40,6 +41,8 @@ jobs:
         run: node scripts/check-desktop-versions.mjs
       - name: Check desktop product identity
         run: node scripts/check-desktop-identity.mjs
+      - name: Check updater public key and fingerprint
+        run: node scripts/check-updater-key.mjs
       - name: Verify generated TypeScript bindings
         run: git diff --exit-code -- ui/src/bindings
       - name: Install cargo-deny
@@ -50,6 +53,8 @@ jobs:
   macos-bundle:
     name: macOS universal bundle
     runs-on: macos-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88.0
@@ -75,6 +80,8 @@ jobs:
   windows-bundle:
     name: Windows x64 bundle
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88.0

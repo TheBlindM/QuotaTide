@@ -8,4 +8,4 @@ import type { SmtpSettingsDraft } from "./SmtpSettingsDraft";
 /**
  * Complete settings replacement submitted against one optimistic revision.
  */
-export type SettingsDraft = { expectedSettingsRevision: number, authPath: string | null, quotaPolicy: QuotaPolicyDraft, alertPreferences: Array<AlertPreferenceDraft>, autostartEnabled: boolean, interfaceLocale: InterfaceLocalePreference, formatLocale: string, smtp: SmtpSettingsDraft, smtpPassword: SecretUpdate, };
+export type SettingsDraft = { expectedSettingsRevision: number, authPath: string | null, quotaPolicy: QuotaPolicyDraft, alertPreferences: Array<AlertPreferenceDraft>, autostartEnabled: boolean, autoUpdateEnabled: boolean, interfaceLocale: InterfaceLocalePreference, formatLocale: string, smtp: SmtpSettingsDraft, smtpPassword: SecretUpdate, };

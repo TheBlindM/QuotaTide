@@ -1,0 +1,8 @@
+# Release-sensitive files require explicit maintainer review once the repository
+# owner is bound. TheBlind is the current project author/maintainer identity.
+/.github/workflows/ @TheBlind
+/scripts/release/ @TheBlind
+/scripts/check-release-identity.mjs @TheBlind
+/src-tauri/tauri*.json @TheBlind
+/src-tauri/updater.pubkey* @TheBlind
+/Cargo.lock @TheBlind

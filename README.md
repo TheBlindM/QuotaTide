@@ -1,99 +1,121 @@
 # QuotaTide
 
-QuotaTide 是一个面向 macOS 与 Windows 的独立开源托盘应用，用于在本机监控
-单个 Codex 账号的当前七日额度窗口。
+QuotaTide is an independent, open-source macOS and Windows tray app that
+monitors the active seven-day Codex quota window for one local account.
 
-作者：TheBlind
+QuotaTide 是一款独立开源的 macOS / Windows 托盘应用，用于在本机监控单个
+Codex 账号当前额度周期中的七个自然日。
 
-License：MIT
-应用标识：`dev.theblind.quotatide`
+Author / 作者：TheBlind
 
-## 当前状态
+License / 许可证：[MIT](LICENSE)
 
-项目正在从旧 Node/Docker 原型重构为 Rust/Tauri 桌面应用。目前已完成
-**Ticket 14–24 的桌面骨架、实时数据、策略、提醒、安全邮件和本地恢复工具**：
+Application ID / 应用标识：`dev.theblind.quotatide`
 
-- Rust workspace 与框架无关的 `quotatide-core`；
-- Tauri 2 隐藏窗口和单一 Tide Dial 托盘入口；
-- Vite + Preact + TypeScript 毛玻璃小窗；
-- 界面配置并只读校验单账号 `auth.json` 路径，不修改或复制令牌；
-- 启动、每小时、唤醒和手动触发的真实 Codex 当前周额度刷新；
-- 独立接入 codex-resets.com 的 24 小时重置概率、来源健康与安全外链；
-- SQLite v10 的账号隔离观测、来源健康、额度 epoch、每日账本、不可变策略版本、
-  提醒偏好与可恢复外部变更 journal；
-- 严格展示当前额度周期的七个自然日，未知日期不伪造为 0；
-- 支持逐日编辑 `16/16/16/16/16/10/10` 模板、IANA 策略时区和同一自然周
-  工作日动态结转，历史日期保留当时的基础/结转快照；
-- 账号、七日额度、提醒偏好和当前用户开机启动采用单次 revisioned 原子保存；
-- macOS LaunchAgent、Windows 当前用户启动、单实例唤醒、登录隐藏启动、
-  睡眠恢复合并和后台 worker 单启动保护；
-- 持久提醒 outbox、macOS/Windows 原生系统通知、点击聚焦和失败恢复；
-- TLS/required STARTTLS SMTP、macOS Keychain/Windows Credential Manager
-  双槽密码、逐收件人邮件重试与独立测试邮件；
-- SQLite WAL 启动恢复、固定 migration checksum、迁移前滚动备份、损坏隔离与
-  最近有效备份自动恢复；无有效副本或 schema 过新时进入只读恢复界面；
-- `5 × 1 MiB` 结构化安全日志、原生保存位置的严格脱敏诊断 ZIP，以及带
-  二次确认、凭证库优先和 `auth.json` 保护的本地数据清除；
-- macOS/Windows bundle CI 骨架。
+> QuotaTide is not affiliated with or endorsed by OpenAI. Codex and OpenAI are
+> trademarks of their respective owners.
+>
+> QuotaTide 与 OpenAI 没有官方关系，也未获得其背书。Codex 和 OpenAI 是其
+> 各自所有者的商标。
 
-当前版本尚未完成双语/可访问性、开源清理和正式发布 smoke。
-旧 Node 服务仍暂时保留供行为迁移测试使用，但新桌面应用不启动它、不读取
-它的数据库，也不依赖 Docker。
+## Features / 功能
 
-## 开发要求
+- Read-only access to a user-selected `auth.json`; QuotaTide never rewrites,
+  copies, or displays its tokens.
+- Current-account quota, reset time, and exactly the seven dates in the active
+  quota window—not a rolling “last seven days” chart.
+- Editable daily limits, policy timezone, and dynamic weekday carry-forward.
+- Hourly background refresh, reset-radar estimate, native notifications, and
+  optional TLS SMTP alerts.
+- Local SQLite history, encrypted OS credential storage, diagnostics export,
+  recovery mode, and local-data removal.
+- System/interface language selection for Simplified Chinese and English.
+- Explicit, signature-verified updates with a 60-second first check, daily
+  checks thereafter, manual checking, and an automatic-check toggle.
 
-- Rust 1.88.0（由 `rust-toolchain.toml` 固定）
-- Node.js 22.13 或更高
-- macOS：Xcode Command Line Tools
-- Windows：Microsoft C++ Build Tools 与 WebView2
-- Tauri CLI 2.11.4
-- cargo-deny 0.20.2
+- 只读访问用户选择的 `auth.json`；不改写、不复制、也不显示其中的令牌。
+- 展示当前账号的额度、重置时间，以及当前额度周期内的七个日期，而不是滚动
+  的“最近七天”。
+- 可编辑每日额度与策略时区，支持工作日未用额度动态结转。
+- 每小时后台刷新、重置雷达预测、原生通知，以及可选的 TLS SMTP 邮件告警。
+- 本地 SQLite 历史、系统凭证库、诊断导出、恢复模式和本地数据清理。
+- 支持简体中文、英文及跟随系统。
+- 更新必须由用户确认并通过 Tauri 签名验证；首次启动 60 秒后检查，之后每
+  24 小时检查，也可手动检查或关闭自动检查。
 
-安装工具与前端依赖：
+## Preview distribution / 预览版分发
+
+The `0.x` direct-download builds are unsigned previews:
+
+- macOS: one universal DMG for Apple Silicon and Intel, minimum macOS 15.0.
+- Windows: one x64 current-user NSIS installer for Windows 11 25H2+, using the
+  Evergreen WebView2 bootstrapper.
+- No MSI, per-machine installer, fixed WebView2 runtime, telemetry service, or
+  browser/server edition is distributed.
+
+`0.x` 直接下载版本属于未签名预览版：
+
+- macOS：同一个 universal DMG 支持 Apple Silicon 与 Intel，最低 macOS 15.0。
+- Windows：Windows 11 25H2+ x64 当前用户 NSIS 安装包，使用 Evergreen
+  WebView2 bootstrapper。
+- 不提供 MSI、全机器安装、fixed WebView2 runtime、遥测服务或浏览器/服务器版。
+
+Gatekeeper or SmartScreen can warn because this project currently has no
+Developer ID or Authenticode publisher certificate. Do not globally disable
+operating-system protections. Follow the scoped steps and verify SHA-256 in:
+
+由于项目目前没有 Developer ID 或 Authenticode 发布者证书，Gatekeeper 或
+SmartScreen 可能提示风险。请勿全局关闭系统保护；请按文档进行单应用确认并
+校验 SHA-256：
+
+- [Install, update, and uninstall (English)](docs/en/install-update-uninstall.md)
+- [安装、更新与卸载（简体中文）](docs/zh-CN/install-update-uninstall.md)
+- [Release verification (English)](docs/en/release-verification.md)
+- [发布校验（简体中文）](docs/zh-CN/release-verification.md)
+
+Production release generation is intentionally blocked until the public GitHub
+repository and final updater public key are bound. The committed key is a
+development-only key whose private half was destroyed.
+
+在公开 GitHub 仓库与最终 updater 公钥确认前，生产发布门禁会按设计失败。仓库
+当前提交的仅是开发公钥，其私钥已销毁，不能用于正式发布。
+
+## Privacy and security / 隐私与安全
+
+- [Privacy (English)](docs/en/privacy.md)
+- [隐私说明（简体中文）](docs/zh-CN/privacy.md)
+- [Security policy / 安全策略](SECURITY.md)
+- [Third-party notices / 第三方声明](THIRD_PARTY_NOTICES.md)
+
+## Development / 开发
+
+Requirements: Rust 1.88.0, Node.js 22.13+, Xcode Command Line Tools on macOS,
+Microsoft C++ Build Tools and WebView2 on Windows, Tauri CLI 2.11.4, and
+cargo-deny 0.20.2.
 
 ```bash
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
-cargo install tauri-cli --version 2.11.4 --locked
-cargo install cargo-deny --version 0.20.2 --locked
 npm --prefix ui ci
-```
-
-运行测试和检查：
-
-```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo deny check
 npm --prefix ui run check
-node scripts/check-desktop-versions.mjs
-node scripts/check-desktop-identity.mjs
+npm run check
 git diff --exit-code -- ui/src/bindings
 ```
 
-`src-tauri/tauri.conf.json` 是 0.1.x 的版本来源；检查脚本要求 Rust workspace
-和前端元数据与它保持一致。
-
-当前 GitHub 远程身份仍是显式占位符 `__GITHUB_REPOSITORY__`。普通 CI 中的
-macOS/Windows bundle 仅用于构建 smoke，不上传或发布产物。真正的发布工作流
-必须先运行下面的门禁；仓库未绑定时它会按设计失败：
+Run the desktop app:
 
 ```bash
-node scripts/check-release-identity.mjs
-```
-
-生成 Tide Dial 平台图标并启动桌面开发模式：
-
-```bash
-npm run icons
 cargo tauri dev
 ```
 
-## 产品规范
+The old Node server, Docker image, browser page, plaintext SMTP environment
+path, and legacy database have been removed. Node remains only as the Tauri
+frontend and deterministic release-tool runtime.
 
-- [实施规范](.scratch/rust-desktop-app/spec.md)
-- [最低系统版本与发布 QA](docs/research/minimum-os-and-release-qa.md)
-- [架构决策](docs/research/application-architecture.md)
-- [本地安全模型](docs/research/config-state-security.md)
+旧 Node 服务、Docker 镜像、浏览器页面、明文 SMTP 环境变量入口和旧数据库均
+已移除。Node 仅用于 Tauri 前端和确定性的发布工具。
 
-QuotaTide 与 OpenAI 没有官方关系。Codex 和 OpenAI 是其各自所有者的商标。
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and release-boundary
+rules.

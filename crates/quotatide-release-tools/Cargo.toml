@@ -1,0 +1,15 @@
+[package]
+name = "quotatide-release-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+base64 = "=0.22.1"
+minisign-verify = "=0.2.5"
+
+[lints]
+workspace = true

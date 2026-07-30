@@ -201,6 +201,7 @@ fn draft(revision: u32, autostart_enabled: bool) -> SettingsDraft {
         },
         alert_preferences,
         autostart_enabled,
+        auto_update_enabled: true,
         interface_locale: InterfaceLocalePreference::System,
         format_locale: "en-US".to_owned(),
         smtp: SmtpSettingsDraft {
@@ -255,6 +256,7 @@ async fn defaults_expose_every_non_secret_setting_and_channel_preference() {
     assert_eq!(settings.settings_revision, 0);
     assert!(!settings.configured);
     assert!(!settings.autostart_enabled);
+    assert!(settings.auto_update_enabled);
     assert_eq!(settings.interface_locale, InterfaceLocalePreference::System);
     assert_eq!(settings.format_locale, "en");
     assert_eq!(settings.alert_preferences.len(), 14);
@@ -262,6 +264,38 @@ async fn defaults_expose_every_non_secret_setting_and_channel_preference() {
         settings.alert_preferences.iter().all(|preference| {
             preference.enabled == (preference.channel == AlertChannel::System)
         })
+    );
+}
+
+#[tokio::test]
+async fn automatic_update_preference_is_revisioned_and_survives_restart() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open store");
+    let service = AtomicSettingsManager::new(store, ValidAuth, FakeAutostart::new(false));
+    let mut disabled = draft(0, false);
+    disabled.auto_update_enabled = false;
+
+    let saved = service
+        .save_settings(disabled)
+        .await
+        .expect("disable automatic updates");
+    assert_eq!(saved.settings_revision, 1);
+    assert!(!saved.auto_update_enabled);
+    drop(service);
+
+    let reopened = AccountSettingsStore::open(database)
+        .await
+        .expect("reopen store");
+    let restarted = AtomicSettingsManager::new(reopened, ValidAuth, FakeAutostart::new(false));
+    assert!(
+        !restarted
+            .public_settings()
+            .await
+            .expect("restarted settings")
+            .auto_update_enabled
     );
 }
 

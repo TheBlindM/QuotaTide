@@ -1,0 +1,206 @@
+name: Draft preview release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Immutable release tag (for example v0.1.0)"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release-gate:
+    name: Bind identity and validate release input
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Require the protected main branch
+        shell: bash
+        run: test "$GITHUB_REF_NAME" = main
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.13.1
+      - name: Set up pinned Rust verifier
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Verify version, repository, and final updater key
+        run: |
+          node scripts/release/check-version.mjs "${{ inputs.tag }}"
+          node scripts/check-release-identity.mjs
+      - name: Reject secrets in tracked source
+        run: node scripts/release/scan-secrets.mjs . --tracked
+
+  macos:
+    name: Build macOS universal final bytes
+    needs: release-gate
+    runs-on: macos-latest
+    environment: preview-release
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.13.1
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Set up pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --target aarch64-apple-darwin,x86_64-apple-darwin
+          rustup default 1.88.0
+      - name: Install pinned dependencies
+        run: |
+          npm --prefix ui ci
+          cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build universal DMG and signed updater archive
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri build --target universal-apple-darwin --bundles app,dmg --config src-tauri/tauri.release.conf.json
+      - name: Verify universal slices and deployment target
+        run: scripts/release/verify-macos-bundle.sh target/universal-apple-darwin/release/bundle/macos/QuotaTide.app/Contents/MacOS/quotatide
+      - name: Upload final macOS bytes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-final-bytes
+          if-no-files-found: error
+          retention-days: 3
+          path: |
+            target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+
+  windows:
+    name: Build Windows x64 final bytes
+    needs: release-gate
+    runs-on: windows-latest
+    environment: preview-release
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.13.1
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Set up pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+      - name: Install pinned dependencies
+        run: |
+          npm --prefix ui ci
+          cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build current-user NSIS and signed updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri build --bundles nsis --config src-tauri/tauri.release.conf.json
+      - name: Upload final Windows bytes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-final-bytes
+          if-no-files-found: error
+          retention-days: 3
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*-setup.exe.sig
+
+  draft:
+    name: Verify and create draft release
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    environment: preview-release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.13.1
+      - name: Download isolated final bytes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: downloaded-artifacts
+      - name: Collect and verify release bytes
+        shell: bash
+        run: |
+          version="${{ inputs.tag }}"
+          version="${version#v}"
+          node scripts/release/collect-assets.mjs downloaded-artifacts release-assets "$version"
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          export SOURCE_DATE_EPOCH
+          node scripts/release/build-manifest.mjs \
+            --version "$version" \
+            --repository "$GITHUB_REPOSITORY" \
+            --mac-archive "release-assets/QuotaTide_${version}_universal.app.tar.gz" \
+            --mac-signature "release-assets/QuotaTide_${version}_universal.app.tar.gz.sig" \
+            --windows-installer "release-assets/QuotaTide_${version}_x64-setup.exe" \
+            --windows-signature "release-assets/QuotaTide_${version}_x64-setup.exe.sig" \
+            --output release-assets/latest.json
+          cargo run --locked -p quotatide-release-tools -- \
+            "release-assets/QuotaTide_${version}_universal.app.tar.gz" \
+            "release-assets/QuotaTide_${version}_universal.app.tar.gz.sig" \
+            src-tauri/updater.pubkey
+          cargo run --locked -p quotatide-release-tools -- \
+            "release-assets/QuotaTide_${version}_x64-setup.exe" \
+            "release-assets/QuotaTide_${version}_x64-setup.exe.sig" \
+            src-tauri/updater.pubkey
+          cp "release-assets/QuotaTide_${version}_universal.app.tar.gz" /tmp/quotatide-tampered.app.tar.gz
+          printf 'tamper-canary' >> /tmp/quotatide-tampered.app.tar.gz
+          if cargo run --locked -p quotatide-release-tools -- \
+            /tmp/quotatide-tampered.app.tar.gz \
+            "release-assets/QuotaTide_${version}_universal.app.tar.gz.sig" \
+            src-tauri/updater.pubkey; then
+            echo "Tampered updater artifact was incorrectly accepted" >&2
+            exit 1
+          fi
+          node scripts/release/write-checksums.mjs release-assets
+          node scripts/release/verify-assets.mjs release-assets "$version"
+          node scripts/release/scan-secrets.mjs release-assets
+      - name: Attest final release bytes
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: release-assets/*
+      - name: Create or update draft only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release view "${{ inputs.tag }}" >/dev/null 2>&1 || \
+            gh release create "${{ inputs.tag }}" --draft --verify-tag \
+              --title "QuotaTide ${{ inputs.tag }} Preview / 预览版"
+          gh release upload "${{ inputs.tag }}" release-assets/* --clobber
+          test "$(gh release view "${{ inputs.tag }}" --json isDraft --jq .isDraft)" = true
+          echo "Draft verified. Publishing remains a separate maintainer action after platform QA."

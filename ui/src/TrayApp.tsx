@@ -8,6 +8,7 @@ import type { NotificationPermissionStatus } from "./bindings/NotificationPermis
 import type { PublicAlertInbox } from "./bindings/PublicAlertInbox";
 import type { PublicSettings } from "./bindings/PublicSettings";
 import type { SettingsDraft } from "./bindings/SettingsDraft";
+import type { PublicUpdateState } from "./api/updater";
 import type { NotificationActivation } from "./api/alerts";
 import { useI18n } from "./i18n-context";
 import { WeeklyLedger, type LedgerFixture } from "./WeeklyLedger";
@@ -94,6 +95,7 @@ const unconfiguredSettings: PublicSettings = {
   },
   alertPreferences: defaultAlertPreferences,
   autostartEnabled: false,
+  autoUpdateEnabled: true,
   interfaceLocale: "system",
   formatLocale: "zh-CN",
   smtp: {
@@ -335,6 +337,7 @@ type TrayAppProps = {
   focusRequest?: NotificationActivation | null;
   externalRefreshing?: boolean;
   recoveredFromBackup?: boolean;
+  updateState?: PublicUpdateState;
   onHide: () => void;
   onRefresh: () => unknown;
   onRequestNotificationPermission?: () => Promise<NotificationPermissionStatus>;
@@ -343,6 +346,8 @@ type TrayAppProps = {
   onClearLocalData?: () => Promise<void>;
   onSaveSettings?: (draft: SettingsDraft) => Promise<PublicSettings>;
   onReloadSettings?: () => Promise<PublicSettings>;
+  onCheckForUpdate?: () => Promise<PublicUpdateState>;
+  onInstallUpdate?: () => Promise<PublicUpdateState>;
 };
 
 function SettingsView({
@@ -352,6 +357,9 @@ function SettingsView({
   onSendTestEmail,
   onExportDiagnostics,
   onClearLocalData,
+  updateState,
+  onCheckForUpdate,
+  onInstallUpdate,
   onSave,
 }: {
   settings: PublicSettings;
@@ -360,6 +368,9 @@ function SettingsView({
   onSendTestEmail?: () => Promise<number>;
   onExportDiagnostics?: () => Promise<boolean>;
   onClearLocalData?: () => Promise<void>;
+  updateState?: PublicUpdateState;
+  onCheckForUpdate?: () => Promise<PublicUpdateState>;
+  onInstallUpdate?: () => Promise<PublicUpdateState>;
   onSave: (draft: SettingsDraft) => Promise<void>;
 }) {
   const { formatLocale, locale, text, t } = useI18n();
@@ -384,6 +395,10 @@ function SettingsView({
   const [autostartEnabled, setAutostartEnabled] = useState(
     settings.autostartEnabled,
   );
+  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(
+    settings.autoUpdateEnabled,
+  );
+  const [confirmUpdate, setConfirmUpdate] = useState(false);
   const [interfaceLocale, setInterfaceLocale] =
     useState<InterfaceLocalePreference>(settings.interfaceLocale);
   const [smtpEnabled, setSmtpEnabled] = useState(settings.smtp.enabled);
@@ -418,6 +433,7 @@ function SettingsView({
       settings.alertPreferences.map((preference) => ({ ...preference })),
     );
     setAutostartEnabled(settings.autostartEnabled);
+    setAutoUpdateEnabled(settings.autoUpdateEnabled);
     setInterfaceLocale(settings.interfaceLocale);
     setSmtpEnabled(settings.smtp.enabled);
     setSmtpHost(settings.smtp.host);
@@ -491,6 +507,7 @@ function SettingsView({
       },
       alertPreferences,
       autostartEnabled,
+      autoUpdateEnabled,
       interfaceLocale,
       formatLocale,
       smtp: {
@@ -682,6 +699,119 @@ function SettingsView({
                 }}
               />
             </label>
+            <div class="update-settings settings-row--separated">
+              <div class="settings-section__heading">
+                <span>{text("关于与更新", "About and updates")}</span>
+                <h2>
+                  QuotaTide {updateState?.currentVersion ?? "0.1.0"}
+                </h2>
+                <small>{text("作者 TheBlind", "By TheBlind")}</small>
+              </div>
+              <label class="settings-row">
+                <span>
+                  <strong>{text("自动检查更新", "Check for updates automatically")}</strong>
+                  <small>
+                    {text(
+                      "启动 60 秒后检查，之后每 24 小时最多一次",
+                      "Checks after 60 seconds, then at most once every 24 hours",
+                    )}
+                  </small>
+                </span>
+                <input
+                  aria-label={text("自动检查更新", "Check for updates automatically")}
+                  type="checkbox"
+                  checked={autoUpdateEnabled}
+                  onChange={(event) => {
+                    setAutoUpdateEnabled(event.currentTarget.checked);
+                    setSaveError(false);
+                  }}
+                />
+              </label>
+              <div class="update-actions">
+                <p role="status">
+                  {updateState?.status === "checking"
+                    ? text("正在检查更新…", "Checking for updates…")
+                    : updateState?.status === "up_to_date"
+                      ? text("已是最新版本", "QuotaTide is up to date")
+                      : updateState?.status === "available"
+                        ? `${text("发现新版本", "Update available")} ${updateState.availableVersion ?? ""}`
+                        : updateState?.status === "installing"
+                          ? text("正在验证并安装…", "Verifying and installing…")
+                          : updateState?.status === "error"
+                            ? text(
+                                "更新检查失败；当前版本不受影响",
+                                "Update check failed; the current version is unaffected",
+                              )
+                            : text(
+                                "尚未检查更新",
+                                "Updates have not been checked yet",
+                              )}
+                </p>
+                <button
+                  type="button"
+                  disabled={
+                    !onCheckForUpdate ||
+                    updateState?.status === "checking" ||
+                    updateState?.status === "installing"
+                  }
+                  onClick={() => {
+                    setConfirmUpdate(false);
+                    void onCheckForUpdate?.();
+                  }}
+                >
+                  {text("手动检查", "Check now")}
+                </button>
+              </div>
+              {updateState?.status === "available" ? (
+                <div class="update-available" role="region" aria-label={text("可用更新", "Available update")}>
+                  {updateState.notes ? <p>{updateState.notes}</p> : null}
+                  {confirmUpdate ? (
+                    <div class="update-confirm">
+                      <p>
+                        {text(
+                          "将下载已签名更新、安装并重新启动 QuotaTide。现在继续？",
+                          "The signed update will be downloaded, installed, and QuotaTide will restart. Continue?",
+                        )}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmUpdate(false);
+                        }}
+                      >
+                        {text("取消", "Cancel")}
+                      </button>
+                      <button
+                        type="button"
+                        class="primary-update"
+                        onClick={() => {
+                          void onInstallUpdate?.();
+                        }}
+                      >
+                        {text("确认安装", "Install update")}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      class="primary-update"
+                      disabled={!onInstallUpdate}
+                      onClick={() => {
+                        setConfirmUpdate(true);
+                      }}
+                    >
+                      {text("安装并重新启动", "Install and restart")}
+                    </button>
+                  )}
+                </div>
+              ) : null}
+              <p class="privacy-note">
+                {text(
+                  "当前为未签名开源预览版；系统可能显示未知开发者。更新仍必须通过 QuotaTide 签名验证。",
+                  "This is an unsigned open-source preview; your system may show an unknown-developer warning. Updates must still pass QuotaTide signature verification.",
+                )}
+              </p>
+            </div>
           </section>
         ) : activeTab === "quota" ? (
           <section
@@ -1249,6 +1379,7 @@ export function TrayApp({
   focusRequest = null,
   externalRefreshing = false,
   recoveredFromBackup = false,
+  updateState,
   onHide,
   onRefresh,
   onRequestNotificationPermission,
@@ -1257,6 +1388,8 @@ export function TrayApp({
   onClearLocalData,
   onSaveSettings,
   onReloadSettings,
+  onCheckForUpdate,
+  onInstallUpdate,
 }: TrayAppProps) {
   const { text } = useI18n();
   const [view, setView] = useState<"ledger" | "settings">("ledger");
@@ -1371,6 +1504,9 @@ export function TrayApp({
         onSendTestEmail={onSendTestEmail}
         onExportDiagnostics={onExportDiagnostics}
         onClearLocalData={onClearLocalData}
+        updateState={updateState}
+        onCheckForUpdate={onCheckForUpdate}
+        onInstallUpdate={onInstallUpdate}
         onSave={async (draft) => {
           if (!onSaveSettings) {
             return;

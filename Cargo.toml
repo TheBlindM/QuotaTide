@@ -2,6 +2,7 @@
 members = [
   "crates/quotatide-core",
   "crates/quotatide-native-notifications",
+  "crates/quotatide-release-tools",
   "src-tauri",
 ]
 resolver = "2"

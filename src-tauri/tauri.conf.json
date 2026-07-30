@@ -46,9 +46,20 @@
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFCOEMwQzdCNzg4QjVGREIKUldUYlg0dDRld3lNcThxc05aSzN0SzdreEFZR1IzS2xGYi9qRWtBb2ROWE9sYXZHdldxdkx0NWQK",
+      "endpoints": [
+        "https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["dmg", "nsis"],
     "category": "Utility",
     "copyright": "Copyright © 2026 TheBlind and QuotaTide contributors",
     "shortDescription": "A private Codex quota tray monitor.",

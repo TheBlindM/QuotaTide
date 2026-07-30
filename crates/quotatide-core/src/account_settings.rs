@@ -34,7 +34,7 @@ use crate::{
     radar_bucket_label,
 };
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 const SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-settings-v1-account-path-stream";
 const LIVE_QUOTA_SCHEMA_CHECKSUM: &str = "quotatide-v2-live-quota-health";
 const QUOTA_LEDGER_SCHEMA_CHECKSUM: &str = "quotatide-v3-current-seven-day-ledger";
@@ -47,6 +47,7 @@ const DURABLE_ALERTS_SCHEMA_CHECKSUM: &str = "quotatide-v9-durable-alert-outbox"
 const SMTP_SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-v10-smtp-settings-recipients";
 const INTERFACE_LOCALE_SCHEMA_CHECKSUM: &str =
     "quotatide-v11-interface-and-format-locale-preferences";
+const AUTO_UPDATE_SCHEMA_CHECKSUM: &str = "quotatide-v12-automatic-update-preference";
 const FRESH_FOR_MS: i64 = 90 * 60 * 1000;
 const SMTP_SLOT_A: &str = "slot-a";
 const SMTP_SLOT_B: &str = "slot-b";
@@ -334,6 +335,7 @@ pub struct PublicSettings {
     pub quota_policy: PublicQuotaPolicy,
     pub alert_preferences: Vec<AlertPreference>,
     pub autostart_enabled: bool,
+    pub auto_update_enabled: bool,
     pub interface_locale: InterfaceLocalePreference,
     pub format_locale: String,
     pub smtp: PublicSmtpSettings,
@@ -349,6 +351,8 @@ pub struct SettingsDraft {
     pub quota_policy: QuotaPolicyDraft,
     pub alert_preferences: Vec<AlertPreferenceDraft>,
     pub autostart_enabled: bool,
+    #[serde(default = "default_auto_update_enabled")]
+    pub auto_update_enabled: bool,
     #[serde(default)]
     pub interface_locale: InterfaceLocalePreference,
     #[serde(default = "default_format_locale")]
@@ -487,6 +491,7 @@ impl<V: AuthCandidateValidator, A: AutostartControl, C: CredentialVault>
             quota_policy,
             alert_preferences,
             autostart_enabled,
+            auto_update_enabled,
             interface_locale,
             format_locale,
             smtp,
@@ -610,6 +615,7 @@ impl<V: AuthCandidateValidator, A: AutostartControl, C: CredentialVault>
                 policy,
                 alert_preferences,
                 confirmed_autostart,
+                auto_update_enabled,
                 interface_locale,
                 format_locale,
                 smtp,
@@ -1240,6 +1246,11 @@ fn initialize_database(
         migrate_interface_locale_v11(database, now)?;
     } else {
         validate_migration(database, 11, INTERFACE_LOCALE_SCHEMA_CHECKSUM)?;
+    }
+    if current_version <= 11 {
+        migrate_auto_update_v12(database, now)?;
+    } else {
+        validate_migration(database, 12, AUTO_UPDATE_SCHEMA_CHECKSUM)?;
     }
     validate_database_health(database)?;
     Ok(())
@@ -2029,6 +2040,24 @@ fn migrate_interface_locale_v11(
     transaction.commit()
 }
 
+fn migrate_auto_update_v12(database: &mut rusqlite::Connection, now: i64) -> rusqlite::Result<()> {
+    let transaction =
+        database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE app_settings
+           ADD COLUMN auto_update_enabled INTEGER NOT NULL DEFAULT 1
+             CHECK (auto_update_enabled IN (0, 1));",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations
+         (version, applied_at_ms, app_version, checksum)
+         VALUES (12, ?1, ?2, ?3)",
+        rusqlite::params![now, env!("CARGO_PKG_VERSION"), AUTO_UPDATE_SCHEMA_CHECKSUM],
+    )?;
+    transaction.pragma_update(None, "user_version", 12)?;
+    transaction.commit()
+}
+
 fn insert_default_policy_revision(
     transaction: &rusqlite::Transaction<'_>,
     now: i64,
@@ -2275,17 +2304,27 @@ fn load_public_atomic_settings(
     database: &rusqlite::Connection,
 ) -> rusqlite::Result<PublicSettings> {
     let account = load_public_account_settings(database)?;
-    let (autostart_enabled, notification_permission_status, interface_locale, format_locale): (
-        i64,
-        String,
-        String,
-        String,
-    ) = database.query_row(
-        "SELECT autostart_enabled, notification_permission_status,
+    let (
+        autostart_enabled,
+        auto_update_enabled,
+        notification_permission_status,
+        interface_locale,
+        format_locale,
+    ): (i64, i64, String, String, String) = database.query_row(
+        "SELECT autostart_enabled, auto_update_enabled,
+                notification_permission_status,
                 interface_locale, format_locale
          FROM app_settings WHERE singleton_id = 1",
         [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
     )?;
     let mut statement = database.prepare(
         "SELECT event_kind, channel, enabled
@@ -2367,6 +2406,7 @@ fn load_public_atomic_settings(
         quota_policy: account.quota_policy,
         alert_preferences,
         autostart_enabled: autostart_enabled != 0,
+        auto_update_enabled: auto_update_enabled != 0,
         interface_locale: InterfaceLocalePreference::parse(&interface_locale)?,
         format_locale,
         smtp: PublicSmtpSettings {
@@ -2401,6 +2441,10 @@ fn validate_quota_policy_draft(draft: QuotaPolicyDraft) -> Result<QuotaPolicy, P
 
 fn default_format_locale() -> String {
     "en".to_owned()
+}
+
+const fn default_auto_update_enabled() -> bool {
+    true
 }
 
 fn validate_format_locale(value: &str) -> String {
@@ -2685,6 +2729,7 @@ impl AccountSettingsStore {
         policy: QuotaPolicy,
         alert_preferences: Vec<AlertPreferenceDraft>,
         autostart_enabled: bool,
+        auto_update_enabled: bool,
         interface_locale: InterfaceLocalePreference,
         format_locale: String,
         smtp: SmtpSettingsDraft,
@@ -2771,8 +2816,9 @@ impl AccountSettingsStore {
                         "UPDATE app_settings
                          SET auth_path = ?1, configured_account_stream_id = ?2,
                              active_policy_revision_id = ?3, policy_timezone = ?4,
-                             autostart_enabled = ?5, interface_locale = ?6,
-                             format_locale = ?7, updated_at_ms = ?8
+                             autostart_enabled = ?5, auto_update_enabled = ?6,
+                             interface_locale = ?7, format_locale = ?8,
+                             updated_at_ms = ?9
                          WHERE singleton_id = 1",
                         rusqlite::params![
                             path,
@@ -2780,6 +2826,7 @@ impl AccountSettingsStore {
                             policy_revision_id,
                             policy_timezone,
                             i64::from(autostart_enabled),
+                            i64::from(auto_update_enabled),
                             interface_locale.as_str(),
                             format_locale,
                             now
@@ -2789,13 +2836,15 @@ impl AccountSettingsStore {
                     transaction.execute(
                         "UPDATE app_settings
                          SET active_policy_revision_id = ?1, policy_timezone = ?2,
-                             autostart_enabled = ?3, interface_locale = ?4,
-                             format_locale = ?5, updated_at_ms = ?6
+                             autostart_enabled = ?3, auto_update_enabled = ?4,
+                             interface_locale = ?5, format_locale = ?6,
+                             updated_at_ms = ?7
                          WHERE singleton_id = 1",
                         rusqlite::params![
                             policy_revision_id,
                             policy_timezone,
                             i64::from(autostart_enabled),
+                            i64::from(auto_update_enabled),
                             interface_locale.as_str(),
                             format_locale,
                             now
