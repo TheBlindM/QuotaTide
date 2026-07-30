@@ -7,6 +7,7 @@ mod account_settings;
 mod alerts;
 mod email;
 mod live_quota;
+mod local_data;
 mod quota_ledger;
 mod reset_radar;
 mod tray_shell;

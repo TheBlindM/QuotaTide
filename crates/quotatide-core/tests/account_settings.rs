@@ -380,6 +380,24 @@ async fn version_one_settings_are_preserved_while_live_quota_and_ledger_tables_a
     assert_eq!(migration_count, 10);
     assert_eq!(quota_table, "usage_observations");
     assert_eq!(ledger_table, "daily_ledgers");
+    let backups = std::fs::read_dir(directory.path().join("backups"))
+        .expect("migration backup directory")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("migration backups");
+    assert_eq!(backups.len(), 1);
+    let backup = rusqlite::Connection::open(backups[0].path()).expect("open migration backup");
+    assert_eq!(
+        backup
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("backup schema version"),
+        1
+    );
+    assert_eq!(
+        backup
+            .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+            .expect("backup integrity"),
+        "ok"
+    );
 }
 
 #[tokio::test]

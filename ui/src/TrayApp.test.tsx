@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AlertEventKind } from "./bindings/AlertEventKind";
 import type { PublicSettings } from "./bindings/PublicSettings";
 import type { SettingsDraft } from "./bindings/SettingsDraft";
-import { TrayApp } from "./TrayApp";
+import { PrivacyPanel, TrayApp } from "./TrayApp";
 import { ledgerFixtures } from "./WeeklyLedger";
 
 afterEach(cleanup);
@@ -475,5 +475,42 @@ describe("tray-window navigation", () => {
     expect(screen.getByText("Codex 额度 · 正在刷新")).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "r", ctrlKey: true });
     expect(onRefresh).not.toHaveBeenCalled();
+  });
+});
+
+describe("local privacy tools", () => {
+  it("shows the diagnostic allowlist before opening the native save dialog", async () => {
+    const onExportDiagnostics = vi.fn().mockResolvedValue(true);
+    render(<PrivacyPanel onExportDiagnostics={onExportDiagnostics} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "查看内容" }));
+    expect(screen.getByText(/不会包含 Token/)).toBeInTheDocument();
+    expect(onExportDiagnostics).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "选择保存位置" }));
+    await waitFor(() => {
+      expect(onExportDiagnostics).toHaveBeenCalledOnce();
+    });
+    expect(await screen.findByText("诊断 ZIP 已保存")).toBeInTheDocument();
+  });
+
+  it("requires an exact second confirmation before clearing local data", () => {
+    const onClearLocalData = vi.fn().mockResolvedValue(undefined);
+    render(<PrivacyPanel onClearLocalData={onClearLocalData} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "清除…" }));
+    const confirm = screen.getByRole("button", {
+      name: "永久清除并重新启动",
+    });
+    expect(confirm).toBeDisabled();
+    fireEvent.input(screen.getByLabelText("输入清除以确认"), {
+      target: { value: "清除数据" },
+    });
+    expect(confirm).toBeDisabled();
+    fireEvent.input(screen.getByLabelText("输入清除以确认"), {
+      target: { value: "清除" },
+    });
+    fireEvent.click(confirm);
+    expect(onClearLocalData).toHaveBeenCalledOnce();
   });
 });

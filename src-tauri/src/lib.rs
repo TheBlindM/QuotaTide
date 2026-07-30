@@ -5,9 +5,11 @@ pub mod background_lifecycle;
 pub mod codex_usage;
 mod credential_vault;
 mod platform_notifications;
+mod privacy;
 pub mod reset_radar;
 mod smtp;
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -16,14 +18,15 @@ use background_lifecycle::{AUTOSTART_ARGUMENT, LaunchMode, notify_secondary, sta
 use codex_usage::{CodexUsageClient, ConfiguredCodexUsageSource};
 use credential_vault::SystemCredentialVault;
 use platform_notifications::{PlatformNotificationError, PlatformNotifier};
+use privacy::{SafeLogFields, SafeLogLevel, safe_log};
 use quotatide_core::{
     AccountApplication, AccountSettingsStore, AlertChannel, AlertTarget, Application,
     AtomicSettingsManager, AutostartControl, BuildInfo, Clock, DashboardChanged, DeliveryWorker,
     EmailDeliveryWorker, NotificationPermissionStatus, PhysicalRect as CoreRect,
     PhysicalSize as CoreSize, PublicAlertInbox, PublicError, PublicErrorCode, PublicLiveQuotaState,
     PublicSettings, RefreshCoordinator, RefreshTrigger, SafeNotification, SettingsChanged,
-    SettingsDraft, SettingsManager, ShellEffect, ShellEvent, SystemNotifier, TestEmailError,
-    TrayShell, place_tray_window,
+    SettingsDraft, SettingsManager, SettingsStoreError, ShellEffect, ShellEvent, SystemNotifier,
+    TestEmailError, TrayShell, place_tray_window,
 };
 use reset_radar::ResetRadarClient;
 use smtp::LettreMailTransport;
@@ -45,6 +48,62 @@ const SETTINGS_CHANGED_EVENT: &str = "quotatide://settings-changed";
 const NOTIFICATION_OPENED_EVENT: &str = "quotatide://notification-opened";
 const ALERTS_CHANGED_EVENT: &str = "quotatide://alerts-changed";
 static NOTIFICATION_ACTIVATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum StartupMode {
+    Ready,
+    RecoveryRequired,
+    UnsupportedSchema,
+    StoragePermissionDenied,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublicStartupState {
+    mode: StartupMode,
+    message_key: &'static str,
+    recovered_from_backup: bool,
+}
+
+impl PublicStartupState {
+    const fn ready(recovered_from_backup: bool) -> Self {
+        Self {
+            mode: StartupMode::Ready,
+            message_key: "startup.ready",
+            recovered_from_backup,
+        }
+    }
+
+    const fn recovery_required() -> Self {
+        Self {
+            mode: StartupMode::RecoveryRequired,
+            message_key: "startup.recovery_required",
+            recovered_from_backup: false,
+        }
+    }
+
+    const fn unsupported_schema() -> Self {
+        Self {
+            mode: StartupMode::UnsupportedSchema,
+            message_key: "startup.unsupported_schema",
+            recovered_from_backup: false,
+        }
+    }
+
+    const fn storage_permission_denied() -> Self {
+        Self {
+            mode: StartupMode::StoragePermissionDenied,
+            message_key: "startup.storage_permission_denied",
+            recovered_from_backup: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LocalDataContext {
+    app_data: PathBuf,
+}
 
 #[derive(Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -206,8 +265,16 @@ impl DeliveryWorkerLifecycle {
                     }
                 }
                 Ok(_) => {}
-                Err(error) => {
-                    eprintln!("QuotaTide: notification delivery sweep failed: {error}");
+                Err(_) => {
+                    safe_log(
+                        SafeLogLevel::Error,
+                        "delivery",
+                        "system_sweep",
+                        SafeLogFields {
+                            public_error_code: Some("delivery_failed"),
+                            ..SafeLogFields::default()
+                        },
+                    );
                 }
             }
             match email_result {
@@ -219,8 +286,16 @@ impl DeliveryWorkerLifecycle {
                     }
                 }
                 Ok(_) => {}
-                Err(error) => {
-                    eprintln!("QuotaTide: email delivery sweep failed: {error}");
+                Err(_) => {
+                    safe_log(
+                        SafeLogLevel::Error,
+                        "delivery",
+                        "email_sweep",
+                        SafeLogFields {
+                            public_error_code: Some("email_delivery_failed"),
+                            ..SafeLogFields::default()
+                        },
+                    );
                 }
             }
             tokio::select! {
@@ -323,6 +398,217 @@ impl AutostartControl for SystemAutostart {
 #[tauri::command]
 fn get_build_info() -> BuildInfo {
     quotatide_core::build_info()
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects managed state command arguments by value.
+fn get_startup_state(state: tauri::State<'_, PublicStartupState>) -> PublicStartupState {
+    state.inner().clone()
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
+fn retry_local_recovery(app: AppHandle) {
+    app.request_restart();
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects managed state command arguments by value.
+fn open_local_data_directory(
+    context: tauri::State<'_, LocalDataContext>,
+) -> Result<(), PublicError> {
+    open_directory(&context.app_data).map_err(|_| storage_public_error())
+}
+
+fn open_directory(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = std::process::Command::new("xdg-open");
+
+    let status = command.arg(path).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            "operating system did not open the application data directory",
+        ))
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects command dependencies by value.
+#[allow(clippy::too_many_lines)] // Each diagnostic field is explicitly allowlisted at this boundary.
+async fn export_diagnostics(
+    app: AppHandle,
+    context: tauri::State<'_, LocalDataContext>,
+) -> Result<bool, PublicError> {
+    let settings = match app.try_state::<AccountSettingsStore>() {
+        Some(store) => store.public_atomic_settings().await.ok(),
+        None => None,
+    };
+    let dashboard = match app.try_state::<LiveApplication>() {
+        Some(application) => application.live_quota(SystemClock.now_unix_ms()).await.ok(),
+        None => None,
+    };
+    let safe_settings = settings.as_ref().map_or_else(
+        || serde_json::json!({"available": false}),
+        |settings| {
+            serde_json::json!({
+                "available": true,
+                "settingsRevision": settings.settings_revision,
+                "configured": settings.configured,
+                "policyTimezone": settings.quota_policy.policy_timezone,
+                "sevenDayBaseMicropoints": settings.quota_policy.base_micropoints,
+                "carryWorkdaysEnabled": settings.quota_policy.carry_workdays_enabled,
+                "authConfigured": settings.configured,
+                "autostartEnabled": settings.autostart_enabled,
+                "notificationPermission": settings.notification_permission_status,
+                "smtpConfigured": settings.smtp.enabled,
+                "smtpTlsMode": settings.smtp.tls_mode,
+                "emailDestinationCount": settings.smtp.recipients.len(),
+            })
+        },
+    );
+    let source_health = dashboard.as_ref().map_or_else(
+        || serde_json::json!({"codex": {"available": false}, "radar": {"available": false}}),
+        |dashboard| {
+            let codex = dashboard.quota.as_ref().map_or_else(
+                || serde_json::json!({"available": false}),
+                |quota| {
+                    serde_json::json!({
+                        "available": true,
+                        "status": quota.source_status,
+                        "lastAttemptAtUnixMs": quota.last_attempt_at_unix_ms,
+                        "lastSuccessAtUnixMs": quota.last_success_at_unix_ms,
+                        "consecutiveFailures": quota.consecutive_failures,
+                        "publicErrorCode": quota.public_error,
+                    })
+                },
+            );
+            serde_json::json!({
+                "codex": codex,
+                "radar": {
+                    "available": true,
+                    "status": dashboard.radar.source_status,
+                    "lastAttemptAtUnixMs": dashboard.radar.last_attempt_at_unix_ms,
+                    "lastSuccessAtUnixMs": dashboard.radar.last_success_at_unix_ms,
+                    "consecutiveFailures": dashboard.radar.consecutive_failures,
+                    "publicErrorCode": dashboard.radar.public_error,
+                },
+            })
+        },
+    );
+    let observations = dashboard
+        .as_ref()
+        .and_then(|dashboard| dashboard.quota.as_ref())
+        .map_or_else(
+            || serde_json::json!({"available": false}),
+            |quota| {
+                serde_json::json!({
+                    "available": true,
+                    "capturedAtUnixMs": quota.captured_at_unix_ms,
+                    "windowStartsAtUnixS": quota.window_starts_at_unix_s,
+                    "windowEndsAtUnixS": quota.window_ends_at_unix_s,
+                    "resetsAtUnixS": quota.resets_at_unix_s,
+                    "usedMicropoints": quota.used_micropoints,
+                    "remainingMicropoints": quota.remaining_micropoints,
+                    "todayBaseMicropoints": quota.today_base_micropoints,
+                    "todayCarryMicropoints": quota.today_carry_micropoints,
+                    "todayLimitMicropoints": quota.today_limit_micropoints,
+                    "ledgerDays": quota.ledger_days,
+                })
+            },
+        );
+    let database_path = context.app_data.join("state.sqlite3");
+    let payload = privacy::DiagnosticPayload {
+        manifest: serde_json::json!({
+            "formatVersion": 1,
+            "createdAtUnixMs": SystemClock.now_unix_ms(),
+            "database": privacy::database_diagnostic(&database_path),
+        }),
+        app: serde_json::json!({
+            "productName": "QuotaTide",
+            "version": env!("CARGO_PKG_VERSION"),
+            "rustVersion": env!("CARGO_PKG_RUST_VERSION"),
+            "tauriVersion": tauri::VERSION,
+            "webviewVersion": "system-runtime",
+            "osFamily": std::env::consts::OS,
+            "architecture": std::env::consts::ARCH,
+        }),
+        safe_settings,
+        source_health,
+        current_epoch_observations: observations,
+    };
+    let app_data = context.app_data.clone();
+    let _ = dispatch_shell_event(&app, ShellEvent::ModalActivityOpened, None);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let Some(target) = rfd::FileDialog::new()
+            .add_filter("ZIP archive", &["zip"])
+            .set_file_name(format!(
+                "QuotaTide-diagnostic-{}.zip",
+                SystemClock.now_unix_ms()
+            ))
+            .save_file()
+        else {
+            return Ok(false);
+        };
+        privacy::export_diagnostic_zip(&app_data, &target, &payload)
+            .map(|()| true)
+            .map_err(|_| ())
+    })
+    .await
+    .map_err(|_| storage_public_error())?;
+    let _ = dispatch_shell_event(&app, ShellEvent::ModalActivityClosed, None);
+    result.map_err(|()| storage_public_error())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects command dependencies by value.
+async fn clear_all_local_data(
+    app: AppHandle,
+    context: tauri::State<'_, LocalDataContext>,
+) -> Result<(), PublicError> {
+    if let Some(application) = app.try_state::<LiveApplication>() {
+        application.cancel_scheduler();
+    }
+    if let Some(worker) = app.try_state::<DeliveryWorkerLifecycle>() {
+        worker.cancel();
+    }
+    quotatide_core::CredentialVault::delete(&SystemCredentialVault, "slot-a")
+        .await
+        .map_err(|_| {
+            PublicError::new(
+                PublicErrorCode::CredentialUnavailable,
+                "privacy.credential_unavailable",
+            )
+        })?;
+    quotatide_core::CredentialVault::delete(&SystemCredentialVault, "slot-b")
+        .await
+        .map_err(|_| {
+            PublicError::new(
+                PublicErrorCode::CredentialUnavailable,
+                "privacy.credential_unavailable",
+            )
+        })?;
+    let autostart = SystemAutostart::new(app.clone());
+    autostart.set_enabled(false).await.map_err(|_| {
+        PublicError::new(
+            PublicErrorCode::AutostartUnavailable,
+            "privacy.autostart_unavailable",
+        )
+    })?;
+    if autostart.is_enabled().await.unwrap_or(true) {
+        return Err(PublicError::new(
+            PublicErrorCode::AutostartUnavailable,
+            "privacy.autostart_unavailable",
+        ));
+    }
+    privacy::write_clear_marker(&context.app_data).map_err(|_| storage_public_error())?;
+    app.request_restart();
+    Ok(())
 }
 
 #[tauri::command]
@@ -454,11 +740,20 @@ async fn save_settings(
         .map_err(|error| error.public::<AuthFileReader>())?;
     if should_request_permission && saved.configured {
         let status = request_notification_permission_with_modal(&app, &notifier).await;
-        if let Err(error) = store
+        if store
             .set_notification_permission_status(status, SystemClock.now_unix_ms())
             .await
+            .is_err()
         {
-            eprintln!("QuotaTide: failed to persist notification permission: {error}");
+            safe_log(
+                SafeLogLevel::Error,
+                "settings",
+                "persist_notification_permission",
+                SafeLogFields {
+                    public_error_code: Some("storage_unavailable"),
+                    ..SafeLogFields::default()
+                },
+            );
         } else {
             permission.set(status);
             if let Ok(reloaded) = settings.public_settings().await {
@@ -587,8 +882,16 @@ fn activate_notification(app: &AppHandle, target: AlertTarget) {
     let activation_id = NOTIFICATION_ACTIVATION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
     let activation_app = app.clone();
     let _ = app.run_on_main_thread(move || {
-        if let Err(error) = show_main_window(&activation_app) {
-            eprintln!("QuotaTide: failed to open notification target: {error}");
+        if show_main_window(&activation_app).is_err() {
+            safe_log(
+                SafeLogLevel::Warning,
+                "window",
+                "open_notification_target",
+                SafeLogFields {
+                    public_error_code: Some("platform_unavailable"),
+                    ..SafeLogFields::default()
+                },
+            );
             return;
         }
         let _ = activation_app.emit(
@@ -709,7 +1012,12 @@ fn apply_platform_material(window: &WebviewWindow) {
         }
     }
 
-    eprintln!("QuotaTide: native glass material unavailable; using the opaque fallback");
+    safe_log(
+        SafeLogLevel::Info,
+        "window",
+        "opaque_surface_fallback",
+        SafeLogFields::default(),
+    );
     let _ = window.eval(
         "document.documentElement.dataset.surface='opaque';\
          document.documentElement.dataset.platformFallback='true';",
@@ -741,6 +1049,28 @@ fn spawn_dashboard_event_bridge(
     });
 }
 
+fn finish_shell_setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        apply_platform_material(&window);
+    }
+    let launch_mode = LaunchMode::from_args(std::env::args());
+    if launch_mode.shows_window() {
+        dispatch_shell_event(app.handle(), ShellEvent::OpenRequested, None)
+            .map_err(|_| "failed to show the initial tray window")?;
+    }
+    Ok(())
+}
+
+fn enter_recovery_mode(
+    app: &mut App,
+    app_data: PathBuf,
+    startup: PublicStartupState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    app.manage(LocalDataContext { app_data });
+    app.manage(startup);
+    finish_shell_setup(app)
+}
+
 #[allow(clippy::too_many_lines)] // Wires the desktop dependency graph in one startup transaction.
 fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
@@ -748,27 +1078,71 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     setup_tray(app)?;
     let app_data = app.path().app_data_dir()?;
-    std::fs::create_dir_all(&app_data)?;
-    secure_app_data_directory(&app_data)?;
+    if std::fs::create_dir_all(&app_data).is_err() || secure_app_data_directory(&app_data).is_err()
+    {
+        return enter_recovery_mode(
+            app,
+            app_data,
+            PublicStartupState::storage_permission_denied(),
+        );
+    }
+    if privacy::clear_requested(&app_data) && privacy::clear_scoped_local_data(&app_data).is_err() {
+        return enter_recovery_mode(
+            app,
+            app_data,
+            PublicStartupState::storage_permission_denied(),
+        );
+    }
+    let _ = privacy::initialize_safe_logging(&app_data);
+    safe_log(
+        SafeLogLevel::Info,
+        "lifecycle",
+        "startup",
+        SafeLogFields::default(),
+    );
     let database_path = app_data.join("state.sqlite3");
-    validate_database_targets(&database_path)?;
-    let store = tauri::async_runtime::block_on(AccountSettingsStore::open(&database_path))
-        .map_err(|_| "failed to open the account settings store")?;
-    secure_database_files(&database_path)?;
-    let persisted_settings = tauri::async_runtime::block_on(store.public_atomic_settings())
-        .map_err(|_| "failed to load notification permission state")?;
+    if validate_database_targets(&database_path).is_err() {
+        return enter_recovery_mode(
+            app,
+            app_data,
+            PublicStartupState::storage_permission_denied(),
+        );
+    }
+    let store = match tauri::async_runtime::block_on(AccountSettingsStore::open(&database_path)) {
+        Ok(store) => store,
+        Err(SettingsStoreError::UnsupportedSchema) => {
+            return enter_recovery_mode(app, app_data, PublicStartupState::unsupported_schema());
+        }
+        Err(_) => {
+            return enter_recovery_mode(app, app_data, PublicStartupState::recovery_required());
+        }
+    };
+    if secure_database_files(&database_path).is_err() {
+        return enter_recovery_mode(
+            app,
+            app_data,
+            PublicStartupState::storage_permission_denied(),
+        );
+    }
+    let Ok(persisted_settings) = tauri::async_runtime::block_on(store.public_atomic_settings())
+    else {
+        return enter_recovery_mode(app, app_data, PublicStartupState::recovery_required());
+    };
     let notification_permission =
         SharedNotificationPermission::new(persisted_settings.notification_permission_status);
-    app.manage(store.clone());
-    app.manage(notification_permission.clone());
     let atomic_settings = AtomicSettingsManager::new(
         store.clone(),
         AuthFileReader,
         SystemAutostart::new(app.handle().clone()),
     )
     .with_credential_vault(SystemCredentialVault);
-    tauri::async_runtime::block_on(atomic_settings.recover_external_changes())
-        .map_err(|_| "failed to recover an interrupted settings operation")?;
+    if tauri::async_runtime::block_on(atomic_settings.recover_external_changes()).is_err() {
+        return enter_recovery_mode(app, app_data, PublicStartupState::recovery_required());
+    }
+    app.manage(LocalDataContext { app_data });
+    app.manage(PublicStartupState::ready(store.recovered_at_startup()));
+    app.manage(store.clone());
+    app.manage(notification_permission.clone());
     app.manage(atomic_settings);
     let usage_client =
         CodexUsageClient::new().map_err(|_| "failed to initialize Codex usage client")?;
@@ -798,9 +1172,15 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                     let _ = event_app.emit(ALERTS_CHANGED_EVENT, ());
                 }
                 Ok(false) => {}
-                Err(error) => {
-                    eprintln!(
-                        "QuotaTide: failed to persist asynchronous notification failure: {error}"
+                Err(_) => {
+                    safe_log(
+                        SafeLogLevel::Error,
+                        "delivery",
+                        "persist_late_system_failure",
+                        SafeLogFields {
+                            public_error_code: Some("storage_unavailable"),
+                            ..SafeLogFields::default()
+                        },
                     );
                 }
             }
@@ -838,9 +1218,6 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         application.clone(),
         delivery_worker.clone(),
     );
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        apply_platform_material(&window);
-    }
     let launch_mode = LaunchMode::from_args(std::env::args());
     start_primary(
         launch_mode,
@@ -860,20 +1237,38 @@ fn handle_run_event(app: &AppHandle, event: &RunEvent) {
     match event {
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => {
-            if let Err(error) = dispatch_shell_event(app, ShellEvent::OpenRequested, None) {
-                eprintln!("QuotaTide: {error}");
+            if dispatch_shell_event(app, ShellEvent::OpenRequested, None).is_err() {
+                safe_log(
+                    SafeLogLevel::Warning,
+                    "window",
+                    "reopen",
+                    SafeLogFields::default(),
+                );
             }
         }
         RunEvent::Resumed => {
-            if let Err(error) = dispatch_shell_event(app, ShellEvent::ResumeRequested, None) {
-                eprintln!("QuotaTide: {error}");
+            if dispatch_shell_event(app, ShellEvent::ResumeRequested, None).is_err() {
+                safe_log(
+                    SafeLogLevel::Warning,
+                    "window",
+                    "resume",
+                    SafeLogFields::default(),
+                );
             }
-            app.state::<LiveApplication>().notify_resume();
-            app.state::<DeliveryWorkerLifecycle>().wake();
+            if let Some(application) = app.try_state::<LiveApplication>() {
+                application.notify_resume();
+            }
+            if let Some(worker) = app.try_state::<DeliveryWorkerLifecycle>() {
+                worker.wake();
+            }
         }
         RunEvent::Exit | RunEvent::ExitRequested { .. } => {
-            app.state::<LiveApplication>().cancel_scheduler();
-            app.state::<DeliveryWorkerLifecycle>().cancel();
+            if let Some(application) = app.try_state::<LiveApplication>() {
+                application.cancel_scheduler();
+            }
+            if let Some(worker) = app.try_state::<DeliveryWorkerLifecycle>() {
+                worker.cancel();
+            }
         }
         _ => {}
     }
@@ -884,10 +1279,12 @@ fn handle_run_event(app: &AppHandle, event: &RunEvent) {
 /// # Panics
 ///
 /// Panics when the desktop runtime cannot be initialized or its event loop fails.
+#[allow(clippy::too_many_lines)] // Tauri's builder keeps event ownership visible in one place.
 pub fn run() {
+    restrict_process_file_creation();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            if let Err(error) = notify_secondary(
+            if notify_secondary(
                 LaunchMode::from_args(&args),
                 || dispatch_shell_event(app, ShellEvent::OpenRequested, None),
                 || {
@@ -900,8 +1297,15 @@ pub fn run() {
                         worker.wake();
                     }
                 },
-            ) {
-                eprintln!("QuotaTide: {error}");
+            )
+            .is_err()
+            {
+                safe_log(
+                    SafeLogLevel::Warning,
+                    "lifecycle",
+                    "secondary_activation",
+                    SafeLogFields::default(),
+                );
             }
         }))
         .plugin(tauri_plugin_autostart::init(
@@ -912,8 +1316,13 @@ pub fn run() {
         .setup(setup_application)
         .on_menu_event(|app, event| {
             if let Some(shell_event) = menu_event_for_id(event.id().0.as_str()) {
-                if let Err(error) = dispatch_shell_event(app, shell_event, None) {
-                    eprintln!("QuotaTide: {error}");
+                if dispatch_shell_event(app, shell_event, None).is_err() {
+                    safe_log(
+                        SafeLogLevel::Warning,
+                        "window",
+                        "menu_event",
+                        SafeLogFields::default(),
+                    );
                 }
             }
         })
@@ -926,11 +1335,15 @@ pub fn run() {
                 ..
             } = event
             {
-                if id.as_ref() == MAIN_TRAY_ID {
-                    if let Err(error) = dispatch_shell_event(app, ShellEvent::LeftClick, Some(rect))
-                    {
-                        eprintln!("QuotaTide: {error}");
-                    }
+                if id.as_ref() == MAIN_TRAY_ID
+                    && dispatch_shell_event(app, ShellEvent::LeftClick, Some(rect)).is_err()
+                {
+                    safe_log(
+                        SafeLogLevel::Warning,
+                        "window",
+                        "tray_click",
+                        SafeLogFields::default(),
+                    );
                 }
             }
         })
@@ -948,13 +1361,23 @@ pub fn run() {
                 _ => None,
             };
             if let Some(shell_event) = shell_event {
-                if let Err(error) = dispatch_shell_event(window.app_handle(), shell_event, None) {
-                    eprintln!("QuotaTide: {error}");
+                if dispatch_shell_event(window.app_handle(), shell_event, None).is_err() {
+                    safe_log(
+                        SafeLogLevel::Warning,
+                        "window",
+                        "window_event",
+                        SafeLogFields::default(),
+                    );
                 }
             }
         })
         .invoke_handler(tauri::generate_handler![
             get_build_info,
+            get_startup_state,
+            retry_local_recovery,
+            open_local_data_directory,
+            export_diagnostics,
+            clear_all_local_data,
             hide_main_window,
             request_manual_refresh,
             begin_modal_activity,
@@ -971,6 +1394,16 @@ pub fn run() {
 
     app.run(|app, event| handle_run_event(app, &event));
 }
+
+#[cfg(unix)]
+fn restrict_process_file_creation() {
+    use nix::sys::stat::{Mode, umask};
+
+    let _ = umask(Mode::from_bits_truncate(0o077));
+}
+
+#[cfg(not(unix))]
+const fn restrict_process_file_creation() {}
 
 #[cfg(unix)]
 fn secure_app_data_directory(path: &std::path::Path) -> std::io::Result<()> {
@@ -1158,7 +1591,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        AuthFileReader, DeliveryWorkerLifecycle, SharedNotificationPermission,
+        AuthFileReader, DeliveryWorkerLifecycle, PublicStartupState, SharedNotificationPermission,
         configure_selected_auth, get_build_info, menu_event_for_id,
         should_request_notification_permission,
     };
@@ -1171,6 +1604,46 @@ mod tests {
         assert_eq!(info.product_name, "QuotaTide");
         assert_eq!(info.identifier, "dev.theblind.quotatide");
         assert_eq!(info.stage, "skeleton");
+    }
+
+    #[test]
+    fn startup_recovery_contract_contains_no_local_path_or_internal_error() {
+        let payload = serde_json::to_string(&PublicStartupState::recovery_required())
+            .expect("serialize startup state");
+
+        assert_eq!(
+            payload,
+            r#"{"mode":"recovery_required","messageKey":"startup.recovery_required","recoveredFromBackup":false}"#
+        );
+        assert!(!payload.contains("/Users/"));
+        assert!(!payload.contains("sqlite"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_directory_is_restricted_and_symlink_database_targets_are_rejected() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempdir().expect("temporary directory");
+        let app_data = directory.path().join("data");
+        fs::create_dir(&app_data).expect("app data");
+        fs::set_permissions(&app_data, fs::Permissions::from_mode(0o755))
+            .expect("loose permissions");
+        super::secure_app_data_directory(&app_data).expect("secure app data");
+        assert_eq!(
+            fs::metadata(&app_data)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+
+        let outside = directory.path().join("outside.sqlite3");
+        fs::write(&outside, b"outside").expect("outside database");
+        std::os::unix::fs::symlink(&outside, app_data.join("state.sqlite3"))
+            .expect("database symlink");
+        assert!(super::validate_database_targets(&app_data.join("state.sqlite3")).is_err());
     }
 
     #[test]

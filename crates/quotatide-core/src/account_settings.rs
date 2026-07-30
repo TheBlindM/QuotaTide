@@ -18,6 +18,10 @@ use crate::alerts::{
 };
 use crate::email::SmtpConnection;
 use crate::live_quota::CombinedRefreshDisposition;
+use crate::local_data::{
+    LocalDataError, PreflightDisposition, begin_recovery, discard_database_artifacts,
+    prepare_database, restore_backup, secure_database_artifacts,
+};
 use crate::quota_ledger::{
     DailyLimitSnapshot, DailyPolicyStatus, PersistedLedgerEpoch, PolicyDayProjection, PolicyError,
     PolicyWindowFacts, QuotaPolicy, ThresholdTransition,
@@ -777,7 +781,10 @@ where
                 "settings.invalid_smtp",
             ),
             Self::Storage(
-                SettingsStoreError::Database(_) | SettingsStoreError::InvalidNotificationState,
+                SettingsStoreError::Database(_)
+                | SettingsStoreError::InvalidNotificationState
+                | SettingsStoreError::UnsupportedSchema
+                | SettingsStoreError::RecoveryRequired,
             ) => PublicError::new(
                 PublicErrorCode::StorageUnavailable,
                 "settings.storage_unavailable",
@@ -912,7 +919,10 @@ impl<E: Error + Send + Sync + 'static> AccountConfigError<E> {
                 "settings.invalid_smtp",
             ),
             Self::Storage(
-                SettingsStoreError::Database(_) | SettingsStoreError::InvalidNotificationState,
+                SettingsStoreError::Database(_)
+                | SettingsStoreError::InvalidNotificationState
+                | SettingsStoreError::UnsupportedSchema
+                | SettingsStoreError::RecoveryRequired,
             ) => PublicError::new(
                 PublicErrorCode::StorageUnavailable,
                 "settings.storage_unavailable",
@@ -1080,6 +1090,10 @@ pub enum SettingsStoreError {
     InvalidSmtpSettings,
     #[error("persisted notification state is invalid")]
     InvalidNotificationState,
+    #[error("database schema is newer than this application")]
+    UnsupportedSchema,
+    #[error("local database recovery requires user action")]
+    RecoveryRequired,
     #[error("account settings store unavailable")]
     Database(#[source] Box<dyn Error + Send + Sync>),
 }
@@ -1174,7 +1188,71 @@ fn initialize_database(
     } else {
         validate_migration(database, 10, SMTP_SETTINGS_SCHEMA_CHECKSUM)?;
     }
+    validate_database_health(database)?;
     Ok(())
+}
+
+fn validate_database_health(database: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let quick_check: String = database.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+    if quick_check != "ok" {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let foreign_key_failures: i64 =
+        database.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })?;
+    let singleton_count: i64 =
+        database.query_row("SELECT COUNT(*) FROM app_meta", [], |row| row.get(0))?;
+    let policy_day_count: i64 = database.query_row(
+        "SELECT COUNT(*)
+         FROM policy_day_limits day
+         JOIN app_settings settings
+           ON settings.active_policy_revision_id = day.policy_revision_id
+         WHERE settings.singleton_id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let alert_preference_count: i64 =
+        database.query_row("SELECT COUNT(*) FROM alert_preferences", [], |row| {
+            row.get(0)
+        })?;
+    let smtp_count: i64 =
+        database.query_row("SELECT COUNT(*) FROM smtp_settings", [], |row| row.get(0))?;
+    let active_epoch_conflicts: i64 = database.query_row(
+        "SELECT COUNT(*)
+         FROM (
+           SELECT account_stream_id
+           FROM quota_epochs
+           WHERE closed_at_ms IS NULL
+           GROUP BY account_stream_id
+           HAVING COUNT(*) > 1
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let active_policy_total: i64 = database.query_row(
+        "SELECT COALESCE(SUM(day.base_micropoints), 0)
+         FROM policy_day_limits day
+         JOIN app_settings settings
+           ON settings.active_policy_revision_id = day.policy_revision_id
+         WHERE settings.singleton_id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    if foreign_key_failures == 0
+        && singleton_count == 1
+        && policy_day_count == 7
+        && active_policy_total <= 100_000_000
+        && alert_preference_count
+            == i64::try_from(AlertEventKind::ALL.len() * AlertChannel::ALL.len())
+                .map_err(|_| rusqlite::Error::InvalidQuery)?
+        && smtp_count == 1
+        && active_epoch_conflicts == 0
+    {
+        Ok(())
+    } else {
+        Err(rusqlite::Error::InvalidQuery)
+    }
 }
 
 fn migrate_settings_v1(
@@ -2261,6 +2339,7 @@ fn validate_alert_preferences(
 #[derive(Clone)]
 pub struct AccountSettingsStore {
     connection: Connection,
+    recovered_at_startup: bool,
 }
 
 impl AccountSettingsStore {
@@ -2290,24 +2369,47 @@ impl AccountSettingsStore {
         path: impl AsRef<Path>,
         policy_timezone: impl AsRef<str>,
     ) -> Result<Self, SettingsStoreError> {
+        let path = path.as_ref().to_path_buf();
         let policy_timezone = policy_timezone.as_ref().to_owned();
         policy_timezone
             .parse::<chrono_tz::Tz>()
             .map_err(SettingsStoreError::database)?;
-        let connection = Connection::open(path)
-            .await
-            .map_err(SettingsStoreError::database)?;
+        let preflight = prepare_database(&path, SCHEMA_VERSION).map_err(|error| match error {
+            LocalDataError::UnsupportedSchema => SettingsStoreError::UnsupportedSchema,
+            LocalDataError::RecoveryRequired => SettingsStoreError::RecoveryRequired,
+            other => SettingsStoreError::database(other),
+        })?;
+        let mut recovered_at_startup = matches!(preflight, PreflightDisposition::Recovered);
         let salt = new_salt().map_err(SettingsStoreError::database)?;
         let app_instance_id = Uuid::now_v7().to_string();
         let now = unix_time_ms();
-        connection
-            .call(move |database| {
-                initialize_database(database, &salt, &app_instance_id, now, &policy_timezone)
-            })
-            .await
-            .map_err(SettingsStoreError::database)?;
+        let connection = if let Ok(connection) = open_initialized_connection(
+            &path,
+            salt,
+            app_instance_id.clone(),
+            now,
+            policy_timezone.clone(),
+        )
+        .await
+        {
+            connection
+        } else {
+            recovered_at_startup = true;
+            recover_initialized_connection(&path, salt, app_instance_id, now, policy_timezone)
+                .await?
+        };
+        secure_database_artifacts(&path).map_err(SettingsStoreError::database)?;
 
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            recovered_at_startup,
+        })
+    }
+
+    /// Returns whether this process restored a validated backup while opening.
+    #[must_use]
+    pub const fn recovered_at_startup(&self) -> bool {
+        self.recovered_at_startup
     }
 
     /// Atomically commits a validated account if the revision still matches.
@@ -3962,6 +4064,58 @@ impl AccountSettingsStore {
             })
             .await
             .map_err(SettingsStoreError::database)
+    }
+}
+
+async fn open_initialized_connection(
+    path: &Path,
+    salt: [u8; 32],
+    app_instance_id: String,
+    now: i64,
+    policy_timezone: String,
+) -> Result<Connection, tokio_rusqlite::Error> {
+    let connection = Connection::open(path).await?;
+    connection
+        .call(move |database| {
+            initialize_database(database, &salt, &app_instance_id, now, &policy_timezone)
+        })
+        .await?;
+    Ok(connection)
+}
+
+async fn recover_initialized_connection(
+    path: &Path,
+    salt: [u8; 32],
+    app_instance_id: String,
+    now: i64,
+    policy_timezone: String,
+) -> Result<Connection, SettingsStoreError> {
+    let candidates = begin_recovery(path, SCHEMA_VERSION).map_err(map_local_data_error)?;
+    for backup in candidates {
+        restore_backup(path, &backup).map_err(map_local_data_error)?;
+        match open_initialized_connection(
+            path,
+            salt,
+            app_instance_id.clone(),
+            now,
+            policy_timezone.clone(),
+        )
+        .await
+        {
+            Ok(connection) => return Ok(connection),
+            Err(_) => {
+                discard_database_artifacts(path).map_err(map_local_data_error)?;
+            }
+        }
+    }
+    Err(SettingsStoreError::RecoveryRequired)
+}
+
+fn map_local_data_error(error: LocalDataError) -> SettingsStoreError {
+    match error {
+        LocalDataError::UnsupportedSchema => SettingsStoreError::UnsupportedSchema,
+        LocalDataError::RecoveryRequired => SettingsStoreError::RecoveryRequired,
+        other => SettingsStoreError::database(other),
     }
 }
 

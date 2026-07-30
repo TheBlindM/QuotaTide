@@ -1,12 +1,23 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/preact";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App, projectLiveFixture, projectRadarFixture } from "./App";
 import { saveSettings } from "./api/account-settings";
 import { getLiveQuota } from "./api/live-quota";
+import {
+  getStartupState,
+  openLocalDataDirectory,
+  retryLocalRecovery,
+} from "./api/local-data";
 
 const { quotaPolicy, appAlertPreferences } = vi.hoisted(() => {
   const alertKinds = [
@@ -152,8 +163,25 @@ vi.mock("./api/live-quota", () => ({
   onDashboardChanged: vi.fn().mockResolvedValue(vi.fn()),
 }));
 
+vi.mock("./api/local-data", () => ({
+  getStartupState: vi.fn().mockResolvedValue({
+    mode: "ready",
+    messageKey: "startup.ready",
+    recoveredFromBackup: false,
+  }),
+  openLocalDataDirectory: vi.fn().mockResolvedValue(undefined),
+  retryLocalRecovery: vi.fn().mockResolvedValue(undefined),
+  exportDiagnostics: vi.fn().mockResolvedValue(true),
+  clearAllLocalData: vi.fn().mockResolvedValue(undefined),
+}));
+
 afterEach(() => {
   cleanup();
+  vi.mocked(getStartupState).mockResolvedValue({
+    mode: "ready",
+    messageKey: "startup.ready",
+    recoveredFromBackup: false,
+  });
   window.history.replaceState({}, "", "/");
   delete document.documentElement.dataset.theme;
   delete document.documentElement.dataset.surface;
@@ -171,6 +199,43 @@ describe("QuotaTide tray app", () => {
       screen.getByRole("table", { name: /当前七日窗口/ }),
     ).toBeInTheDocument();
     expect(screen.getByText(/已用 42%/)).toBeInTheDocument();
+  });
+
+  it("keeps a visible notice after an automatic validated-backup recovery", async () => {
+    vi.mocked(getStartupState).mockResolvedValueOnce({
+      mode: "ready",
+      messageKey: "startup.ready",
+      recoveredFromBackup: true,
+    });
+
+    render(<App />);
+
+    expect(
+      await screen.findByText(/已从最近的有效备份恢复本地账本/),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps recovery actions available when the local database cannot open", async () => {
+    vi.mocked(getStartupState).mockResolvedValueOnce({
+      mode: "recovery_required",
+      messageKey: "startup.recovery_required",
+      recoveredFromBackup: false,
+    });
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "本地账本需要处理" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/没有创建空账本/)).toBeInTheDocument();
+    expect(screen.getByText(/auth.json 不在处理范围内/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "重试恢复" }));
+    expect(retryLocalRecovery).toHaveBeenCalledOnce();
+    const openData = screen.getByRole("button", { name: "打开数据目录" });
+    await waitFor(() => expect(openData).toBeEnabled());
+    fireEvent.click(openData);
+    expect(openLocalDataDirectory).toHaveBeenCalledOnce();
   });
 
   it("never combines a newly saved account with the previous account quota", async () => {

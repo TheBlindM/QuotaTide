@@ -11,7 +11,7 @@ License：MIT
 ## 当前状态
 
 项目正在从旧 Node/Docker 原型重构为 Rust/Tauri 桌面应用。目前已完成
-**Ticket 14–23 的桌面骨架、实时数据、策略、提醒和安全邮件投递**：
+**Ticket 14–24 的桌面骨架、实时数据、策略、提醒、安全邮件和本地恢复工具**：
 
 - Rust workspace 与框架无关的 `quotatide-core`；
 - Tauri 2 隐藏窗口和单一 Tide Dial 托盘入口；
@@ -30,9 +30,13 @@ License：MIT
 - 持久提醒 outbox、macOS/Windows 原生系统通知、点击聚焦和失败恢复；
 - TLS/required STARTTLS SMTP、macOS Keychain/Windows Credential Manager
   双槽密码、逐收件人邮件重试与独立测试邮件；
+- SQLite WAL 启动恢复、固定 migration checksum、迁移前滚动备份、损坏隔离与
+  最近有效备份自动恢复；无有效副本或 schema 过新时进入只读恢复界面；
+- `5 × 1 MiB` 结构化安全日志、原生保存位置的严格脱敏诊断 ZIP，以及带
+  二次确认、凭证库优先和 `auth.json` 保护的本地数据清除；
 - macOS/Windows bundle CI 骨架。
 
-当前版本尚未完成隐私恢复工具、本地化/可访问性、开源清理和正式发布 smoke。
+当前版本尚未完成双语/可访问性、开源清理和正式发布 smoke。
 旧 Node 服务仍暂时保留供行为迁移测试使用，但新桌面应用不启动它、不读取
 它的数据库，也不依赖 Docker。
 

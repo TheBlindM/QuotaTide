@@ -89,16 +89,174 @@ const unconfiguredSettings: PublicSettings = {
   },
 };
 
+export function PrivacyPanel({
+  onExportDiagnostics,
+  onClearLocalData,
+}: {
+  onExportDiagnostics?: () => Promise<boolean>;
+  onClearLocalData?: () => Promise<void>;
+}) {
+  const [showExportSummary, setShowExportSummary] = useState(false);
+  const [exportState, setExportState] = useState<
+    "idle" | "exporting" | "saved" | "cancelled" | "error"
+  >("idle");
+  const [showClearConfirmation, setShowClearConfirmation] = useState(false);
+  const [clearPhrase, setClearPhrase] = useState("");
+  const [clearState, setClearState] = useState<"idle" | "clearing" | "error">(
+    "idle",
+  );
+
+  return (
+    <section aria-labelledby="privacy-settings">
+      <div class="settings-section__heading">
+        <span>本机数据</span>
+        <h2 id="privacy-settings">诊断与清除</h2>
+      </div>
+      <p class="settings-description">
+        数据仅保存在当前用户目录。auth.json 始终只读，且不会被清除。
+      </p>
+      <div class="privacy-tool">
+        <div>
+          <strong>导出脱敏诊断</strong>
+          <small>用于排查启动、同步或通知问题，不会上传任何内容。</small>
+        </div>
+        {!showExportSummary ? (
+          <button
+            type="button"
+            disabled={!onExportDiagnostics}
+            onClick={() => {
+              setShowExportSummary(true);
+            }}
+          >
+            查看内容
+          </button>
+        ) : (
+          <div class="privacy-review">
+            <p>将包含：</p>
+            <ul>
+              <li>应用、系统与数据库完整性信息</li>
+              <li>脱敏设置、当前额度窗口和来源状态</li>
+              <li>最多 5 MiB 的结构化安全日志</li>
+            </ul>
+            <p>不会包含 Token、账号 ID、邮箱、SMTP 主机、auth 路径或数据库。</p>
+            <button
+              type="button"
+              class="settings-save"
+              disabled={!onExportDiagnostics || exportState === "exporting"}
+              onClick={() => {
+                if (!onExportDiagnostics) {
+                  return;
+                }
+                setExportState("exporting");
+                void onExportDiagnostics()
+                  .then((saved) => {
+                    setExportState(saved ? "saved" : "cancelled");
+                  })
+                  .catch(() => {
+                    setExportState("error");
+                  });
+              }}
+            >
+              {exportState === "exporting" ? "正在准备…" : "选择保存位置"}
+            </button>
+            <span class="privacy-tool__status" role="status">
+              {{
+                idle: "",
+                exporting: "正在生成严格脱敏的 ZIP…",
+                saved: "诊断 ZIP 已保存",
+                cancelled: "已取消导出",
+                error: "导出失败，请检查目录权限",
+              }[exportState]}
+            </span>
+          </div>
+        )}
+      </div>
+      <div class="privacy-tool privacy-tool--danger">
+        <div>
+          <strong>清除全部 QuotaTide 本地数据</strong>
+          <small>删除账本、设置、提醒、备份、日志和系统钥匙串密码。</small>
+        </div>
+        {!showClearConfirmation ? (
+          <button
+            type="button"
+            disabled={!onClearLocalData}
+            onClick={() => {
+              setShowClearConfirmation(true);
+            }}
+          >
+            清除…
+          </button>
+        ) : (
+          <div class="privacy-review">
+            <p>
+              此操作不可撤销。请输入 <strong>清除</strong> 以进行第二次确认。
+            </p>
+            <input
+              type="text"
+              aria-label="输入清除以确认"
+              value={clearPhrase}
+              autocomplete="off"
+              onInput={(event) => {
+                setClearPhrase(event.currentTarget.value);
+                setClearState("idle");
+              }}
+            />
+            <div class="privacy-confirm-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowClearConfirmation(false);
+                  setClearPhrase("");
+                }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                class="danger-button"
+                disabled={
+                  clearPhrase !== "清除" ||
+                  !onClearLocalData ||
+                  clearState === "clearing"
+                }
+                onClick={() => {
+                  if (!onClearLocalData) {
+                    return;
+                  }
+                  setClearState("clearing");
+                  void onClearLocalData().catch(() => {
+                    setClearState("error");
+                  });
+                }}
+              >
+                {clearState === "clearing" ? "正在清除…" : "永久清除并重新启动"}
+              </button>
+            </div>
+            {clearState === "error" ? (
+              <p class="settings-error" role="alert">
+                未能删除系统钥匙串或自动启动项。本地数据尚未清除，请重试。
+              </p>
+            ) : null}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 type TrayAppProps = {
   fixture: LedgerFixture;
   settings?: PublicSettings;
   alerts?: PublicAlertInbox | null;
   focusRequest?: NotificationActivation | null;
   externalRefreshing?: boolean;
+  recoveredFromBackup?: boolean;
   onHide: () => void;
   onRefresh: () => unknown;
   onRequestNotificationPermission?: () => Promise<NotificationPermissionStatus>;
   onSendTestEmail?: () => Promise<number>;
+  onExportDiagnostics?: () => Promise<boolean>;
+  onClearLocalData?: () => Promise<void>;
   onSaveSettings?: (draft: SettingsDraft) => Promise<PublicSettings>;
   onReloadSettings?: () => Promise<PublicSettings>;
 };
@@ -108,17 +266,21 @@ function SettingsView({
   onBack,
   onRequestNotificationPermission,
   onSendTestEmail,
+  onExportDiagnostics,
+  onClearLocalData,
   onSave,
 }: {
   settings: PublicSettings;
   onBack: () => void;
   onRequestNotificationPermission?: () => Promise<void>;
   onSendTestEmail?: () => Promise<number>;
+  onExportDiagnostics?: () => Promise<boolean>;
+  onClearLocalData?: () => Promise<void>;
   onSave: (draft: SettingsDraft) => Promise<void>;
 }) {
-  const [activeTab, setActiveTab] = useState<"account" | "quota" | "alerts">(
-    "account",
-  );
+  const [activeTab, setActiveTab] = useState<
+    "account" | "quota" | "alerts" | "privacy"
+  >("account");
   const [authPath, setAuthPath] = useState("");
   const [dailyLimits, setDailyLimits] = useState(() =>
     settings.quotaPolicy.baseMicropoints.map((value) => value / 1_000_000),
@@ -285,6 +447,7 @@ function SettingsView({
               ["account", "账号"],
               ["quota", "额度"],
               ["alerts", "提醒"],
+              ["privacy", "隐私"],
             ] as const
           ).map(([tab, label]) => (
             <button
@@ -426,7 +589,7 @@ function SettingsView({
               </p>
             ) : null}
           </section>
-        ) : (
+        ) : activeTab === "alerts" ? (
           <section aria-labelledby="alert-settings">
             <div class="settings-section__heading alert-heading">
               <div>
@@ -760,6 +923,11 @@ function SettingsView({
               </p>
             ) : null}
           </section>
+        ) : (
+          <PrivacyPanel
+            onExportDiagnostics={onExportDiagnostics}
+            onClearLocalData={onClearLocalData}
+          />
         )}
         {saveError ? (
           <p class="settings-error settings-error--floating" role="alert">
@@ -792,10 +960,13 @@ export function TrayApp({
   alerts = null,
   focusRequest = null,
   externalRefreshing = false,
+  recoveredFromBackup = false,
   onHide,
   onRefresh,
   onRequestNotificationPermission,
   onSendTestEmail,
+  onExportDiagnostics,
+  onClearLocalData,
   onSaveSettings,
   onReloadSettings,
 }: TrayAppProps) {
@@ -909,6 +1080,8 @@ export function TrayApp({
             : undefined
         }
         onSendTestEmail={onSendTestEmail}
+        onExportDiagnostics={onExportDiagnostics}
+        onClearLocalData={onClearLocalData}
         onSave={async (draft) => {
           if (!onSaveSettings) {
             return;
@@ -927,18 +1100,25 @@ export function TrayApp({
   }
 
   return (
-    <WeeklyLedger
-      fixture={fixture}
-      alerts={alerts}
-      focusTarget={focusRequest?.target}
-      focusActivationId={focusRequest?.activationId}
-      onOpenSettings={() => {
-        setView("settings");
-      }}
-      onRefresh={handleRefresh}
-      refreshing={visibleRefreshing}
-      refreshDisabled={visibleRefreshing || coolingDown}
-    />
+    <>
+      {recoveredFromBackup ? (
+        <div class="recovery-success-banner" role="status">
+          已从最近的有效备份恢复本地账本；损坏副本仍保留在数据目录中。
+        </div>
+      ) : null}
+      <WeeklyLedger
+        fixture={fixture}
+        alerts={alerts}
+        focusTarget={focusRequest?.target}
+        focusActivationId={focusRequest?.activationId}
+        onOpenSettings={() => {
+          setView("settings");
+        }}
+        onRefresh={handleRefresh}
+        refreshing={visibleRefreshing}
+        refreshDisabled={visibleRefreshing || coolingDown}
+      />
+    </>
   );
 }
 

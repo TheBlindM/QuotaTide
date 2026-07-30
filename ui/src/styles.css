@@ -684,7 +684,7 @@ progress::-moz-progress-bar {
   border: 1px solid var(--line);
   border-radius: 13px;
   background: var(--glass-strong);
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
 }
 
 .settings-tabs button {
@@ -1219,6 +1219,206 @@ progress::-moz-progress-bar {
   color: var(--muted);
 }
 
+.recovery-shell {
+  display: grid;
+  height: 100%;
+  padding: 16px;
+  place-items: center;
+}
+
+.recovery-card {
+  width: min(100%, 390px);
+  max-height: 100%;
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid var(--line-strong);
+  border-radius: 28px;
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 34%), transparent 58%),
+    var(--glass);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(30px) saturate(145%);
+  -webkit-backdrop-filter: blur(30px) saturate(145%);
+}
+
+.recovery-header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 13px;
+  align-items: start;
+}
+
+.recovery-header h1 {
+  margin: 4px 0 0;
+  font-size: 24px;
+  line-height: 1.15;
+  letter-spacing: -0.04em;
+}
+
+.recovery-orb {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 32% 28%, rgb(255 255 255 / 90%), transparent 24%),
+    linear-gradient(145deg, #efb15e, #c56b48);
+  box-shadow: 0 12px 28px rgb(183 101 62 / 24%);
+}
+
+.recovery-eyebrow {
+  margin: 0;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: 0.12em;
+}
+
+.recovery-detail {
+  margin: 24px 0 18px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.recovery-note {
+  display: grid;
+  gap: 5px;
+  padding: 14px 15px;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: var(--card);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.recovery-note span {
+  color: var(--muted);
+}
+
+.recovery-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 22px;
+}
+
+.recovery-actions button {
+  padding: 0 14px;
+}
+
+.privacy-tool {
+  display: grid;
+  gap: 13px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: var(--card);
+}
+
+.privacy-tool + .privacy-tool {
+  margin-top: 12px;
+}
+
+.privacy-tool > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.privacy-tool small,
+.privacy-review {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.privacy-tool > button {
+  justify-self: start;
+  padding: 0 14px;
+}
+
+.privacy-tool--danger {
+  border-color: color-mix(in srgb, var(--red) 25%, var(--line));
+}
+
+.privacy-review {
+  display: grid;
+  gap: 10px;
+}
+
+.privacy-review p,
+.privacy-review ul {
+  margin: 0;
+}
+
+.privacy-review ul {
+  padding-left: 18px;
+}
+
+.privacy-review input {
+  min-width: 0;
+  height: 40px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  background: var(--glass-strong);
+}
+
+.privacy-tool__status {
+  min-height: 17px;
+}
+
+.privacy-confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.privacy-confirm-actions button {
+  padding: 0 12px;
+}
+
+.danger-button {
+  background: var(--red-soft);
+  color: var(--red);
+  font-weight: 700;
+}
+
+.recovery-privacy-tools {
+  margin-top: 16px;
+}
+
+.recovery-privacy-tools section {
+  display: grid;
+  gap: 12px;
+}
+
+.recovery-privacy-tools .settings-section__heading {
+  display: none;
+}
+
+.recovery-privacy-tools .settings-description {
+  margin: 0;
+}
+
+.recovery-success-banner {
+  position: fixed;
+  z-index: 30;
+  top: 10px;
+  right: 12px;
+  left: 12px;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--solid) 90%, transparent);
+  box-shadow: 0 8px 24px rgb(18 54 38 / 14%);
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: center;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
 :root[data-platform-fallback="true"] body::before {
   position: fixed;
   z-index: 20;
@@ -1236,7 +1436,8 @@ progress::-moz-progress-bar {
 }
 
 :root[data-surface="opaque"] .weekly-ledger,
-:root[data-surface="opaque"] .settings-view {
+:root[data-surface="opaque"] .settings-view,
+:root[data-surface="opaque"] .recovery-card {
   background: var(--solid);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -1250,7 +1451,8 @@ progress::-moz-progress-bar {
 
 @media (prefers-reduced-transparency: reduce) {
   .weekly-ledger,
-  .settings-view {
+  .settings-view,
+  .recovery-card {
     background: var(--solid);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;

@@ -24,7 +24,15 @@ import {
 import { loadBuildInfo } from "./api/build-info";
 import { getLiveQuota, onDashboardChanged } from "./api/live-quota";
 import { hideMainWindow, requestManualRefresh } from "./api/tray-shell";
-import { TrayApp } from "./TrayApp";
+import {
+  getStartupState,
+  clearAllLocalData,
+  exportDiagnostics,
+  openLocalDataDirectory,
+  retryLocalRecovery,
+  type PublicStartupState,
+} from "./api/local-data";
+import { PrivacyPanel, TrayApp } from "./TrayApp";
 import {
   ledgerFixtures,
   type LedgerTone,
@@ -41,7 +49,9 @@ type ViewState =
       liveQuota: PublicLiveQuota | null;
       radar: PublicResetRadar;
       refreshing: boolean;
+      recoveredFromBackup: boolean;
     }
+  | { kind: "recovery"; startup: PublicStartupState }
   | { kind: "error" };
 
 const previewAlertKinds: AlertEventKind[] = [
@@ -56,11 +66,28 @@ const previewAlertKinds: AlertEventKind[] = [
 
 export function App() {
   const isPreview = new URLSearchParams(window.location.search).has("preview");
+  const previewRecovery = new URLSearchParams(window.location.search).get(
+    "recovery",
+  );
   const previewAlerts =
     new URLSearchParams(window.location.search).get("alerts") === "denied";
   const [state, setState] = useState<ViewState>(
     isPreview
-      ? {
+      ? previewRecovery !== null
+        ? {
+            kind: "recovery",
+            startup: {
+              mode:
+                previewRecovery === "version"
+                  ? "unsupported_schema"
+                  : previewRecovery === "permission"
+                    ? "storage_permission_denied"
+                    : "recovery_required",
+              messageKey: "startup.preview",
+              recoveredFromBackup: false,
+            },
+          }
+        : {
           kind: "ready",
           info: {
             productName: "QuotaTide",
@@ -123,7 +150,8 @@ export function App() {
           liveQuota: null,
           radar: emptyRadarState,
           refreshing: false,
-        }
+          recoveredFromBackup: false,
+          }
       : { kind: "loading" },
   );
 
@@ -134,8 +162,20 @@ export function App() {
 
     let active = true;
 
-    void Promise.all([loadBuildInfo(), getSettings(), getLiveQuota(), getAlerts()])
-      .then(([info, settings, liveQuotaState, alerts]) => {
+    void getStartupState()
+      .then(async (startup) => {
+        if (startup.mode !== "ready") {
+          if (active) {
+            setState({ kind: "recovery", startup });
+          }
+          return;
+        }
+        const [info, settings, liveQuotaState, alerts] = await Promise.all([
+          loadBuildInfo(),
+          getSettings(),
+          getLiveQuota(),
+          getAlerts(),
+        ]);
         if (active) {
           setState({
             kind: "ready",
@@ -146,6 +186,7 @@ export function App() {
             liveQuota: liveQuotaState.quota,
             radar: liveQuotaState.radar,
             refreshing: liveQuotaState.refreshing,
+            recoveredFromBackup: startup.recoveredFromBackup,
           });
         }
       })
@@ -161,7 +202,7 @@ export function App() {
   }, [isPreview]);
 
   useEffect(() => {
-    if (isPreview) {
+    if (isPreview || state.kind !== "ready") {
       return;
     }
     let active = true;
@@ -215,7 +256,6 @@ export function App() {
           unlistenSettings = disposeSettings;
           unlistenAlerts = disposeAlerts;
           unlistenNotification = disposeNotification;
-          reloadDashboard();
         } else {
           disposeDashboard();
           disposeSettings();
@@ -232,7 +272,7 @@ export function App() {
       unlistenAlerts?.();
       unlistenNotification?.();
     };
-  }, [isPreview]);
+  }, [isPreview, state.kind]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -266,6 +306,19 @@ export function App() {
     );
   }
 
+  if (state.kind === "recovery") {
+    return (
+      <RecoveryView
+        startup={state.startup}
+        onOpenData={() => openLocalDataDirectory()}
+        onRetry={() => retryLocalRecovery()}
+        onHide={() => hideMainWindow()}
+        onExportDiagnostics={() => exportDiagnostics()}
+        onClearLocalData={() => clearAllLocalData()}
+      />
+    );
+  }
+
   const requestedState = new URLSearchParams(window.location.search).get("state");
   const previewRadar = new URLSearchParams(window.location.search).get("radar");
   const tone: LedgerTone =
@@ -294,6 +347,7 @@ export function App() {
       alerts={state.alerts}
       focusRequest={state.focusRequest}
       externalRefreshing={state.refreshing}
+      recoveredFromBackup={state.recoveredFromBackup}
       onHide={() => {
         void hideMainWindow().catch(() => undefined);
       }}
@@ -315,6 +369,8 @@ export function App() {
       }}
       onRequestNotificationPermission={requestSystemNotificationPermission}
       onSendTestEmail={sendTestEmail}
+      onExportDiagnostics={exportDiagnostics}
+      onClearLocalData={clearAllLocalData}
       onReloadSettings={getSettings}
       onSaveSettings={async (draft) => {
         const settings = await saveSettings(draft);
@@ -333,6 +389,113 @@ export function App() {
         return settings;
       }}
     />
+  );
+}
+
+function RecoveryView({
+  startup,
+  onOpenData,
+  onRetry,
+  onHide,
+  onExportDiagnostics,
+  onClearLocalData,
+}: {
+  startup: PublicStartupState;
+  onOpenData: () => Promise<void>;
+  onRetry: () => Promise<void>;
+  onHide: () => Promise<void>;
+  onExportDiagnostics: () => Promise<boolean>;
+  onClearLocalData: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [actionFailed, setActionFailed] = useState(false);
+  const content =
+    startup.mode === "unsupported_schema"
+      ? {
+          eyebrow: "版本保护",
+          title: "本地数据来自更新版本",
+          detail:
+            "QuotaTide 已保持只读，没有降级或覆盖数据。请安装兼容版本后重试。",
+        }
+      : startup.mode === "storage_permission_denied"
+        ? {
+            eyebrow: "隐私保护",
+            title: "无法保护本地数据目录",
+            detail:
+              "应用已停止数据库写入。请检查目录所有者与权限，修复后再重试。",
+          }
+        : {
+            eyebrow: "恢复模式",
+            title: "本地账本需要处理",
+            detail:
+              "有效备份已自动尝试。当前没有可安全使用的数据副本，因此没有创建空账本。",
+          };
+
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true);
+    setActionFailed(false);
+    try {
+      await action();
+    } catch {
+      setActionFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main class="recovery-shell">
+      <article class="recovery-card">
+        <header class="recovery-header">
+          <span class="recovery-orb" aria-hidden="true" />
+          <div>
+            <p class="recovery-eyebrow">{content.eyebrow}</p>
+            <h1>{content.title}</h1>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="隐藏窗口"
+            onClick={() => void run(onHide)}
+          >
+            ×
+          </button>
+        </header>
+        <p class="recovery-detail">{content.detail}</p>
+        <div class="recovery-note">
+          <strong>你的 auth.json 不在处理范围内</strong>
+          <span>恢复与清除操作只会作用于 QuotaTide 自己的应用数据。</span>
+        </div>
+        <div class="recovery-privacy-tools">
+          <PrivacyPanel
+            onExportDiagnostics={onExportDiagnostics}
+            onClearLocalData={onClearLocalData}
+          />
+        </div>
+        {actionFailed ? (
+          <p class="settings-error" role="alert">
+            操作未完成，请检查系统权限后重试。
+          </p>
+        ) : null}
+        <footer class="recovery-actions">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(onOpenData)}
+          >
+            打开数据目录
+          </button>
+          <button
+            type="button"
+            class="settings-save"
+            disabled={busy}
+            onClick={() => void run(onRetry)}
+          >
+            {busy ? "处理中…" : "重试恢复"}
+          </button>
+        </footer>
+      </article>
+    </main>
   );
 }
 

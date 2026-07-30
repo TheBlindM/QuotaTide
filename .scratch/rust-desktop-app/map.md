@@ -48,6 +48,7 @@ Type: wayfinder:map
 - [完成原子设置与后台生命周期](./issues/21-implement-atomic-settings-and-background-lifecycle.md) — 已交付 SQLite v8 revisioned 原子设置、外部变更 journal 与自启回滚、macOS LaunchAgent/Windows 当前用户入口、登录隐藏与单实例唤醒、scheduler/delivery worker 单启动保护、共享 modal guard 和统一设置界面。
 - [实现持久提醒与系统通知](./issues/22-deliver-durable-system-alerts.md) — 已交付 SQLite v9 持久提醒/outbox、跨阈值与来源事件去重、lease/崩溃恢复、显式权限状态、macOS/Windows 原生通知与稳定替换 ID、晚到投递失败修正，以及点击通知聚焦真实目标；Windows 安装态外观与点击证据保留为 Ticket 27 的 release gate。
 - [实现安全邮件投递](./issues/23-deliver-secure-email-alerts.md) — 已交付 SQLite v10 SMTP 配置、Keychain/Credential Manager 双槽密码 journal、TLS/required STARTTLS 连接池、逐收件人 outbox 与独立重试、测试邮件和毛玻璃设置界面；真实 SMTP 与 Windows 安装态矩阵保留为 Ticket 27 的 release gate。
+- [完成本地数据恢复与隐私工具](./issues/24-add-local-recovery-and-privacy-tools.md) — 已交付受限数据目录、WAL/SHM 恢复、固定 checksum 迁移与三份滚动备份、损坏隔离和领域不变量校验、schema 过新保护、专用恢复 UI、5×1 MiB 安全日志、allowlisted 诊断 ZIP，以及凭证库优先且永不触碰 auth.json 的二次确认清除流程。
 
 ## Not yet specified
 
