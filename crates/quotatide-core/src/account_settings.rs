@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
+use std::future::Future;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -23,7 +24,7 @@ use crate::{
     radar_bucket_label,
 };
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 const SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-settings-v1-account-path-stream";
 const LIVE_QUOTA_SCHEMA_CHECKSUM: &str = "quotatide-v2-live-quota-health";
 const QUOTA_LEDGER_SCHEMA_CHECKSUM: &str = "quotatide-v3-current-seven-day-ledger";
@@ -31,6 +32,7 @@ const IMMUTABLE_IANA_SCHEMA_CHECKSUM: &str = "quotatide-v4-immutable-observation
 const DAILY_POLICY_SCHEMA_CHECKSUM: &str = "quotatide-v5-versioned-daily-policy";
 const RESET_RADAR_SCHEMA_CHECKSUM: &str = "quotatide-v6-independent-reset-radar";
 const ATOMIC_RADAR_SCHEMA_CHECKSUM: &str = "quotatide-v7-atomic-radar-refresh";
+const ATOMIC_SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-v8-atomic-settings-journal";
 const FRESH_FOR_MS: i64 = 90 * 60 * 1000;
 
 /// A stable, secret-free account configuration projection for the UI.
@@ -68,6 +70,385 @@ pub struct QuotaPolicyDraft {
     pub base_micropoints: Vec<i64>,
 }
 
+/// One stable alert event configurable by the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub enum AlertEventKind {
+    Daily80,
+    Daily100,
+    WeeklyRemaining20,
+    WeeklyRemaining10,
+    RadarChance70,
+    QuotaResetConfirmed,
+    SourceFailures3,
+}
+
+impl AlertEventKind {
+    pub const ALL: [Self; 7] = [
+        Self::Daily80,
+        Self::Daily100,
+        Self::WeeklyRemaining20,
+        Self::WeeklyRemaining10,
+        Self::RadarChance70,
+        Self::QuotaResetConfirmed,
+        Self::SourceFailures3,
+    ];
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Daily80 => "daily_80",
+            Self::Daily100 => "daily_100",
+            Self::WeeklyRemaining20 => "weekly_remaining_20",
+            Self::WeeklyRemaining10 => "weekly_remaining_10",
+            Self::RadarChance70 => "radar_chance_70",
+            Self::QuotaResetConfirmed => "quota_reset_confirmed",
+            Self::SourceFailures3 => "source_failures_3",
+        }
+    }
+
+    fn parse(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "daily_80" => Ok(Self::Daily80),
+            "daily_100" => Ok(Self::Daily100),
+            "weekly_remaining_20" => Ok(Self::WeeklyRemaining20),
+            "weekly_remaining_10" => Ok(Self::WeeklyRemaining10),
+            "radar_chance_70" => Ok(Self::RadarChance70),
+            "quota_reset_confirmed" => Ok(Self::QuotaResetConfirmed),
+            "source_failures_3" => Ok(Self::SourceFailures3),
+            _ => Err(rusqlite::Error::InvalidQuery),
+        }
+    }
+}
+
+/// Delivery channel for one alert event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub enum AlertChannel {
+    System,
+    Email,
+}
+
+impl AlertChannel {
+    pub const ALL: [Self; 2] = [Self::System, Self::Email];
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Email => "email",
+        }
+    }
+
+    fn parse(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "system" => Ok(Self::System),
+            "email" => Ok(Self::Email),
+            _ => Err(rusqlite::Error::InvalidQuery),
+        }
+    }
+}
+
+/// Secret-free persisted alert preference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct AlertPreference {
+    pub event_kind: AlertEventKind,
+    pub channel: AlertChannel,
+    pub enabled: bool,
+}
+
+/// Complete replacement value for one alert preference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct AlertPreferenceDraft {
+    pub event_kind: AlertEventKind,
+    pub channel: AlertChannel,
+    pub enabled: bool,
+}
+
+/// Every non-secret setting returned as one revisioned projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct PublicSettings {
+    pub settings_revision: u32,
+    pub configured: bool,
+    pub path_summary: Option<String>,
+    pub account_label: Option<String>,
+    pub quota_policy: PublicQuotaPolicy,
+    pub alert_preferences: Vec<AlertPreference>,
+    pub autostart_enabled: bool,
+}
+
+/// Complete settings replacement submitted against one optimistic revision.
+#[derive(Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct SettingsDraft {
+    pub expected_settings_revision: u32,
+    pub auth_path: Option<String>,
+    pub quota_policy: QuotaPolicyDraft,
+    pub alert_preferences: Vec<AlertPreferenceDraft>,
+    pub autostart_enabled: bool,
+}
+
+/// Narrow operating-system boundary for current-user login startup.
+pub trait AutostartControl: Clone + Send + Sync + 'static {
+    type Error: Error + Send + Sync + 'static;
+
+    fn is_enabled(&self) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+    fn set_enabled(&self, enabled: bool) -> impl Future<Output = Result<(), Self::Error>> + Send;
+}
+
+/// Core-owned settings use case coordinating `SQLite` and external state.
+#[derive(Clone)]
+pub struct AtomicSettingsManager<V, A> {
+    store: AccountSettingsStore,
+    validator: V,
+    autostart: A,
+}
+
+impl<V: AuthCandidateValidator, A: AutostartControl> AtomicSettingsManager<V, A> {
+    #[must_use]
+    pub const fn new(store: AccountSettingsStore, validator: V, autostart: A) -> Self {
+        Self {
+            store,
+            validator,
+            autostart,
+        }
+    }
+
+    /// Reads all current non-secret settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable storage error when the projection is unavailable.
+    pub async fn public_settings(
+        &self,
+    ) -> Result<PublicSettings, AtomicSettingsError<V::Error, A::Error>> {
+        self.store
+            .public_atomic_settings()
+            .await
+            .map_err(AtomicSettingsError::Storage)
+    }
+
+    /// Replaces all settings in one revisioned operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, external-state, conflict, or storage failures.
+    pub async fn save_settings(
+        &self,
+        draft: SettingsDraft,
+    ) -> Result<PublicSettings, AtomicSettingsError<V::Error, A::Error>> {
+        let SettingsDraft {
+            expected_settings_revision,
+            auth_path,
+            quota_policy,
+            alert_preferences,
+            autostart_enabled,
+        } = draft;
+        let account_candidate = auth_path
+            .as_deref()
+            .map(Path::new)
+            .map(|path| {
+                self.validator
+                    .validate(path)
+                    .map_err(AtomicSettingsError::Validation)
+            })
+            .transpose()?;
+        let policy = validate_quota_policy_draft(quota_policy)
+            .map_err(|error| AtomicSettingsError::Storage(error.into()))?;
+        validate_alert_preferences(&alert_preferences).map_err(AtomicSettingsError::Storage)?;
+
+        let old_autostart_enabled = self
+            .autostart
+            .is_enabled()
+            .await
+            .map_err(AtomicSettingsError::Autostart)?;
+        let operation_key = self
+            .store
+            .prepare_external_settings_change(
+                expected_settings_revision,
+                old_autostart_enabled,
+                autostart_enabled,
+            )
+            .await
+            .map_err(AtomicSettingsError::Storage)?;
+
+        if old_autostart_enabled != autostart_enabled {
+            if let Err(error) = self.autostart.set_enabled(autostart_enabled).await {
+                self.restore_prepared_autostart(&operation_key, old_autostart_enabled)
+                    .await;
+                return Err(AtomicSettingsError::Autostart(error));
+            }
+        }
+        let confirmed_autostart = self
+            .autostart
+            .is_enabled()
+            .await
+            .map_err(AtomicSettingsError::Autostart)?;
+        if confirmed_autostart != autostart_enabled {
+            self.restore_prepared_autostart(&operation_key, old_autostart_enabled)
+                .await;
+            return Err(AtomicSettingsError::AutostartReadback);
+        }
+
+        let settings = self
+            .store
+            .commit_atomic_settings(
+                &operation_key,
+                expected_settings_revision,
+                account_candidate,
+                policy,
+                alert_preferences,
+                confirmed_autostart,
+            )
+            .await;
+        match settings {
+            Ok(settings) => {
+                // A committed journal is intentionally recoverable. Cleanup is
+                // best effort because reporting failure here would invite a
+                // retry after the settings transaction already succeeded.
+                let _ = self.store.clear_external_change(&operation_key).await;
+                Ok(settings)
+            }
+            Err(error) => {
+                self.restore_prepared_autostart(&operation_key, old_autostart_enabled)
+                    .await;
+                Err(AtomicSettingsError::Storage(error))
+            }
+        }
+    }
+
+    /// Reconciles an interrupted external change before workers start.
+    ///
+    /// A prepared operation restores the last confirmed external state. A
+    /// committed operation reapplies the newly committed state before its
+    /// durable journal entry is cleaned up.
+    ///
+    /// # Errors
+    ///
+    /// Returns an external-state or storage error and keeps the journal for a
+    /// later retry when convergence cannot be confirmed.
+    pub async fn recover_external_changes(
+        &self,
+    ) -> Result<(), AtomicSettingsError<V::Error, A::Error>> {
+        let changes = self
+            .store
+            .external_changes()
+            .await
+            .map_err(AtomicSettingsError::Storage)?;
+        for change in changes {
+            let desired = match change.phase {
+                ExternalChangePhase::Prepared => change.old_autostart_enabled,
+                ExternalChangePhase::Committed => change.new_autostart_enabled,
+            };
+            let current = self
+                .autostart
+                .is_enabled()
+                .await
+                .map_err(AtomicSettingsError::Autostart)?;
+            if current != desired {
+                self.autostart
+                    .set_enabled(desired)
+                    .await
+                    .map_err(AtomicSettingsError::Autostart)?;
+            }
+            let confirmed = self
+                .autostart
+                .is_enabled()
+                .await
+                .map_err(AtomicSettingsError::Autostart)?;
+            if confirmed != desired {
+                return Err(AtomicSettingsError::AutostartReadback);
+            }
+            self.store
+                .clear_external_change(&change.operation_key)
+                .await
+                .map_err(AtomicSettingsError::Storage)?;
+        }
+        Ok(())
+    }
+
+    async fn restore_prepared_autostart(&self, operation_key: &str, old_enabled: bool) {
+        if self.autostart.set_enabled(old_enabled).await.is_ok()
+            && self
+                .autostart
+                .is_enabled()
+                .await
+                .is_ok_and(|enabled| enabled == old_enabled)
+        {
+            let _ = self.store.clear_external_change(operation_key).await;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExternalChangePhase {
+    Prepared,
+    Committed,
+}
+
+struct ExternalSettingsChange {
+    operation_key: String,
+    phase: ExternalChangePhase,
+    old_autostart_enabled: bool,
+    new_autostart_enabled: bool,
+}
+
+/// Atomic settings failure preserving source errors behind a safe boundary.
+#[derive(Debug, Error)]
+pub enum AtomicSettingsError<VE: Error + Send + Sync + 'static, AE: Error + Send + Sync + 'static> {
+    #[error("authentication candidate validation failed")]
+    Validation(#[source] VE),
+    #[error("autostart state unavailable")]
+    Autostart(#[source] AE),
+    #[error("autostart state did not match the requested value after mutation")]
+    AutostartReadback,
+    #[error(transparent)]
+    Storage(#[from] SettingsStoreError),
+}
+
+impl<VE, AE> AtomicSettingsError<VE, AE>
+where
+    VE: Error + Send + Sync + 'static,
+    AE: Error + Send + Sync + 'static,
+{
+    #[must_use]
+    pub fn public<V>(&self) -> PublicError
+    where
+        V: AuthCandidateValidator<Error = VE>,
+    {
+        match self {
+            Self::Validation(error) => V::public_error(error),
+            Self::Autostart(_) | Self::AutostartReadback => PublicError::new(
+                PublicErrorCode::AutostartUnavailable,
+                "settings.autostart_unavailable",
+            ),
+            Self::Storage(SettingsStoreError::Conflict) => PublicError::new(
+                PublicErrorCode::SettingsConflict,
+                "settings.revision_conflict",
+            ),
+            Self::Storage(SettingsStoreError::InvalidPolicy(_)) => PublicError::new(
+                PublicErrorCode::InvalidQuotaPolicy,
+                "settings.invalid_quota_policy",
+            ),
+            Self::Storage(SettingsStoreError::InvalidAlertPreferences) => PublicError::new(
+                PublicErrorCode::InvalidAlertPreferences,
+                "settings.invalid_alert_preferences",
+            ),
+            Self::Storage(SettingsStoreError::Database(_)) => PublicError::new(
+                PublicErrorCode::StorageUnavailable,
+                "settings.storage_unavailable",
+            ),
+        }
+    }
+}
+
 /// Stable error categories shared by the Rust application layer and IPC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -89,6 +470,8 @@ pub enum PublicErrorCode {
     InvalidQuotaPolicy,
     StorageUnavailable,
     NativeDialogUnavailable,
+    InvalidAlertPreferences,
+    AutostartUnavailable,
 }
 
 /// Deliberately narrow context whose fields are safe to serialize.
@@ -179,6 +562,10 @@ impl<E: Error + Send + Sync + 'static> AccountConfigError<E> {
             Self::Storage(SettingsStoreError::InvalidPolicy(_)) => PublicError::new(
                 PublicErrorCode::InvalidQuotaPolicy,
                 "settings.invalid_quota_policy",
+            ),
+            Self::Storage(SettingsStoreError::InvalidAlertPreferences) => PublicError::new(
+                PublicErrorCode::InvalidAlertPreferences,
+                "settings.invalid_alert_preferences",
             ),
             Self::Storage(SettingsStoreError::Database(_)) => PublicError::new(
                 PublicErrorCode::StorageUnavailable,
@@ -341,6 +728,8 @@ pub enum SettingsStoreError {
     Conflict,
     #[error(transparent)]
     InvalidPolicy(#[from] PolicyError),
+    #[error("alert preferences must replace every supported event and channel exactly once")]
+    InvalidAlertPreferences,
     #[error("account settings store unavailable")]
     Database(#[source] Box<dyn Error + Send + Sync>),
 }
@@ -419,6 +808,11 @@ fn initialize_database(
         migrate_atomic_radar_v7(database, now)?;
     } else {
         validate_migration(database, 7, ATOMIC_RADAR_SCHEMA_CHECKSUM)?;
+    }
+    if current_version <= 7 {
+        migrate_atomic_settings_v8(database, now)?;
+    } else {
+        validate_migration(database, 8, ATOMIC_SETTINGS_SCHEMA_CHECKSUM)?;
     }
     Ok(())
 }
@@ -893,6 +1287,73 @@ fn migrate_atomic_radar_v7(database: &mut rusqlite::Connection, now: i64) -> rus
     transaction.commit()
 }
 
+fn migrate_atomic_settings_v8(
+    database: &mut rusqlite::Connection,
+    now: i64,
+) -> rusqlite::Result<()> {
+    let transaction =
+        database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE app_settings
+           ADD COLUMN autostart_enabled INTEGER NOT NULL DEFAULT 0
+             CHECK (autostart_enabled IN (0, 1));
+         CREATE TABLE alert_preferences (
+           event_kind TEXT NOT NULL CHECK (event_kind IN (
+             'daily_80', 'daily_100', 'weekly_remaining_20',
+             'weekly_remaining_10', 'radar_chance_70',
+             'quota_reset_confirmed', 'source_failures_3'
+           )),
+           channel TEXT NOT NULL CHECK (channel IN ('system', 'email')),
+           enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+           updated_at_ms INTEGER NOT NULL,
+           PRIMARY KEY(event_kind, channel)
+         );
+         CREATE TABLE external_change_journal (
+           id INTEGER PRIMARY KEY,
+           operation_key TEXT NOT NULL UNIQUE,
+           kind TEXT NOT NULL CHECK (kind = 'settings'),
+           phase TEXT NOT NULL CHECK (phase IN ('prepared', 'committed')),
+           old_credential_ref TEXT,
+           new_credential_ref TEXT,
+           old_autostart_enabled INTEGER NOT NULL
+             CHECK (old_autostart_enabled IN (0, 1)),
+           new_autostart_enabled INTEGER NOT NULL
+             CHECK (new_autostart_enabled IN (0, 1)),
+           created_at_ms INTEGER NOT NULL,
+           updated_at_ms INTEGER NOT NULL
+         );
+         CREATE UNIQUE INDEX one_prepared_settings_change
+           ON external_change_journal(kind) WHERE phase = 'prepared';",
+    )?;
+    for event_kind in AlertEventKind::ALL {
+        for channel in AlertChannel::ALL {
+            transaction.execute(
+                "INSERT INTO alert_preferences
+                 (event_kind, channel, enabled, updated_at_ms)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    event_kind.as_str(),
+                    channel.as_str(),
+                    i64::from(channel == AlertChannel::System),
+                    now
+                ],
+            )?;
+        }
+    }
+    transaction.execute(
+        "INSERT INTO schema_migrations
+         (version, applied_at_ms, app_version, checksum)
+         VALUES (8, ?1, ?2, ?3)",
+        rusqlite::params![
+            now,
+            env!("CARGO_PKG_VERSION"),
+            ATOMIC_SETTINGS_SCHEMA_CHECKSUM
+        ],
+    )?;
+    transaction.pragma_update(None, "user_version", 8)?;
+    transaction.commit()
+}
+
 fn insert_default_policy_revision(
     transaction: &rusqlite::Transaction<'_>,
     now: i64,
@@ -1134,6 +1595,83 @@ fn load_public_quota_policy(
     })
 }
 
+fn load_public_atomic_settings(
+    database: &rusqlite::Connection,
+) -> rusqlite::Result<PublicSettings> {
+    let account = load_public_account_settings(database)?;
+    let autostart_enabled: i64 = database.query_row(
+        "SELECT autostart_enabled FROM app_settings WHERE singleton_id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let mut statement = database.prepare(
+        "SELECT event_kind, channel, enabled
+         FROM alert_preferences
+         ORDER BY event_kind, channel",
+    )?;
+    let alert_preferences = statement
+        .query_map([], |row| {
+            let event_kind: String = row.get(0)?;
+            let channel: String = row.get(1)?;
+            let enabled: i64 = row.get(2)?;
+            Ok(AlertPreference {
+                event_kind: AlertEventKind::parse(&event_kind)?,
+                channel: AlertChannel::parse(&channel)?,
+                enabled: enabled != 0,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if alert_preferences.len() != AlertEventKind::ALL.len() * AlertChannel::ALL.len() {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(PublicSettings {
+        settings_revision: account.settings_revision,
+        configured: account.configured,
+        path_summary: account.path_summary,
+        account_label: account.account_label,
+        quota_policy: account.quota_policy,
+        alert_preferences,
+        autostart_enabled: autostart_enabled != 0,
+    })
+}
+
+fn validate_quota_policy_draft(draft: QuotaPolicyDraft) -> Result<QuotaPolicy, PolicyError> {
+    let base_micropoints: [i64; 7] = draft
+        .base_micropoints
+        .try_into()
+        .map_err(|_| PolicyError::InvalidDayCount)?;
+    QuotaLedger::validate_policy(
+        base_micropoints,
+        draft.carry_workdays_enabled,
+        &draft.policy_timezone,
+    )
+}
+
+fn validate_alert_preferences(
+    preferences: &[AlertPreferenceDraft],
+) -> Result<(), SettingsStoreError> {
+    if preferences.len() != AlertEventKind::ALL.len() * AlertChannel::ALL.len() {
+        return Err(SettingsStoreError::InvalidAlertPreferences);
+    }
+    let actual = preferences
+        .iter()
+        .map(|preference| (preference.event_kind, preference.channel))
+        .collect::<BTreeSet<_>>();
+    let expected = AlertEventKind::ALL
+        .into_iter()
+        .flat_map(|event_kind| {
+            AlertChannel::ALL
+                .into_iter()
+                .map(move |channel| (event_kind, channel))
+        })
+        .collect::<BTreeSet<_>>();
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(SettingsStoreError::InvalidAlertPreferences)
+    }
+}
+
 /// Versioned `SQLite` owner for non-secret current-account settings.
 #[derive(Clone)]
 pub struct AccountSettingsStore {
@@ -1259,6 +1797,268 @@ impl AccountSettingsStore {
     pub async fn public_settings(&self) -> Result<PublicAccountSettings, SettingsStoreError> {
         self.connection
             .call(|database| load_public_account_settings(database))
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
+    /// Reads every current non-secret setting as one revisioned projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the projection cannot be read.
+    pub async fn public_atomic_settings(&self) -> Result<PublicSettings, SettingsStoreError> {
+        self.connection
+            .call(|database| load_public_atomic_settings(database))
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
+    async fn prepare_external_settings_change(
+        &self,
+        expected_revision: u32,
+        old_autostart_enabled: bool,
+        new_autostart_enabled: bool,
+    ) -> Result<String, SettingsStoreError> {
+        let operation_key = Uuid::now_v7().to_string();
+        let returned_key = operation_key.clone();
+        self.connection
+            .call(move |database| {
+                let transaction =
+                    database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let current_revision: i64 = transaction.query_row(
+                    "SELECT settings_revision FROM app_meta WHERE singleton_id = 1",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if current_revision != i64::from(expected_revision) {
+                    return Err(StoreCallError::Conflict);
+                }
+                let now = unix_time_ms();
+                transaction.execute(
+                    "INSERT INTO external_change_journal
+                     (operation_key, kind, phase, old_credential_ref,
+                      new_credential_ref, old_autostart_enabled,
+                      new_autostart_enabled, created_at_ms, updated_at_ms)
+                     VALUES (?1, 'settings', 'prepared', NULL, NULL, ?2, ?3, ?4, ?4)",
+                    rusqlite::params![
+                        operation_key,
+                        i64::from(old_autostart_enabled),
+                        i64::from(new_autostart_enabled),
+                        now
+                    ],
+                )?;
+                transaction.commit()?;
+                Ok::<(), StoreCallError>(())
+            })
+            .await
+            .map_err(|error| match error {
+                tokio_rusqlite::Error::Error(StoreCallError::Conflict) => {
+                    SettingsStoreError::Conflict
+                }
+                other => SettingsStoreError::database(other),
+            })?;
+        Ok(returned_key)
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    async fn commit_atomic_settings(
+        &self,
+        operation_key: &str,
+        expected_revision: u32,
+        account_candidate: Option<ValidatedAccountCandidate>,
+        policy: QuotaPolicy,
+        alert_preferences: Vec<AlertPreferenceDraft>,
+        autostart_enabled: bool,
+    ) -> Result<PublicSettings, SettingsStoreError> {
+        let operation_key = operation_key.to_owned();
+        let policy_timezone = policy.policy_timezone().name().to_owned();
+        let carry_workdays_enabled = policy.carry_workdays_enabled();
+        let base_micropoints = policy.base_micropoints();
+        self.connection
+            .call(move |database| {
+                let transaction =
+                    database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let (salt, current_revision): (Vec<u8>, i64) = transaction.query_row(
+                    "SELECT local_hash_salt, settings_revision
+                     FROM app_meta WHERE singleton_id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                if current_revision != i64::from(expected_revision) {
+                    return Err(StoreCallError::Conflict);
+                }
+                let prepared: i64 = transaction.query_row(
+                    "SELECT COUNT(*) FROM external_change_journal
+                     WHERE operation_key = ?1 AND kind = 'settings' AND phase = 'prepared'",
+                    [&operation_key],
+                    |row| row.get(0),
+                )?;
+                if prepared != 1 {
+                    return Err(rusqlite::Error::InvalidQuery.into());
+                }
+
+                let now = unix_time_ms();
+                let configured_stream_id: Option<i64> = transaction.query_row(
+                    "SELECT configured_account_stream_id
+                     FROM app_settings WHERE singleton_id = 1",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if let Some(stream_id) = configured_stream_id {
+                    persist_daily_policy_snapshots(&transaction, stream_id, now)?;
+                }
+
+                let new_account = account_candidate
+                    .map(|candidate| {
+                        let (stream_id, _) = upsert_account_stream(
+                            &transaction,
+                            &salt,
+                            &candidate.canonical_account_id,
+                            now,
+                        )?;
+                        Ok::<_, rusqlite::Error>((stream_id, candidate.canonical_path))
+                    })
+                    .transpose()?;
+
+                transaction.execute(
+                    "INSERT INTO policy_revisions
+                     (revision_key, effective_at_ms, policy_timezone,
+                      carry_workdays_enabled, created_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?2)",
+                    rusqlite::params![
+                        Uuid::now_v7().to_string(),
+                        now,
+                        policy_timezone,
+                        i64::from(carry_workdays_enabled)
+                    ],
+                )?;
+                let policy_revision_id = transaction.last_insert_rowid();
+                for (index, base) in base_micropoints.into_iter().enumerate() {
+                    transaction.execute(
+                        "INSERT INTO policy_day_limits
+                         (policy_revision_id, iso_weekday, base_micropoints)
+                         VALUES (?1, ?2, ?3)",
+                        rusqlite::params![
+                            policy_revision_id,
+                            i64::try_from(index).map_err(|_| rusqlite::Error::InvalidQuery)? + 1,
+                            base
+                        ],
+                    )?;
+                }
+                if let Some((stream_id, path)) = new_account {
+                    transaction.execute(
+                        "UPDATE app_settings
+                         SET auth_path = ?1, configured_account_stream_id = ?2,
+                             active_policy_revision_id = ?3, policy_timezone = ?4,
+                             autostart_enabled = ?5, updated_at_ms = ?6
+                         WHERE singleton_id = 1",
+                        rusqlite::params![
+                            path,
+                            stream_id,
+                            policy_revision_id,
+                            policy_timezone,
+                            i64::from(autostart_enabled),
+                            now
+                        ],
+                    )?;
+                } else {
+                    transaction.execute(
+                        "UPDATE app_settings
+                         SET active_policy_revision_id = ?1, policy_timezone = ?2,
+                             autostart_enabled = ?3, updated_at_ms = ?4
+                         WHERE singleton_id = 1",
+                        rusqlite::params![
+                            policy_revision_id,
+                            policy_timezone,
+                            i64::from(autostart_enabled),
+                            now
+                        ],
+                    )?;
+                }
+                for preference in alert_preferences {
+                    transaction.execute(
+                        "UPDATE alert_preferences
+                         SET enabled = ?1, updated_at_ms = ?2
+                         WHERE event_kind = ?3 AND channel = ?4",
+                        rusqlite::params![
+                            i64::from(preference.enabled),
+                            now,
+                            preference.event_kind.as_str(),
+                            preference.channel.as_str()
+                        ],
+                    )?;
+                }
+                if let Some(stream_id) = configured_stream_id {
+                    persist_daily_policy_snapshots(&transaction, stream_id, now)?;
+                }
+                transaction.execute(
+                    "UPDATE app_meta
+                     SET settings_revision = settings_revision + 1,
+                         dashboard_revision = dashboard_revision + 1,
+                         updated_at_ms = ?1
+                     WHERE singleton_id = 1",
+                    [now],
+                )?;
+                transaction.execute(
+                    "UPDATE external_change_journal
+                     SET phase = 'committed', updated_at_ms = ?1
+                     WHERE operation_key = ?2",
+                    rusqlite::params![now, operation_key],
+                )?;
+                let settings = load_public_atomic_settings(&transaction)?;
+                transaction.commit()?;
+                Ok(settings)
+            })
+            .await
+            .map_err(|error| match error {
+                tokio_rusqlite::Error::Error(StoreCallError::Conflict) => {
+                    SettingsStoreError::Conflict
+                }
+                other => SettingsStoreError::database(other),
+            })
+    }
+
+    async fn clear_external_change(&self, operation_key: &str) -> Result<(), SettingsStoreError> {
+        let operation_key = operation_key.to_owned();
+        self.connection
+            .call(move |database| {
+                database.execute(
+                    "DELETE FROM external_change_journal WHERE operation_key = ?1",
+                    [operation_key],
+                )?;
+                Ok::<(), rusqlite::Error>(())
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
+    async fn external_changes(&self) -> Result<Vec<ExternalSettingsChange>, SettingsStoreError> {
+        self.connection
+            .call(|database| {
+                let mut statement = database.prepare(
+                    "SELECT operation_key, phase, old_autostart_enabled,
+                            new_autostart_enabled
+                     FROM external_change_journal
+                     WHERE kind = 'settings'
+                     ORDER BY id",
+                )?;
+                statement
+                    .query_map([], |row| {
+                        let phase: String = row.get(1)?;
+                        let phase = match phase.as_str() {
+                            "prepared" => ExternalChangePhase::Prepared,
+                            "committed" => ExternalChangePhase::Committed,
+                            _ => return Err(rusqlite::Error::InvalidQuery),
+                        };
+                        Ok(ExternalSettingsChange {
+                            operation_key: row.get(0)?,
+                            phase,
+                            old_autostart_enabled: row.get::<_, i64>(2)? != 0,
+                            new_autostart_enabled: row.get::<_, i64>(3)? != 0,
+                        })
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
             .await
             .map_err(SettingsStoreError::database)
     }

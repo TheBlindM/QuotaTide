@@ -10,10 +10,11 @@ mod reset_radar;
 mod tray_shell;
 
 pub use account_settings::{
-    AccountApplication, AccountConfigError, AccountSettingsStore, AuthCandidateValidator,
-    PublicAccountSettings, PublicError, PublicErrorCode, PublicQuotaPolicy, QuotaPolicyDraft,
-    SafeErrorContext, SettingsManager, SettingsStoreError, UsageCommitDisposition,
-    ValidatedAccountCandidate,
+    AccountApplication, AccountConfigError, AccountSettingsStore, AlertChannel, AlertEventKind,
+    AlertPreference, AlertPreferenceDraft, AtomicSettingsError, AtomicSettingsManager,
+    AuthCandidateValidator, AutostartControl, PublicAccountSettings, PublicError, PublicErrorCode,
+    PublicQuotaPolicy, PublicSettings, QuotaPolicyDraft, SafeErrorContext, SettingsDraft,
+    SettingsManager, SettingsStoreError, UsageCommitDisposition, ValidatedAccountCandidate,
 };
 pub use live_quota::{
     Application, Clock, CurrentUsageAuth, DashboardChanged, LedgerDayStatus, PublicLedgerDay,

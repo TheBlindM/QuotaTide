@@ -3,4 +3,4 @@
 /**
  * Stable error categories shared by the Rust application layer and IPC.
  */
-export type PublicErrorCode = "invalid_path" | "auth_not_found" | "auth_permission_denied" | "auth_io" | "auth_not_regular_file" | "auth_too_large" | "auth_invalid_utf8" | "auth_invalid_json" | "auth_unsupported_mode" | "auth_missing_access_token" | "auth_missing_account_id" | "auth_invalid_account_id" | "settings_conflict" | "invalid_quota_policy" | "storage_unavailable" | "native_dialog_unavailable";
+export type PublicErrorCode = "invalid_path" | "auth_not_found" | "auth_permission_denied" | "auth_io" | "auth_not_regular_file" | "auth_too_large" | "auth_invalid_utf8" | "auth_invalid_json" | "auth_unsupported_mode" | "auth_missing_access_token" | "auth_missing_account_id" | "auth_invalid_account_id" | "settings_conflict" | "invalid_quota_policy" | "storage_unavailable" | "native_dialog_unavailable" | "invalid_alert_preferences" | "autostart_unavailable";
