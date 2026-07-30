@@ -800,7 +800,7 @@ async fn a_storage_failure_retains_its_internal_source_chain() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn resume_resets_the_next_hourly_deadline_and_shutdown_cancels_the_actor() {
+async fn early_resume_keeps_the_existing_hourly_deadline() {
     let (_directory, store) = configured_store().await;
     let source = FakeSource::successful(1_785_000_000_000);
     let calls = Arc::clone(&source.calls);
@@ -825,11 +825,6 @@ async fn resume_resets_the_next_hourly_deadline_and_shutdown_cancels_the_actor()
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     clock.set(1_785_003_600_000);
-    tokio::time::advance(std::time::Duration::from_secs(30 * 60)).await;
-    tokio::task::yield_now().await;
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-
-    clock.set(1_785_005_400_000);
     tokio::time::advance(std::time::Duration::from_secs(30 * 60)).await;
     wait_for_count(&calls, 2).await;
 

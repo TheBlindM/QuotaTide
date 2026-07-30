@@ -584,8 +584,9 @@ where
 
     /// Runs the cancellable startup/hourly scheduler until application shutdown.
     ///
-    /// A resume signal performs at most one overdue refresh and resets the next
-    /// hourly deadline to one hour after resume.
+    /// A resume signal performs at most one overdue refresh. Only an actual
+    /// refresh resets the next hourly deadline; an early resume leaves the
+    /// existing deadline intact.
     pub async fn run_hourly_scheduler(&self, refresh_on_startup: bool) {
         const HOUR_MS: i64 = 60 * 60 * 1000;
         let cancellation = self.scheduler.cancellation.clone();
@@ -597,7 +598,7 @@ where
         if refresh_on_startup {
             let completed =
                 run_scheduled_refresh(&cancellation, self.refresh(RefreshTrigger::Startup)).await;
-            if !completed {
+            if completed.is_none() {
                 return;
             }
         }
@@ -610,7 +611,7 @@ where
                         &cancellation,
                         self.refresh(RefreshTrigger::Hourly),
                     ).await;
-                    if !completed {
+                    if completed.is_none() {
                         break;
                     }
                 }
@@ -622,10 +623,12 @@ where
                         &cancellation,
                         self.refresh_if_due(RefreshTrigger::Resume, HOUR_MS),
                     ).await;
-                    if !completed {
+                    let Some(result) = completed else {
                         break;
+                    };
+                    if result.is_ok_and(|receipt| receipt.outcome != RefreshOutcome::NotDue) {
+                        interval.reset();
                     }
-                    interval.reset();
                 }
             }
         }
@@ -656,10 +659,10 @@ where
 async fn run_scheduled_refresh(
     cancellation: &CancellationToken,
     refresh: impl std::future::Future<Output = Result<RefreshReceipt, RefreshCoordinatorError>>,
-) -> bool {
+) -> Option<Result<RefreshReceipt, RefreshCoordinatorError>> {
     tokio::select! {
-        () = cancellation.cancelled() => false,
-        _ = refresh => true,
+        () = cancellation.cancelled() => None,
+        result = refresh => Some(result),
     }
 }
 
