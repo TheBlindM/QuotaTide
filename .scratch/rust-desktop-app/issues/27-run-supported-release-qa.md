@@ -71,3 +71,9 @@ Ticket 仍不能关闭：GitHub 仓库、最终 updater key/恢复演练和同�
 preview 混排、格式区域 weekday 被界面语言覆盖及大字体标题裁切。commit
 `0a693f3` 的 universal app/DMG 已重新生成，hash 与范围记录在本机预检报告；
 锁屏下仍不把浏览器渲染视为原生材质、VoiceOver 或通知 PASS。
+
+本机额外交叉编译预检已通过完整 workspace 的 `x86_64-apple-darwin`
+check/Clippy，以及 Windows 原生通知 crate 的 `x86_64-pc-windows-msvc`
+check/Clippy。完整 Windows workspace 仍需要 MSVC SDK 与 Windows runner；
+macOS 上仅安装 Rust target 不含 `ring`/SQLite 所需 C headers，因此不能把
+本机交叉检查替代 Windows CI、NSIS、WebView2、Narrator 或真机矩阵证据。
