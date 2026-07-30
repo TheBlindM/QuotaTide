@@ -12,6 +12,7 @@ import {
   getSettings,
   onSettingsChanged,
   saveSettings,
+  sendTestEmail,
 } from "./api/account-settings";
 import {
   getAlerts,
@@ -88,6 +89,17 @@ export function App() {
               { eventKind, channel: "email", enabled: false },
             ]),
             autostartEnabled: false,
+            smtp: {
+              enabled: false,
+              host: "",
+              port: 465,
+              tlsMode: "tls",
+              username: "",
+              fromAddress: "",
+              fromName: "",
+              recipients: [],
+              credentialStatus: "missing",
+            },
           },
           alerts: previewAlerts
             ? {
@@ -302,6 +314,7 @@ export function App() {
         });
       }}
       onRequestNotificationPermission={requestSystemNotificationPermission}
+      onSendTestEmail={sendTestEmail}
       onReloadSettings={getSettings}
       onSaveSettings={async (draft) => {
         const settings = await saveSettings(draft);

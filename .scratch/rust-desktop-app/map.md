@@ -47,6 +47,7 @@ Type: wayfinder:map
 - [接入 Reset Radar](./issues/20-integrate-reset-radar.md) — 已交付固定 HTTPS 契约的 24 小时第三方预测、独立来源健康与有效期投影、同轮并发和单事务 dashboard revision、新公告下一轮账号复核、未配置账号仍按小时运行，以及明确的非 OpenAI 承诺与安全来源链接。
 - [完成原子设置与后台生命周期](./issues/21-implement-atomic-settings-and-background-lifecycle.md) — 已交付 SQLite v8 revisioned 原子设置、外部变更 journal 与自启回滚、macOS LaunchAgent/Windows 当前用户入口、登录隐藏与单实例唤醒、scheduler/delivery worker 单启动保护、共享 modal guard 和统一设置界面。
 - [实现持久提醒与系统通知](./issues/22-deliver-durable-system-alerts.md) — 已交付 SQLite v9 持久提醒/outbox、跨阈值与来源事件去重、lease/崩溃恢复、显式权限状态、macOS/Windows 原生通知与稳定替换 ID、晚到投递失败修正，以及点击通知聚焦真实目标；Windows 安装态外观与点击证据保留为 Ticket 27 的 release gate。
+- [实现安全邮件投递](./issues/23-deliver-secure-email-alerts.md) — 已交付 SQLite v10 SMTP 配置、Keychain/Credential Manager 双槽密码 journal、TLS/required STARTTLS 连接池、逐收件人 outbox 与独立重试、测试邮件和毛玻璃设置界面；真实 SMTP 与 Windows 安装态矩阵保留为 Ticket 27 的 release gate。
 
 ## Not yet specified
 

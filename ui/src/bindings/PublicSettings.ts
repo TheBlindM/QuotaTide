@@ -2,8 +2,9 @@
 import type { AlertPreference } from "./AlertPreference";
 import type { NotificationPermissionStatus } from "./NotificationPermissionStatus";
 import type { PublicQuotaPolicy } from "./PublicQuotaPolicy";
+import type { PublicSmtpSettings } from "./PublicSmtpSettings";
 
 /**
  * Every non-secret setting returned as one revisioned projection.
  */
-export type PublicSettings = { settingsRevision: number, configured: boolean, pathSummary: string | null, accountLabel: string | null, notificationPermissionStatus: NotificationPermissionStatus, quotaPolicy: PublicQuotaPolicy, alertPreferences: Array<AlertPreference>, autostartEnabled: boolean, };
+export type PublicSettings = { settingsRevision: number, configured: boolean, pathSummary: string | null, accountLabel: string | null, notificationPermissionStatus: NotificationPermissionStatus, quotaPolicy: PublicQuotaPolicy, alertPreferences: Array<AlertPreference>, autostartEnabled: boolean, smtp: PublicSmtpSettings, };

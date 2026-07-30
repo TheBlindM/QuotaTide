@@ -5,6 +5,7 @@ use ts_rs::TS;
 
 mod account_settings;
 mod alerts;
+mod email;
 mod live_quota;
 mod quota_ledger;
 mod reset_radar;
@@ -13,14 +14,17 @@ mod tray_shell;
 pub use account_settings::{
     AccountApplication, AccountConfigError, AccountSettingsStore, AlertChannel, AlertEventKind,
     AlertPreference, AlertPreferenceDraft, AtomicSettingsError, AtomicSettingsManager,
-    AuthCandidateValidator, AutostartControl, PublicAccountSettings, PublicError, PublicErrorCode,
-    PublicQuotaPolicy, PublicSettings, QuotaPolicyDraft, SafeErrorContext, SettingsDraft,
-    SettingsManager, SettingsStoreError, UsageCommitDisposition, ValidatedAccountCandidate,
+    AuthCandidateValidator, AutostartControl, CredentialVault, PublicAccountSettings, PublicError,
+    PublicErrorCode, PublicQuotaPolicy, PublicSettings, PublicSmtpRecipient, PublicSmtpSettings,
+    QuotaPolicyDraft, SafeErrorContext, SecretUpdate, SettingsDraft, SettingsManager,
+    SettingsStoreError, SmtpCredentialStatus, SmtpRecipientDraft, SmtpSettingsDraft, SmtpTlsMode,
+    UsageCommitDisposition, ValidatedAccountCandidate,
 };
 pub use alerts::{
     AlertTarget, DeliverySweep, DeliveryWorker, NotificationPermissionStatus, PublicAlertEvent,
     PublicAlertInbox, PublicDeliveryState, SafeNotification, SystemNotifier,
 };
+pub use email::{EmailDeliveryWorker, MailTransport, SafeMail, SmtpConnection, TestEmailError};
 pub use live_quota::{
     Application, Clock, CurrentUsageAuth, DashboardChanged, LedgerDayStatus, PublicLedgerDay,
     PublicLiveQuota, PublicLiveQuotaState, QuotaUnits, RefreshAccountBinding, RefreshCoordinator,

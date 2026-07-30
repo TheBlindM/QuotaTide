@@ -15,6 +15,10 @@ export async function saveSettings(
   return await invoke<PublicSettings>("save_settings", { draft });
 }
 
+export async function sendTestEmail(): Promise<number> {
+  return await invoke<number>("send_test_email");
+}
+
 export async function onSettingsChanged(
   callback: (change: SettingsChanged) => void,
 ): Promise<() => void> {

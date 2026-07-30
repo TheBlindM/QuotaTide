@@ -52,6 +52,17 @@ const atomicSettings: PublicSettings = {
   quotaPolicy,
   alertPreferences,
   autostartEnabled: false,
+  smtp: {
+    enabled: false,
+    host: "",
+    port: 465,
+    tlsMode: "tls",
+    username: "",
+    fromAddress: "",
+    fromName: "",
+    recipients: [],
+    credentialStatus: "missing",
+  },
 };
 
 describe("tray-window navigation", () => {
@@ -105,8 +116,133 @@ describe("tray-window navigation", () => {
             : preference,
         ),
         autostartEnabled: true,
+        smtp: {
+          enabled: false,
+          host: "",
+          port: 465,
+          tlsMode: "tls",
+          username: "",
+          fromAddress: "",
+          fromName: "",
+          recipients: [],
+        },
+        smtpPassword: "keep",
       });
     });
+  });
+
+  it("saves TLS SMTP settings with a new password and multiple recipients", async () => {
+    const onSaveSettings = vi
+      .fn<(draft: SettingsDraft) => Promise<PublicSettings>>()
+      .mockResolvedValue({
+        ...atomicSettings,
+        settingsRevision: 5,
+        smtp: {
+          enabled: true,
+          host: "smtp.example.com",
+          port: 587,
+          tlsMode: "starttls",
+          username: "sender@example.com",
+          fromAddress: "sender@example.com",
+          fromName: "QuotaTide",
+          recipients: [
+            { address: "first@example.com", enabled: true },
+            { address: "second@example.com", enabled: true },
+          ],
+          credentialStatus: "configured",
+        },
+      });
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        settings={atomicSettings}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+        onSaveSettings={onSaveSettings}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "提醒" }));
+    fireEvent.click(screen.getByLabelText("启用邮件通知"));
+    fireEvent.input(screen.getByLabelText("SMTP 主机"), {
+      target: { value: "smtp.example.com" },
+    });
+    fireEvent.input(screen.getByLabelText("SMTP 端口"), {
+      target: { value: "587" },
+    });
+    fireEvent.change(screen.getByLabelText("SMTP 加密"), {
+      target: { value: "starttls" },
+    });
+    fireEvent.input(screen.getByLabelText("SMTP 用户名"), {
+      target: { value: "sender@example.com" },
+    });
+    fireEvent.input(screen.getByLabelText("SMTP 发件地址"), {
+      target: { value: "sender@example.com" },
+    });
+    fireEvent.input(screen.getByLabelText("SMTP 发件名称"), {
+      target: { value: "QuotaTide" },
+    });
+    fireEvent.input(screen.getByLabelText("SMTP 应用密码"), {
+      target: { value: "app-secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    fireEvent.input(screen.getByLabelText("收件地址 1"), {
+      target: { value: "first@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    fireEvent.input(screen.getByLabelText("收件地址 2"), {
+      target: { value: "second@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存全部设置" }));
+
+    await waitFor(() => {
+      expect(onSaveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          smtp: {
+            enabled: true,
+            host: "smtp.example.com",
+            port: 587,
+            tlsMode: "starttls",
+            username: "sender@example.com",
+            fromAddress: "sender@example.com",
+            fromName: "QuotaTide",
+            recipients: [
+              { address: "first@example.com", enabled: true },
+              { address: "second@example.com", enabled: true },
+            ],
+          },
+          smtpPassword: { set: "app-secret" },
+        }),
+      );
+    });
+  });
+
+  it("keeps the explicit test email result visible", async () => {
+    const onSendTestEmail = vi.fn().mockResolvedValue(2);
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        settings={{
+          ...atomicSettings,
+          smtp: {
+            ...atomicSettings.smtp,
+            enabled: true,
+            credentialStatus: "configured",
+          },
+        }}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+        onSendTestEmail={onSendTestEmail}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "提醒" }));
+    fireEvent.click(screen.getByRole("button", { name: "发送测试邮件" }));
+
+    expect(await screen.findByText("已发送到 2 个地址")).toBeInTheDocument();
+    expect(onSendTestEmail).toHaveBeenCalledOnce();
   });
 
   it("opens settings and returns to the weekly ledger", () => {

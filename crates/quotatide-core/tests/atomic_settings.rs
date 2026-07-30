@@ -1,13 +1,16 @@
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use quotatide_core::{
     AccountSettingsStore, AlertChannel, AlertEventKind, AlertPreferenceDraft,
-    AtomicSettingsManager, AuthCandidateValidator, AutostartControl, PublicError, QuotaPolicyDraft,
-    SettingsDraft, ValidatedAccountCandidate,
+    AtomicSettingsManager, AuthCandidateValidator, AutostartControl, CredentialVault, PublicError,
+    QuotaPolicyDraft, SecretUpdate, SettingsDraft, SmtpCredentialStatus, SmtpRecipientDraft,
+    SmtpSettingsDraft, SmtpTlsMode, ValidatedAccountCandidate,
 };
+use secrecy::{ExposeSecret as _, SecretString};
 use tempfile::tempdir;
 use tokio::sync::Notify;
 
@@ -112,6 +115,54 @@ impl AutostartControl for BlockingAutostart {
     }
 }
 
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error("credential vault unavailable")]
+struct FakeVaultError;
+
+#[derive(Clone, Default)]
+struct FakeVault {
+    values: Arc<Mutex<HashMap<&'static str, String>>>,
+    fail_set: Arc<AtomicBool>,
+    wrong_readback: Arc<AtomicBool>,
+}
+
+impl FakeVault {
+    fn value(&self, slot: &'static str) -> Option<String> {
+        self.values.lock().expect("vault lock").get(slot).cloned()
+    }
+}
+
+impl CredentialVault for FakeVault {
+    type Error = FakeVaultError;
+
+    async fn get(&self, slot: &'static str) -> Result<Option<SecretString>, Self::Error> {
+        let value = self.value(slot);
+        Ok(value.map(|value| {
+            if self.wrong_readback.load(Ordering::SeqCst) {
+                SecretString::from("wrong-readback".to_owned())
+            } else {
+                SecretString::from(value)
+            }
+        }))
+    }
+
+    async fn set(&self, slot: &'static str, secret: SecretString) -> Result<(), Self::Error> {
+        if self.fail_set.load(Ordering::SeqCst) {
+            return Err(FakeVaultError);
+        }
+        self.values
+            .lock()
+            .expect("vault lock")
+            .insert(slot, secret.expose_secret().to_owned());
+        Ok(())
+    }
+
+    async fn delete(&self, slot: &'static str) -> Result<(), Self::Error> {
+        self.values.lock().expect("vault lock").remove(slot);
+        Ok(())
+    }
+}
+
 fn preferences() -> Vec<AlertPreferenceDraft> {
     AlertEventKind::ALL
         .into_iter()
@@ -149,7 +200,43 @@ fn draft(revision: u32, autostart_enabled: bool) -> SettingsDraft {
         },
         alert_preferences,
         autostart_enabled,
+        smtp: SmtpSettingsDraft {
+            enabled: false,
+            host: String::new(),
+            port: 465,
+            tls_mode: SmtpTlsMode::Tls,
+            username: String::new(),
+            from_address: String::new(),
+            from_name: String::new(),
+            recipients: Vec::new(),
+        },
+        smtp_password: SecretUpdate::Keep,
     }
+}
+
+fn smtp_draft(revision: u32, password: SecretUpdate) -> SettingsDraft {
+    let mut value = draft(revision, false);
+    value.smtp = SmtpSettingsDraft {
+        enabled: true,
+        host: "smtp.example.com".to_owned(),
+        port: 587,
+        tls_mode: SmtpTlsMode::Starttls,
+        username: "sender@example.com".to_owned(),
+        from_address: "sender@example.com".to_owned(),
+        from_name: "QuotaTide".to_owned(),
+        recipients: vec![
+            SmtpRecipientDraft {
+                address: "first@example.com".to_owned(),
+                enabled: true,
+            },
+            SmtpRecipientDraft {
+                address: "second@example.com".to_owned(),
+                enabled: true,
+            },
+        ],
+    };
+    value.smtp_password = password;
+    value
 }
 
 #[tokio::test]
@@ -389,4 +476,107 @@ async fn restart_reapplies_a_committed_external_change_before_cleaning_its_journ
     let settings = restarted.public_settings().await.expect("new settings");
     assert_eq!(settings.settings_revision, 1);
     assert!(settings.autostart_enabled);
+}
+
+#[tokio::test]
+async fn smtp_secret_rotates_between_slots_and_never_enters_sqlite() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open store");
+    let vault = FakeVault::default();
+    let service = AtomicSettingsManager::new(store, ValidAuth, FakeAutostart::new(false))
+        .with_credential_vault(vault.clone());
+
+    let first = service
+        .save_settings(smtp_draft(
+            0,
+            SecretUpdate::Set("first-secret-canary".to_owned()),
+        ))
+        .await
+        .expect("save first secret");
+    assert_eq!(
+        first.smtp.credential_status,
+        SmtpCredentialStatus::Configured
+    );
+    assert_eq!(
+        vault.value("slot-a").as_deref(),
+        Some("first-secret-canary")
+    );
+
+    let second = service
+        .save_settings(smtp_draft(
+            1,
+            SecretUpdate::Set("second-secret-canary".to_owned()),
+        ))
+        .await
+        .expect("rotate secret");
+    assert_eq!(second.settings_revision, 2);
+    assert!(vault.value("slot-a").is_none());
+    assert_eq!(
+        vault.value("slot-b").as_deref(),
+        Some("second-secret-canary")
+    );
+
+    let bytes = std::fs::read(database).expect("read sqlite bytes");
+    assert!(
+        !bytes
+            .windows("first-secret-canary".len())
+            .any(|window| { window == "first-secret-canary".as_bytes() })
+    );
+    assert!(
+        !bytes
+            .windows("second-secret-canary".len())
+            .any(|window| { window == "second-secret-canary".as_bytes() })
+    );
+}
+
+#[tokio::test]
+async fn smtp_readback_failure_preserves_the_old_revision_and_removes_staged_secret() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    let vault = FakeVault::default();
+    vault.wrong_readback.store(true, Ordering::SeqCst);
+    let service = AtomicSettingsManager::new(store, ValidAuth, FakeAutostart::new(false))
+        .with_credential_vault(vault.clone());
+
+    assert!(
+        service
+            .save_settings(smtp_draft(0, SecretUpdate::Set("staged-secret".to_owned())))
+            .await
+            .is_err()
+    );
+    assert!(vault.value("slot-a").is_none());
+    let settings = service.public_settings().await.expect("old settings");
+    assert_eq!(settings.settings_revision, 0);
+    assert!(!settings.smtp.enabled);
+}
+
+#[tokio::test]
+async fn explicit_smtp_secret_delete_clears_the_slot_and_pauses_email_configuration() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    let vault = FakeVault::default();
+    let service = AtomicSettingsManager::new(store, ValidAuth, FakeAutostart::new(false))
+        .with_credential_vault(vault.clone());
+    service
+        .save_settings(smtp_draft(0, SecretUpdate::Set("delete-me".to_owned())))
+        .await
+        .expect("configure SMTP");
+
+    let deleted = service
+        .save_settings(smtp_draft(1, SecretUpdate::Delete))
+        .await
+        .expect("delete SMTP secret");
+
+    assert!(vault.value("slot-a").is_none());
+    assert_eq!(
+        deleted.smtp.credential_status,
+        SmtpCredentialStatus::Missing
+    );
 }

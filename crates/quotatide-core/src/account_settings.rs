@@ -4,6 +4,7 @@ use std::future::Future;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -15,6 +16,7 @@ use crate::alerts::{
     AlertTarget, ClaimedSystemDelivery, NotificationPermissionStatus, PublicAlertEvent,
     PublicAlertInbox, PublicDeliveryState,
 };
+use crate::email::SmtpConnection;
 use crate::live_quota::CombinedRefreshDisposition;
 use crate::quota_ledger::{
     DailyLimitSnapshot, DailyPolicyStatus, PersistedLedgerEpoch, PolicyDayProjection, PolicyError,
@@ -28,7 +30,7 @@ use crate::{
     radar_bucket_label,
 };
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 const SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-settings-v1-account-path-stream";
 const LIVE_QUOTA_SCHEMA_CHECKSUM: &str = "quotatide-v2-live-quota-health";
 const QUOTA_LEDGER_SCHEMA_CHECKSUM: &str = "quotatide-v3-current-seven-day-ledger";
@@ -38,7 +40,10 @@ const RESET_RADAR_SCHEMA_CHECKSUM: &str = "quotatide-v6-independent-reset-radar"
 const ATOMIC_RADAR_SCHEMA_CHECKSUM: &str = "quotatide-v7-atomic-radar-refresh";
 const ATOMIC_SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-v8-atomic-settings-journal";
 const DURABLE_ALERTS_SCHEMA_CHECKSUM: &str = "quotatide-v9-durable-alert-outbox";
+const SMTP_SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-v10-smtp-settings-recipients";
 const FRESH_FOR_MS: i64 = 90 * 60 * 1000;
+const SMTP_SLOT_A: &str = "slot-a";
+const SMTP_SLOT_B: &str = "slot-b";
 
 /// A stable, secret-free account configuration projection for the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
@@ -180,6 +185,103 @@ pub struct AlertPreferenceDraft {
     pub enabled: bool,
 }
 
+/// Supported SMTP security modes. Plaintext and opportunistic downgrade are
+/// intentionally not representable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub enum SmtpTlsMode {
+    Tls,
+    Starttls,
+}
+
+impl SmtpTlsMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tls => "tls",
+            Self::Starttls => "starttls",
+        }
+    }
+
+    fn parse(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "tls" => Ok(Self::Tls),
+            "starttls" => Ok(Self::Starttls),
+            _ => Err(rusqlite::Error::InvalidQuery),
+        }
+    }
+}
+
+/// Current availability of the SMTP secret without exposing the secret or its
+/// credential slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub enum SmtpCredentialStatus {
+    Configured,
+    Missing,
+    Unavailable,
+}
+
+/// One current SMTP recipient. Retired recipients are never returned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct PublicSmtpRecipient {
+    pub address: String,
+    pub enabled: bool,
+}
+
+/// Secret-free SMTP settings projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct PublicSmtpSettings {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub tls_mode: SmtpTlsMode,
+    pub username: String,
+    pub from_address: String,
+    pub from_name: String,
+    pub recipients: Vec<PublicSmtpRecipient>,
+    pub credential_status: SmtpCredentialStatus,
+}
+
+/// Complete replacement for one recipient row.
+#[derive(Clone, PartialEq, Eq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct SmtpRecipientDraft {
+    pub address: String,
+    pub enabled: bool,
+}
+
+/// Complete non-secret SMTP settings replacement.
+#[derive(Clone, PartialEq, Eq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct SmtpSettingsDraft {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub tls_mode: SmtpTlsMode,
+    pub username: String,
+    pub from_address: String,
+    pub from_name: String,
+    pub recipients: Vec<SmtpRecipientDraft>,
+}
+
+/// Explicit SMTP password mutation. An empty string never means delete.
+#[derive(Clone, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub enum SecretUpdate {
+    Keep,
+    Set(String),
+    Delete,
+}
+
 /// Every non-secret setting returned as one revisioned projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -193,6 +295,7 @@ pub struct PublicSettings {
     pub quota_policy: PublicQuotaPolicy,
     pub alert_preferences: Vec<AlertPreference>,
     pub autostart_enabled: bool,
+    pub smtp: PublicSmtpSettings,
 }
 
 /// Complete settings replacement submitted against one optimistic revision.
@@ -205,6 +308,8 @@ pub struct SettingsDraft {
     pub quota_policy: QuotaPolicyDraft,
     pub alert_preferences: Vec<AlertPreferenceDraft>,
     pub autostart_enabled: bool,
+    pub smtp: SmtpSettingsDraft,
+    pub smtp_password: SecretUpdate,
 }
 
 /// Narrow operating-system boundary for current-user login startup.
@@ -215,24 +320,84 @@ pub trait AutostartControl: Clone + Send + Sync + 'static {
     fn set_enabled(&self, enabled: bool) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
+/// Narrow operating-system credential boundary for the two app-scoped SMTP slots.
+pub trait CredentialVault: Clone + Send + Sync + 'static {
+    type Error: Error + Send + Sync + 'static;
+
+    fn get(
+        &self,
+        slot: &'static str,
+    ) -> impl Future<Output = Result<Option<SecretString>, Self::Error>> + Send;
+    fn set(
+        &self,
+        slot: &'static str,
+        secret: SecretString,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    fn delete(&self, slot: &'static str) -> impl Future<Output = Result<(), Self::Error>> + Send;
+}
+
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error("credential vault is unavailable")]
+pub struct NoCredentialVaultError;
+
+#[derive(Clone, Copy)]
+pub struct NoCredentialVault;
+
+impl CredentialVault for NoCredentialVault {
+    type Error = NoCredentialVaultError;
+
+    async fn get(&self, _slot: &'static str) -> Result<Option<SecretString>, Self::Error> {
+        Err(NoCredentialVaultError)
+    }
+
+    async fn set(&self, _slot: &'static str, _secret: SecretString) -> Result<(), Self::Error> {
+        Err(NoCredentialVaultError)
+    }
+
+    async fn delete(&self, _slot: &'static str) -> Result<(), Self::Error> {
+        Err(NoCredentialVaultError)
+    }
+}
+
 /// Core-owned settings use case coordinating `SQLite` and external state.
 #[derive(Clone)]
-pub struct AtomicSettingsManager<V, A> {
+pub struct AtomicSettingsManager<V, A, C = NoCredentialVault> {
     store: AccountSettingsStore,
     validator: V,
     autostart: A,
+    credential_vault: C,
 }
 
-impl<V: AuthCandidateValidator, A: AutostartControl> AtomicSettingsManager<V, A> {
+impl<V: AuthCandidateValidator, A: AutostartControl>
+    AtomicSettingsManager<V, A, NoCredentialVault>
+{
     #[must_use]
     pub const fn new(store: AccountSettingsStore, validator: V, autostart: A) -> Self {
         Self {
             store,
             validator,
             autostart,
+            credential_vault: NoCredentialVault,
         }
     }
 
+    #[must_use]
+    pub fn with_credential_vault<C: CredentialVault>(
+        self,
+        credential_vault: C,
+    ) -> AtomicSettingsManager<V, A, C> {
+        AtomicSettingsManager {
+            store: self.store,
+            validator: self.validator,
+            autostart: self.autostart,
+            credential_vault,
+        }
+    }
+}
+
+impl<V: AuthCandidateValidator, A: AutostartControl, C: CredentialVault>
+    AtomicSettingsManager<V, A, C>
+{
     /// Reads all current non-secret settings.
     ///
     /// # Errors
@@ -240,11 +405,25 @@ impl<V: AuthCandidateValidator, A: AutostartControl> AtomicSettingsManager<V, A>
     /// Returns a stable storage error when the projection is unavailable.
     pub async fn public_settings(
         &self,
-    ) -> Result<PublicSettings, AtomicSettingsError<V::Error, A::Error>> {
-        self.store
+    ) -> Result<PublicSettings, AtomicSettingsError<V::Error, A::Error, C::Error>> {
+        let mut settings = self
+            .store
             .public_atomic_settings()
             .await
-            .map_err(AtomicSettingsError::Storage)
+            .map_err(AtomicSettingsError::Storage)?;
+        if let Some(slot) = self
+            .store
+            .smtp_credential_ref()
+            .await
+            .map_err(AtomicSettingsError::Storage)?
+        {
+            settings.smtp.credential_status = match self.credential_vault.get(slot).await {
+                Ok(Some(_)) => SmtpCredentialStatus::Configured,
+                Ok(None) => SmtpCredentialStatus::Missing,
+                Err(_) => SmtpCredentialStatus::Unavailable,
+            };
+        }
+        Ok(settings)
     }
 
     /// Replaces all settings in one revisioned operation.
@@ -252,16 +431,19 @@ impl<V: AuthCandidateValidator, A: AutostartControl> AtomicSettingsManager<V, A>
     /// # Errors
     ///
     /// Returns validation, external-state, conflict, or storage failures.
+    #[allow(clippy::too_many_lines)] // Coordinates one durable SQLite + OS two-phase operation.
     pub async fn save_settings(
         &self,
         draft: SettingsDraft,
-    ) -> Result<PublicSettings, AtomicSettingsError<V::Error, A::Error>> {
+    ) -> Result<PublicSettings, AtomicSettingsError<V::Error, A::Error, C::Error>> {
         let SettingsDraft {
             expected_settings_revision,
             auth_path,
             quota_policy,
             alert_preferences,
             autostart_enabled,
+            smtp,
+            smtp_password,
         } = draft;
         let account_candidate = auth_path
             .as_deref()
@@ -275,7 +457,31 @@ impl<V: AuthCandidateValidator, A: AutostartControl> AtomicSettingsManager<V, A>
         let policy = validate_quota_policy_draft(quota_policy)
             .map_err(|error| AtomicSettingsError::Storage(error.into()))?;
         validate_alert_preferences(&alert_preferences).map_err(AtomicSettingsError::Storage)?;
+        let smtp = validate_smtp_settings(smtp).map_err(AtomicSettingsError::Storage)?;
+        if matches!(&smtp_password, SecretUpdate::Set(secret) if secret.is_empty() || secret.len() > 4096)
+        {
+            return Err(AtomicSettingsError::Storage(
+                SettingsStoreError::InvalidSmtpSettings,
+            ));
+        }
 
+        let old_credential_ref = self
+            .store
+            .smtp_credential_ref()
+            .await
+            .map_err(AtomicSettingsError::Storage)?;
+        let (new_credential_ref, staged_secret) = match smtp_password {
+            SecretUpdate::Keep => (old_credential_ref, None),
+            SecretUpdate::Set(secret) => (
+                Some(if old_credential_ref == Some(SMTP_SLOT_A) {
+                    SMTP_SLOT_B
+                } else {
+                    SMTP_SLOT_A
+                }),
+                Some(SecretString::from(secret)),
+            ),
+            SecretUpdate::Delete => (None, None),
+        };
         let old_autostart_enabled = self
             .autostart
             .is_enabled()
@@ -285,30 +491,65 @@ impl<V: AuthCandidateValidator, A: AutostartControl> AtomicSettingsManager<V, A>
             .store
             .prepare_external_settings_change(
                 expected_settings_revision,
+                old_credential_ref,
+                new_credential_ref,
                 old_autostart_enabled,
                 autostart_enabled,
             )
             .await
             .map_err(AtomicSettingsError::Storage)?;
 
+        if let (Some(slot), Some(secret)) = (new_credential_ref, staged_secret) {
+            if let Err(error) = self.credential_vault.set(slot, secret.clone()).await {
+                let _ = self.store.clear_external_change(&operation_key).await;
+                return Err(AtomicSettingsError::Credential(error));
+            }
+            let confirmed = self.credential_vault.get(slot).await;
+            if !matches!(
+                confirmed,
+                Ok(Some(ref stored)) if stored.expose_secret() == secret.expose_secret()
+            ) {
+                let _ = self.credential_vault.delete(slot).await;
+                let _ = self.store.clear_external_change(&operation_key).await;
+                return match confirmed {
+                    Err(error) => Err(AtomicSettingsError::Credential(error)),
+                    Ok(_) => Err(AtomicSettingsError::CredentialReadback),
+                };
+            }
+        }
         if old_autostart_enabled != autostart_enabled {
             if let Err(error) = self.autostart.set_enabled(autostart_enabled).await {
-                self.restore_prepared_autostart(&operation_key, old_autostart_enabled)
-                    .await;
+                self.restore_prepared_external_change(
+                    &operation_key,
+                    old_credential_ref,
+                    new_credential_ref,
+                    old_autostart_enabled,
+                )
+                .await;
                 return Err(AtomicSettingsError::Autostart(error));
             }
         }
         let confirmed_autostart = match self.autostart.is_enabled().await {
             Ok(enabled) => enabled,
             Err(error) => {
-                self.restore_prepared_autostart(&operation_key, old_autostart_enabled)
-                    .await;
+                self.restore_prepared_external_change(
+                    &operation_key,
+                    old_credential_ref,
+                    new_credential_ref,
+                    old_autostart_enabled,
+                )
+                .await;
                 return Err(AtomicSettingsError::Autostart(error));
             }
         };
         if confirmed_autostart != autostart_enabled {
-            self.restore_prepared_autostart(&operation_key, old_autostart_enabled)
-                .await;
+            self.restore_prepared_external_change(
+                &operation_key,
+                old_credential_ref,
+                new_credential_ref,
+                old_autostart_enabled,
+            )
+            .await;
             return Err(AtomicSettingsError::AutostartReadback);
         }
 
@@ -321,19 +562,39 @@ impl<V: AuthCandidateValidator, A: AutostartControl> AtomicSettingsManager<V, A>
                 policy,
                 alert_preferences,
                 confirmed_autostart,
+                smtp,
+                new_credential_ref,
             )
             .await;
         match settings {
-            Ok(settings) => {
+            Ok(mut settings) => {
                 // A committed journal is intentionally recoverable. Cleanup is
                 // best effort because reporting failure here would invite a
                 // retry after the settings transaction already succeeded.
-                let _ = self.store.clear_external_change(&operation_key).await;
+                let old_credential_cleaned = match old_credential_ref {
+                    Some(slot) if Some(slot) != new_credential_ref => {
+                        self.credential_vault.delete(slot).await.is_ok()
+                    }
+                    _ => true,
+                };
+                if old_credential_cleaned {
+                    let _ = self.store.clear_external_change(&operation_key).await;
+                }
+                settings.smtp.credential_status = if new_credential_ref.is_some() {
+                    SmtpCredentialStatus::Configured
+                } else {
+                    SmtpCredentialStatus::Missing
+                };
                 Ok(settings)
             }
             Err(error) => {
-                self.restore_prepared_autostart(&operation_key, old_autostart_enabled)
-                    .await;
+                self.restore_prepared_external_change(
+                    &operation_key,
+                    old_credential_ref,
+                    new_credential_ref,
+                    old_autostart_enabled,
+                )
+                .await;
                 Err(AtomicSettingsError::Storage(error))
             }
         }
@@ -351,7 +612,7 @@ impl<V: AuthCandidateValidator, A: AutostartControl> AtomicSettingsManager<V, A>
     /// later retry when convergence cannot be confirmed.
     pub async fn recover_external_changes(
         &self,
-    ) -> Result<(), AtomicSettingsError<V::Error, A::Error>> {
+    ) -> Result<(), AtomicSettingsError<V::Error, A::Error, C::Error>> {
         let changes = self
             .store
             .external_changes()
@@ -381,6 +642,20 @@ impl<V: AuthCandidateValidator, A: AutostartControl> AtomicSettingsManager<V, A>
             if confirmed != desired {
                 return Err(AtomicSettingsError::AutostartReadback);
             }
+            let stale_credential = match change.phase {
+                ExternalChangePhase::Prepared => change
+                    .new_credential_ref
+                    .filter(|slot| Some(*slot) != change.old_credential_ref),
+                ExternalChangePhase::Committed => change
+                    .old_credential_ref
+                    .filter(|slot| Some(*slot) != change.new_credential_ref),
+            };
+            if let Some(slot) = stale_credential {
+                self.credential_vault
+                    .delete(slot)
+                    .await
+                    .map_err(AtomicSettingsError::Credential)?;
+            }
             self.store
                 .clear_external_change(&change.operation_key)
                 .await
@@ -389,13 +664,26 @@ impl<V: AuthCandidateValidator, A: AutostartControl> AtomicSettingsManager<V, A>
         Ok(())
     }
 
-    async fn restore_prepared_autostart(&self, operation_key: &str, old_enabled: bool) {
+    async fn restore_prepared_external_change(
+        &self,
+        operation_key: &str,
+        old_credential_ref: Option<&'static str>,
+        new_credential_ref: Option<&'static str>,
+        old_enabled: bool,
+    ) {
+        let credential_restored = match new_credential_ref {
+            Some(slot) if Some(slot) != old_credential_ref => {
+                self.credential_vault.delete(slot).await.is_ok()
+            }
+            _ => true,
+        };
         if self.autostart.set_enabled(old_enabled).await.is_ok()
             && self
                 .autostart
                 .is_enabled()
                 .await
                 .is_ok_and(|enabled| enabled == old_enabled)
+            && credential_restored
         {
             let _ = self.store.clear_external_change(operation_key).await;
         }
@@ -411,27 +699,51 @@ enum ExternalChangePhase {
 struct ExternalSettingsChange {
     operation_key: String,
     phase: ExternalChangePhase,
+    old_credential_ref: Option<&'static str>,
+    new_credential_ref: Option<&'static str>,
     old_autostart_enabled: bool,
     new_autostart_enabled: bool,
 }
 
+pub(crate) struct SmtpDeliveryConfiguration {
+    pub credential_slot: &'static str,
+    pub connection: SmtpConnection,
+    pub recipients: Vec<String>,
+}
+
+pub(crate) struct ClaimedEmailDelivery {
+    pub id: i64,
+    pub delivery_key: String,
+    pub event_kind: AlertEventKind,
+    pub recipient: String,
+}
+
 /// Atomic settings failure preserving source errors behind a safe boundary.
 #[derive(Debug, Error)]
-pub enum AtomicSettingsError<VE: Error + Send + Sync + 'static, AE: Error + Send + Sync + 'static> {
+pub enum AtomicSettingsError<
+    VE: Error + Send + Sync + 'static,
+    AE: Error + Send + Sync + 'static,
+    CE: Error + Send + Sync + 'static,
+> {
     #[error("authentication candidate validation failed")]
     Validation(#[source] VE),
     #[error("autostart state unavailable")]
     Autostart(#[source] AE),
     #[error("autostart state did not match the requested value after mutation")]
     AutostartReadback,
+    #[error("credential vault unavailable")]
+    Credential(#[source] CE),
+    #[error("credential vault did not return the staged secret")]
+    CredentialReadback,
     #[error(transparent)]
     Storage(#[from] SettingsStoreError),
 }
 
-impl<VE, AE> AtomicSettingsError<VE, AE>
+impl<VE, AE, CE> AtomicSettingsError<VE, AE, CE>
 where
     VE: Error + Send + Sync + 'static,
     AE: Error + Send + Sync + 'static,
+    CE: Error + Send + Sync + 'static,
 {
     #[must_use]
     pub fn public<V>(&self) -> PublicError
@@ -444,6 +756,10 @@ where
                 PublicErrorCode::AutostartUnavailable,
                 "settings.autostart_unavailable",
             ),
+            Self::Credential(_) | Self::CredentialReadback => PublicError::new(
+                PublicErrorCode::CredentialUnavailable,
+                "settings.credential_unavailable",
+            ),
             Self::Storage(SettingsStoreError::Conflict) => PublicError::new(
                 PublicErrorCode::SettingsConflict,
                 "settings.revision_conflict",
@@ -455,6 +771,10 @@ where
             Self::Storage(SettingsStoreError::InvalidAlertPreferences) => PublicError::new(
                 PublicErrorCode::InvalidAlertPreferences,
                 "settings.invalid_alert_preferences",
+            ),
+            Self::Storage(SettingsStoreError::InvalidSmtpSettings) => PublicError::new(
+                PublicErrorCode::InvalidSmtpSettings,
+                "settings.invalid_smtp",
             ),
             Self::Storage(
                 SettingsStoreError::Database(_) | SettingsStoreError::InvalidNotificationState,
@@ -489,6 +809,9 @@ pub enum PublicErrorCode {
     NativeDialogUnavailable,
     InvalidAlertPreferences,
     AutostartUnavailable,
+    InvalidSmtpSettings,
+    CredentialUnavailable,
+    EmailDeliveryFailed,
 }
 
 /// Deliberately narrow context whose fields are safe to serialize.
@@ -583,6 +906,10 @@ impl<E: Error + Send + Sync + 'static> AccountConfigError<E> {
             Self::Storage(SettingsStoreError::InvalidAlertPreferences) => PublicError::new(
                 PublicErrorCode::InvalidAlertPreferences,
                 "settings.invalid_alert_preferences",
+            ),
+            Self::Storage(SettingsStoreError::InvalidSmtpSettings) => PublicError::new(
+                PublicErrorCode::InvalidSmtpSettings,
+                "settings.invalid_smtp",
             ),
             Self::Storage(
                 SettingsStoreError::Database(_) | SettingsStoreError::InvalidNotificationState,
@@ -749,6 +1076,8 @@ pub enum SettingsStoreError {
     InvalidPolicy(#[from] PolicyError),
     #[error("alert preferences must replace every supported event and channel exactly once")]
     InvalidAlertPreferences,
+    #[error("SMTP settings are invalid")]
+    InvalidSmtpSettings,
     #[error("persisted notification state is invalid")]
     InvalidNotificationState,
     #[error("account settings store unavailable")]
@@ -839,6 +1168,11 @@ fn initialize_database(
         migrate_durable_alerts_v9(database, now)?;
     } else {
         validate_migration(database, 9, DURABLE_ALERTS_SCHEMA_CHECKSUM)?;
+    }
+    if current_version <= 9 {
+        migrate_smtp_settings_v10(database, now)?;
+    } else {
+        validate_migration(database, 10, SMTP_SETTINGS_SCHEMA_CHECKSUM)?;
     }
     Ok(())
 }
@@ -1479,6 +1813,63 @@ fn migrate_durable_alerts_v9(
     transaction.commit()
 }
 
+fn migrate_smtp_settings_v10(
+    database: &mut rusqlite::Connection,
+    now: i64,
+) -> rusqlite::Result<()> {
+    let transaction =
+        database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE smtp_settings (
+           singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+           enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+           host TEXT NOT NULL,
+           port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+           tls_mode TEXT NOT NULL CHECK (tls_mode IN ('tls', 'starttls')),
+           username TEXT NOT NULL,
+           from_address TEXT NOT NULL,
+           from_name TEXT NOT NULL,
+           credential_ref TEXT CHECK (
+             credential_ref IS NULL OR credential_ref IN ('slot-a', 'slot-b')
+           ),
+           updated_at_ms INTEGER NOT NULL
+         );
+         INSERT INTO smtp_settings
+           (singleton_id, enabled, host, port, tls_mode, username,
+            from_address, from_name, credential_ref, updated_at_ms)
+           VALUES (1, 0, '', 465, 'tls', '', '', '', NULL, 0);
+         CREATE TABLE smtp_recipients (
+           id INTEGER PRIMARY KEY,
+           address TEXT,
+           normalized_address TEXT,
+           recipient_key BLOB NOT NULL UNIQUE,
+           position INTEGER NOT NULL CHECK (position >= 0),
+           active INTEGER NOT NULL CHECK (active IN (0, 1)),
+           enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+           created_at_ms INTEGER NOT NULL,
+           retired_at_ms INTEGER,
+           CHECK (
+             active = 0 OR
+             (address IS NOT NULL AND normalized_address IS NOT NULL)
+           )
+         );
+         CREATE UNIQUE INDEX one_active_normalized_recipient
+           ON smtp_recipients(normalized_address) WHERE active = 1;",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations
+         (version, applied_at_ms, app_version, checksum)
+         VALUES (10, ?1, ?2, ?3)",
+        rusqlite::params![
+            now,
+            env!("CARGO_PKG_VERSION"),
+            SMTP_SETTINGS_SCHEMA_CHECKSUM
+        ],
+    )?;
+    transaction.pragma_update(None, "user_version", 10)?;
+    transaction.commit()
+}
+
 fn insert_default_policy_revision(
     transaction: &rusqlite::Transaction<'_>,
     now: i64,
@@ -1720,6 +2111,7 @@ fn load_public_quota_policy(
     })
 }
 
+#[allow(clippy::too_many_lines)] // Reads one complete revisioned projection in a single snapshot.
 fn load_public_atomic_settings(
     database: &rusqlite::Connection,
 ) -> rusqlite::Result<PublicSettings> {
@@ -1750,6 +2142,54 @@ fn load_public_atomic_settings(
     if alert_preferences.len() != AlertEventKind::ALL.len() * AlertChannel::ALL.len() {
         return Err(rusqlite::Error::InvalidQuery);
     }
+    let (
+        smtp_enabled,
+        smtp_host,
+        smtp_port,
+        smtp_tls_mode,
+        smtp_username,
+        smtp_from_address,
+        smtp_from_name,
+        smtp_credential_ref,
+    ): (
+        i64,
+        String,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+    ) = database.query_row(
+        "SELECT enabled, host, port, tls_mode, username,
+                    from_address, from_name, credential_ref
+             FROM smtp_settings WHERE singleton_id = 1",
+        [],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+            ))
+        },
+    )?;
+    let mut recipients_statement = database.prepare(
+        "SELECT address, enabled FROM smtp_recipients
+         WHERE active = 1 ORDER BY position, id",
+    )?;
+    let recipients = recipients_statement
+        .query_map([], |row| {
+            Ok(PublicSmtpRecipient {
+                address: row.get(0)?,
+                enabled: row.get::<_, i64>(1)? != 0,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(PublicSettings {
         settings_revision: account.settings_revision,
         configured: account.configured,
@@ -1762,6 +2202,21 @@ fn load_public_atomic_settings(
         quota_policy: account.quota_policy,
         alert_preferences,
         autostart_enabled: autostart_enabled != 0,
+        smtp: PublicSmtpSettings {
+            enabled: smtp_enabled != 0,
+            host: smtp_host,
+            port: u16::try_from(smtp_port).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            tls_mode: SmtpTlsMode::parse(&smtp_tls_mode)?,
+            username: smtp_username,
+            from_address: smtp_from_address,
+            from_name: smtp_from_name,
+            recipients,
+            credential_status: if smtp_credential_ref.is_some() {
+                SmtpCredentialStatus::Configured
+            } else {
+                SmtpCredentialStatus::Missing
+            },
+        },
     })
 }
 
@@ -1943,9 +2398,30 @@ impl AccountSettingsStore {
             .map_err(SettingsStoreError::database)
     }
 
+    async fn smtp_credential_ref(&self) -> Result<Option<&'static str>, SettingsStoreError> {
+        self.connection
+            .call(|database| {
+                let credential_ref: Option<String> = database.query_row(
+                    "SELECT credential_ref FROM smtp_settings WHERE singleton_id = 1",
+                    [],
+                    |row| row.get(0),
+                )?;
+                match credential_ref.as_deref() {
+                    None => Ok(None),
+                    Some(SMTP_SLOT_A) => Ok(Some(SMTP_SLOT_A)),
+                    Some(SMTP_SLOT_B) => Ok(Some(SMTP_SLOT_B)),
+                    Some(_) => Err(rusqlite::Error::InvalidQuery),
+                }
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
     async fn prepare_external_settings_change(
         &self,
         expected_revision: u32,
+        old_credential_ref: Option<&'static str>,
+        new_credential_ref: Option<&'static str>,
         old_autostart_enabled: bool,
         new_autostart_enabled: bool,
     ) -> Result<String, SettingsStoreError> {
@@ -1969,9 +2445,11 @@ impl AccountSettingsStore {
                      (operation_key, kind, phase, old_credential_ref,
                       new_credential_ref, old_autostart_enabled,
                       new_autostart_enabled, created_at_ms, updated_at_ms)
-                     VALUES (?1, 'settings', 'prepared', NULL, NULL, ?2, ?3, ?4, ?4)",
+                     VALUES (?1, 'settings', 'prepared', ?2, ?3, ?4, ?5, ?6, ?6)",
                     rusqlite::params![
                         operation_key,
+                        old_credential_ref,
+                        new_credential_ref,
                         i64::from(old_autostart_enabled),
                         i64::from(new_autostart_enabled),
                         now
@@ -1999,11 +2477,14 @@ impl AccountSettingsStore {
         policy: QuotaPolicy,
         alert_preferences: Vec<AlertPreferenceDraft>,
         autostart_enabled: bool,
+        smtp: SmtpSettingsDraft,
+        credential_ref: Option<&'static str>,
     ) -> Result<PublicSettings, SettingsStoreError> {
         let operation_key = operation_key.to_owned();
         let policy_timezone = policy.policy_timezone().name().to_owned();
         let carry_workdays_enabled = policy.carry_workdays_enabled();
         let base_micropoints = policy.base_micropoints();
+        let smtp_delivery_ready = smtp.enabled && credential_ref.is_some();
         self.connection
             .call(move |database| {
                 let transaction =
@@ -2118,6 +2599,127 @@ impl AccountSettingsStore {
                         ],
                     )?;
                 }
+                transaction.execute(
+                    "UPDATE smtp_settings
+                     SET enabled = ?1, host = ?2, port = ?3, tls_mode = ?4,
+                         username = ?5, from_address = ?6, from_name = ?7,
+                         credential_ref = ?8, updated_at_ms = ?9
+                     WHERE singleton_id = 1",
+                    rusqlite::params![
+                        i64::from(smtp.enabled),
+                        smtp.host,
+                        i64::from(smtp.port),
+                        smtp.tls_mode.as_str(),
+                        smtp.username,
+                        smtp.from_address,
+                        smtp.from_name,
+                        credential_ref,
+                        now
+                    ],
+                )?;
+                transaction.execute(
+                    "UPDATE smtp_recipients
+                     SET active = 0, retired_at_ms = ?1
+                     WHERE active = 1",
+                    [now],
+                )?;
+                for (position, recipient) in smtp.recipients.into_iter().enumerate() {
+                    let recipient_key = recipient_key(&salt, &recipient.address);
+                    transaction.execute(
+                        "INSERT INTO smtp_recipients
+                         (address, normalized_address, recipient_key, position,
+                          active, enabled, created_at_ms, retired_at_ms)
+                         VALUES (?1, ?1, ?2, ?3, 1, ?4, ?5, NULL)
+                         ON CONFLICT(recipient_key) DO UPDATE SET
+                           address = excluded.address,
+                           normalized_address = excluded.normalized_address,
+                           position = excluded.position,
+                           active = 1,
+                           enabled = excluded.enabled,
+                           retired_at_ms = NULL",
+                        rusqlite::params![
+                            recipient.address,
+                            recipient_key.as_slice(),
+                            i64::try_from(position).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                            i64::from(recipient.enabled),
+                            now
+                        ],
+                    )?;
+                }
+                transaction.execute(
+                    "UPDATE alert_deliveries
+                     SET state = 'cancelled_by_config', next_attempt_at_ms = NULL,
+                         lease_owner = NULL, lease_until_ms = NULL,
+                         updated_at_ms = ?1
+                     WHERE channel = 'email'
+                       AND recipient_key IS NOT NULL
+                       AND state IN ('pending', 'retry_wait', 'paused_config')
+                       AND NOT EXISTS (
+                         SELECT 1 FROM smtp_recipients recipient
+                         WHERE recipient.recipient_key =
+                               alert_deliveries.recipient_key
+                           AND recipient.active = 1
+                           AND recipient.enabled = 1
+                       )",
+                    [now],
+                )?;
+                let email_state = if smtp_delivery_ready {
+                    "pending"
+                } else {
+                    "paused_config"
+                };
+                transaction.execute(
+                    "INSERT INTO alert_deliveries
+                     (delivery_key, alert_event_id, channel, recipient_key, state,
+                      attempt_count, next_attempt_at_ms, lease_owner,
+                      lease_until_ms, public_error_code, created_at_ms,
+                      updated_at_ms)
+                     SELECT event.event_key || ':email:' ||
+                              lower(hex(substr(recipient.recipient_key, 1, 16))),
+                            placeholder.alert_event_id, 'email',
+                            recipient.recipient_key, ?1, 0, ?2,
+                            NULL, NULL, NULL, placeholder.created_at_ms, ?2
+                     FROM alert_deliveries placeholder
+                     JOIN alert_events event ON event.id = placeholder.alert_event_id
+                     JOIN smtp_recipients recipient
+                       ON recipient.active = 1 AND recipient.enabled = 1
+                     WHERE placeholder.channel = 'email'
+                       AND placeholder.recipient_key IS NULL
+                       AND placeholder.state = 'paused_config'
+                     ON CONFLICT(delivery_key) DO NOTHING",
+                    rusqlite::params![email_state, now],
+                )?;
+                transaction.execute(
+                    "UPDATE alert_deliveries
+                     SET state = 'cancelled_by_config', updated_at_ms = ?1
+                     WHERE channel = 'email' AND recipient_key IS NULL
+                       AND state = 'paused_config'",
+                    [now],
+                )?;
+                if smtp_delivery_ready {
+                    transaction.execute(
+                        "UPDATE alert_deliveries
+                         SET state = 'pending', next_attempt_at_ms = ?1,
+                             public_error_code = NULL, updated_at_ms = ?1
+                         WHERE channel = 'email' AND state = 'paused_config'
+                           AND recipient_key IN (
+                             SELECT recipient_key FROM smtp_recipients
+                             WHERE active = 1 AND enabled = 1
+                           )",
+                        [now],
+                    )?;
+                } else {
+                    transaction.execute(
+                        "UPDATE alert_deliveries
+                         SET state = 'paused_config', next_attempt_at_ms = NULL,
+                             lease_owner = NULL, lease_until_ms = NULL,
+                             public_error_code = 'email_not_configured',
+                             updated_at_ms = ?1
+                         WHERE channel = 'email'
+                           AND state IN ('pending', 'retry_wait')",
+                        [now],
+                    )?;
+                }
                 if let Some(stream_id) = configured_stream_id {
                     persist_daily_policy_snapshots(&transaction, stream_id, now)?;
                 }
@@ -2166,7 +2768,8 @@ impl AccountSettingsStore {
         self.connection
             .call(|database| {
                 let mut statement = database.prepare(
-                    "SELECT operation_key, phase, old_autostart_enabled,
+                    "SELECT operation_key, phase, old_credential_ref,
+                            new_credential_ref, old_autostart_enabled,
                             new_autostart_enabled
                      FROM external_change_journal
                      WHERE kind = 'settings'
@@ -2180,11 +2783,19 @@ impl AccountSettingsStore {
                             "committed" => ExternalChangePhase::Committed,
                             _ => return Err(rusqlite::Error::InvalidQuery),
                         };
+                        let parse_slot = |value: Option<String>| match value.as_deref() {
+                            None => Ok(None),
+                            Some(SMTP_SLOT_A) => Ok(Some(SMTP_SLOT_A)),
+                            Some(SMTP_SLOT_B) => Ok(Some(SMTP_SLOT_B)),
+                            Some(_) => Err(rusqlite::Error::InvalidQuery),
+                        };
                         Ok(ExternalSettingsChange {
                             operation_key: row.get(0)?,
                             phase,
-                            old_autostart_enabled: row.get::<_, i64>(2)? != 0,
-                            new_autostart_enabled: row.get::<_, i64>(3)? != 0,
+                            old_credential_ref: parse_slot(row.get(2)?)?,
+                            new_credential_ref: parse_slot(row.get(3)?)?,
+                            old_autostart_enabled: row.get::<_, i64>(4)? != 0,
+                            new_autostart_enabled: row.get::<_, i64>(5)? != 0,
                         })
                     })?
                     .collect::<rusqlite::Result<Vec<_>>>()
@@ -2828,6 +3439,239 @@ impl AccountSettingsStore {
             .map_err(SettingsStoreError::database)
     }
 
+    pub(crate) async fn smtp_delivery_configuration(
+        &self,
+    ) -> Result<Option<SmtpDeliveryConfiguration>, SettingsStoreError> {
+        self.connection
+            .call(|database| {
+                let (
+                    enabled,
+                    host,
+                    port,
+                    tls_mode,
+                    username,
+                    from_address,
+                    from_name,
+                    credential_ref,
+                ): (
+                    i64,
+                    String,
+                    i64,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                ) = database.query_row(
+                    "SELECT enabled, host, port, tls_mode, username,
+                                from_address, from_name, credential_ref
+                         FROM smtp_settings WHERE singleton_id = 1",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                        ))
+                    },
+                )?;
+                if enabled == 0 {
+                    return Ok(None);
+                }
+                let credential_slot = match credential_ref.as_deref() {
+                    Some(SMTP_SLOT_A) => SMTP_SLOT_A,
+                    Some(SMTP_SLOT_B) => SMTP_SLOT_B,
+                    None => return Ok(None),
+                    Some(_) => return Err(rusqlite::Error::InvalidQuery),
+                };
+                let mut recipients_statement = database.prepare(
+                    "SELECT address FROM smtp_recipients
+                     WHERE active = 1 AND enabled = 1
+                     ORDER BY position, id",
+                )?;
+                let recipients = recipients_statement
+                    .query_map([], |row| row.get(0))?
+                    .collect::<rusqlite::Result<Vec<String>>>()?;
+                Ok(Some(SmtpDeliveryConfiguration {
+                    credential_slot,
+                    connection: SmtpConnection {
+                        host,
+                        port: u16::try_from(port).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        tls_mode: SmtpTlsMode::parse(&tls_mode)?,
+                        username,
+                        from_address,
+                        from_name,
+                    },
+                    recipients,
+                }))
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
+    pub(crate) async fn pause_email_deliveries(
+        &self,
+        public_error_code: &'static str,
+        now_unix_ms: i64,
+    ) -> Result<u32, SettingsStoreError> {
+        self.connection
+            .call(move |database| {
+                let changed = database.execute(
+                    "UPDATE alert_deliveries
+                     SET state = 'paused_config', next_attempt_at_ms = NULL,
+                         public_error_code = ?1, updated_at_ms = ?2
+                     WHERE channel = 'email'
+                       AND state IN ('pending', 'retry_wait')",
+                    rusqlite::params![public_error_code, now_unix_ms],
+                )?;
+                Ok::<_, rusqlite::Error>(u32::try_from(changed).unwrap_or(u32::MAX))
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
+    pub(crate) async fn resume_email_deliveries(
+        &self,
+        now_unix_ms: i64,
+    ) -> Result<(), SettingsStoreError> {
+        self.connection
+            .call(move |database| {
+                database.execute(
+                    "UPDATE alert_deliveries
+                     SET state = 'pending', next_attempt_at_ms = ?1,
+                         public_error_code = NULL, updated_at_ms = ?1
+                     WHERE channel = 'email' AND state = 'paused_config'
+                       AND recipient_key IN (
+                         SELECT recipient_key FROM smtp_recipients
+                         WHERE active = 1 AND enabled = 1
+                       )",
+                    [now_unix_ms],
+                )?;
+                Ok::<_, rusqlite::Error>(())
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
+    pub(crate) async fn claim_email_deliveries(
+        &self,
+        worker_id: &str,
+        now_unix_ms: i64,
+        lease_ms: i64,
+        limit: u32,
+    ) -> Result<Vec<ClaimedEmailDelivery>, SettingsStoreError> {
+        let worker_id = worker_id.to_owned();
+        let lease_until_ms = now_unix_ms.saturating_add(lease_ms);
+        self.connection
+            .call(move |database| {
+                let transaction =
+                    database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let deliveries = {
+                    let mut statement = transaction.prepare(
+                        "SELECT delivery.id, delivery.delivery_key,
+                                event.event_kind, recipient.address
+                         FROM alert_deliveries delivery
+                         JOIN alert_events event
+                           ON event.id = delivery.alert_event_id
+                         JOIN smtp_recipients recipient
+                           ON recipient.recipient_key = delivery.recipient_key
+                         WHERE delivery.channel = 'email'
+                           AND recipient.active = 1 AND recipient.enabled = 1
+                           AND (
+                             delivery.state = 'pending'
+                             OR (
+                               delivery.state = 'retry_wait'
+                               AND delivery.next_attempt_at_ms <= ?1
+                             )
+                             OR (
+                               delivery.state = 'leased'
+                               AND delivery.lease_until_ms <= ?1
+                             )
+                           )
+                         ORDER BY delivery.created_at_ms, delivery.id LIMIT ?2",
+                    )?;
+                    statement
+                        .query_map(
+                            rusqlite::params![now_unix_ms, i64::from(limit.min(100))],
+                            |row| {
+                                let event_kind: String = row.get(2)?;
+                                Ok(ClaimedEmailDelivery {
+                                    id: row.get(0)?,
+                                    delivery_key: row.get(1)?,
+                                    event_kind: AlertEventKind::parse(&event_kind)?,
+                                    recipient: row.get(3)?,
+                                })
+                            },
+                        )?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                };
+                let mut claimed = Vec::with_capacity(deliveries.len());
+                for delivery in deliveries {
+                    let changed = transaction.execute(
+                        "UPDATE alert_deliveries
+                         SET state = 'leased', lease_owner = ?1,
+                             lease_until_ms = ?2, updated_at_ms = ?3
+                         WHERE id = ?4 AND channel = 'email' AND (
+                           state = 'pending'
+                           OR (state = 'retry_wait' AND next_attempt_at_ms <= ?3)
+                           OR (state = 'leased' AND lease_until_ms <= ?3)
+                         )",
+                        rusqlite::params![worker_id, lease_until_ms, now_unix_ms, delivery.id],
+                    )?;
+                    if changed == 1 {
+                        claimed.push(delivery);
+                    }
+                }
+                transaction.commit()?;
+                Ok::<_, rusqlite::Error>(claimed)
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
+    pub(crate) async fn complete_email_delivery(
+        &self,
+        delivery_id: i64,
+        worker_id: &str,
+        attempted_at_ms: i64,
+        duration_ms: i64,
+    ) -> Result<bool, SettingsStoreError> {
+        self.finish_system_delivery(
+            delivery_id,
+            worker_id,
+            attempted_at_ms,
+            duration_ms,
+            true,
+            false,
+        )
+        .await
+    }
+
+    pub(crate) async fn fail_email_delivery(
+        &self,
+        delivery_id: i64,
+        worker_id: &str,
+        attempted_at_ms: i64,
+        duration_ms: i64,
+        transient: bool,
+    ) -> Result<(), SettingsStoreError> {
+        self.finish_system_delivery(
+            delivery_id,
+            worker_id,
+            attempted_at_ms,
+            duration_ms,
+            false,
+            transient,
+        )
+        .await
+        .map(|_| ())
+    }
+
     pub(crate) async fn claim_system_deliveries(
         &self,
         worker_id: &str,
@@ -3418,6 +4262,68 @@ fn persist_radar_threshold_alert(
     Ok(())
 }
 
+fn validate_smtp_settings(
+    mut draft: SmtpSettingsDraft,
+) -> Result<SmtpSettingsDraft, SettingsStoreError> {
+    draft.host = draft.host.trim().to_ascii_lowercase();
+    draft.username = trimmed(draft.username);
+    draft.from_address = normalize_email_address(&draft.from_address)?;
+    draft.from_name = trimmed(draft.from_name);
+
+    if draft.host.len() > 253
+        || draft.port == 0
+        || draft.host.contains(['/', '@'])
+        || draft.host.chars().any(char::is_whitespace)
+        || contains_header_control(&draft.username)
+        || contains_header_control(&draft.from_name)
+        || draft.username.len() > 320
+        || draft.from_name.len() > 100
+        || draft.recipients.len() > 50
+    {
+        return Err(SettingsStoreError::InvalidSmtpSettings);
+    }
+    if draft.enabled
+        && (draft.host.is_empty()
+            || draft.username.is_empty()
+            || draft.from_address.is_empty()
+            || !draft.recipients.iter().any(|recipient| recipient.enabled))
+    {
+        return Err(SettingsStoreError::InvalidSmtpSettings);
+    }
+
+    let mut normalized = BTreeSet::new();
+    for recipient in &mut draft.recipients {
+        recipient.address = normalize_email_address(&recipient.address)?;
+        if recipient.address.is_empty() || !normalized.insert(recipient.address.clone()) {
+            return Err(SettingsStoreError::InvalidSmtpSettings);
+        }
+    }
+    Ok(draft)
+}
+
+fn normalize_email_address(value: &str) -> Result<String, SettingsStoreError> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Ok(normalized);
+    }
+    normalized
+        .parse::<email_address::EmailAddress>()
+        .map_err(|_| SettingsStoreError::InvalidSmtpSettings)?;
+    Ok(normalized)
+}
+
+fn contains_header_control(value: &str) -> bool {
+    value.chars().any(char::is_control)
+}
+
+fn trimmed(mut value: String) -> String {
+    let leading_bytes = value.len().saturating_sub(value.trim_start().len());
+    let trailing_end = value.trim_end().len();
+    value.truncate(trailing_end);
+    value.drain(..leading_bytes);
+    value
+}
+
 fn apply_radar_failure(
     transaction: &rusqlite::Transaction<'_>,
     attempted_at_unix_ms: i64,
@@ -3729,27 +4635,94 @@ fn persist_alert_event(
             .collect::<rusqlite::Result<Vec<_>>>()?
     };
     for channel in preferences {
-        let state = if channel == AlertChannel::System.as_str() {
+        if channel == AlertChannel::System.as_str() {
+            insert_alert_delivery(
+                transaction,
+                &format!("{}:{channel}", event.event_key),
+                alert_event_id,
+                &channel,
+                None,
+                "pending",
+                event.created_at_ms,
+            )?;
+            continue;
+        }
+        let (smtp_enabled, credential_ref): (i64, Option<String>) = transaction.query_row(
+            "SELECT enabled, credential_ref
+             FROM smtp_settings WHERE singleton_id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let recipient_keys = {
+            let mut statement = transaction.prepare(
+                "SELECT recipient_key FROM smtp_recipients
+                 WHERE active = 1 AND enabled = 1 ORDER BY position, id",
+            )?;
+            statement
+                .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if recipient_keys.is_empty() {
+            insert_alert_delivery(
+                transaction,
+                &format!("{}:{channel}:unconfigured", event.event_key),
+                alert_event_id,
+                &channel,
+                None,
+                "paused_config",
+                event.created_at_ms,
+            )?;
+            continue;
+        }
+        let state = if smtp_enabled != 0 && credential_ref.is_some() {
             "pending"
         } else {
             "paused_config"
         };
-        transaction.execute(
-            "INSERT INTO alert_deliveries
-             (delivery_key, alert_event_id, channel, recipient_key, state,
-              attempt_count, next_attempt_at_ms, lease_owner, lease_until_ms,
-              public_error_code, created_at_ms, updated_at_ms)
-             VALUES (?1, ?2, ?3, NULL, ?4, 0, ?5, NULL, NULL, NULL, ?5, ?5)",
-            rusqlite::params![
-                format!("{}:{channel}", event.event_key),
+        for recipient_key in recipient_keys {
+            insert_alert_delivery(
+                transaction,
+                &format!(
+                    "{}:{channel}:{}",
+                    event.event_key,
+                    hex_prefix(&recipient_key, 16)
+                ),
                 alert_event_id,
-                channel,
+                &channel,
+                Some(&recipient_key),
                 state,
                 event.created_at_ms,
-            ],
-        )?;
+            )?;
+        }
     }
     Ok(true)
+}
+
+fn insert_alert_delivery(
+    transaction: &rusqlite::Transaction<'_>,
+    delivery_key: &str,
+    alert_event_id: i64,
+    channel: &str,
+    recipient_key: Option<&[u8]>,
+    state: &str,
+    created_at_ms: i64,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        "INSERT INTO alert_deliveries
+         (delivery_key, alert_event_id, channel, recipient_key, state,
+          attempt_count, next_attempt_at_ms, lease_owner, lease_until_ms,
+          public_error_code, created_at_ms, updated_at_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, NULL, NULL, NULL, ?6, ?6)",
+        rusqlite::params![
+            delivery_key,
+            alert_event_id,
+            channel,
+            recipient_key,
+            state,
+            created_at_ms,
+        ],
+    )?;
+    Ok(())
 }
 
 fn persist_source_failure_alert(
@@ -4749,6 +5722,25 @@ fn account_key(salt: &[u8], account_id: &str) -> [u8; 32] {
     hasher.update(salt);
     hasher.update(account_id.as_bytes());
     hasher.finalize().into()
+}
+
+fn recipient_key(salt: &[u8], normalized_address: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(salt);
+    hasher.update(b"smtp-recipient:");
+    hasher.update(normalized_address.as_bytes());
+    hasher.finalize().into()
+}
+
+fn hex_prefix(value: &[u8], max_bytes: usize) -> String {
+    value
+        .iter()
+        .take(max_bytes)
+        .fold(String::new(), |mut output, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(output, "{byte:02x}");
+            output
+        })
 }
 
 fn account_label(key: &[u8]) -> String {

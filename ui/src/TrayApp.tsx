@@ -76,6 +76,17 @@ const unconfiguredSettings: PublicSettings = {
   },
   alertPreferences: defaultAlertPreferences,
   autostartEnabled: false,
+  smtp: {
+    enabled: false,
+    host: "",
+    port: 465,
+    tlsMode: "tls",
+    username: "",
+    fromAddress: "",
+    fromName: "",
+    recipients: [],
+    credentialStatus: "missing",
+  },
 };
 
 type TrayAppProps = {
@@ -87,6 +98,7 @@ type TrayAppProps = {
   onHide: () => void;
   onRefresh: () => unknown;
   onRequestNotificationPermission?: () => Promise<NotificationPermissionStatus>;
+  onSendTestEmail?: () => Promise<number>;
   onSaveSettings?: (draft: SettingsDraft) => Promise<PublicSettings>;
   onReloadSettings?: () => Promise<PublicSettings>;
 };
@@ -95,11 +107,13 @@ function SettingsView({
   settings,
   onBack,
   onRequestNotificationPermission,
+  onSendTestEmail,
   onSave,
 }: {
   settings: PublicSettings;
   onBack: () => void;
   onRequestNotificationPermission?: () => Promise<void>;
+  onSendTestEmail?: () => Promise<number>;
   onSave: (draft: SettingsDraft) => Promise<void>;
 }) {
   const [activeTab, setActiveTab] = useState<"account" | "quota" | "alerts">(
@@ -121,6 +135,24 @@ function SettingsView({
   const [autostartEnabled, setAutostartEnabled] = useState(
     settings.autostartEnabled,
   );
+  const [smtpEnabled, setSmtpEnabled] = useState(settings.smtp.enabled);
+  const [smtpHost, setSmtpHost] = useState(settings.smtp.host);
+  const [smtpPort, setSmtpPort] = useState(String(settings.smtp.port));
+  const [smtpTlsMode, setSmtpTlsMode] = useState(settings.smtp.tlsMode);
+  const [smtpUsername, setSmtpUsername] = useState(settings.smtp.username);
+  const [smtpFromAddress, setSmtpFromAddress] = useState(
+    settings.smtp.fromAddress,
+  );
+  const [smtpFromName, setSmtpFromName] = useState(settings.smtp.fromName);
+  const [smtpRecipients, setSmtpRecipients] = useState(() =>
+    settings.smtp.recipients.map((recipient) => ({ ...recipient })),
+  );
+  const [smtpPassword, setSmtpPassword] = useState("");
+  const [deleteSmtpPassword, setDeleteSmtpPassword] = useState(false);
+  const [testEmailState, setTestEmailState] = useState<
+    "idle" | "sending" | "sent" | "error"
+  >("idle");
+  const [testEmailCount, setTestEmailCount] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
 
@@ -135,6 +167,19 @@ function SettingsView({
       settings.alertPreferences.map((preference) => ({ ...preference })),
     );
     setAutostartEnabled(settings.autostartEnabled);
+    setSmtpEnabled(settings.smtp.enabled);
+    setSmtpHost(settings.smtp.host);
+    setSmtpPort(String(settings.smtp.port));
+    setSmtpTlsMode(settings.smtp.tlsMode);
+    setSmtpUsername(settings.smtp.username);
+    setSmtpFromAddress(settings.smtp.fromAddress);
+    setSmtpFromName(settings.smtp.fromName);
+    setSmtpRecipients(
+      settings.smtp.recipients.map((recipient) => ({ ...recipient })),
+    );
+    setSmtpPassword("");
+    setDeleteSmtpPassword(false);
+    setTestEmailState("idle");
   }, [settings.settingsRevision]);
 
   const total = dailyLimits.reduce((sum, value) => sum + value, 0);
@@ -143,6 +188,19 @@ function SettingsView({
     dailyLimits.every((value) => Number.isFinite(value) && value >= 0) &&
     total <= 100 &&
     policyTimezone.trim().length > 0;
+  const parsedSmtpPort = Number(smtpPort);
+  const smtpValid =
+    !smtpEnabled ||
+    (smtpHost.trim().length > 0 &&
+      Number.isInteger(parsedSmtpPort) &&
+      parsedSmtpPort > 0 &&
+      parsedSmtpPort <= 65_535 &&
+      smtpUsername.trim().length > 0 &&
+      smtpFromAddress.includes("@") &&
+      smtpRecipients.some(
+        (recipient) => recipient.enabled && recipient.address.includes("@"),
+      ));
+  const settingsValid = policyValid && smtpValid;
 
   const setAlertPreference = (
     eventKind: AlertEventKind,
@@ -160,7 +218,7 @@ function SettingsView({
   };
 
   const save = () => {
-    if (!policyValid || saving) {
+    if (!settingsValid || saving) {
       return;
     }
     setSaving(true);
@@ -177,7 +235,29 @@ function SettingsView({
       },
       alertPreferences,
       autostartEnabled,
+      smtp: {
+        enabled: smtpEnabled,
+        host: smtpHost.trim(),
+        port: parsedSmtpPort,
+        tlsMode: smtpTlsMode,
+        username: smtpUsername.trim(),
+        fromAddress: smtpFromAddress.trim(),
+        fromName: smtpFromName.trim(),
+        recipients: smtpRecipients.map((recipient) => ({
+          address: recipient.address.trim(),
+          enabled: recipient.enabled,
+        })),
+      },
+      smtpPassword: deleteSmtpPassword
+        ? "delete"
+        : smtpPassword.length > 0
+          ? { set: smtpPassword }
+          : "keep",
     })
+      .then(() => {
+        setSmtpPassword("");
+        setDeleteSmtpPassword(false);
+      })
       .catch(() => {
         setSaveError(true);
       })
@@ -421,8 +501,264 @@ function SettingsView({
               ))}
             </div>
             <p class="privacy-note">
-              邮件渠道会在完成发件邮箱配置后生效；偏好可先保存。
+              每个收件地址独立投递。密码只写入系统钥匙串，不进入数据库。
             </p>
+            <div class="smtp-settings">
+              <div class="smtp-title">
+                <span>
+                  <strong>发件邮箱</strong>
+                  <small>
+                    {settings.smtp.credentialStatus === "configured"
+                      ? "密码已安全保存"
+                      : settings.smtp.credentialStatus === "unavailable"
+                        ? "系统钥匙串暂不可用"
+                        : "尚未保存密码"}
+                  </small>
+                </span>
+                <label class="compact-switch">
+                  <span>启用</span>
+                  <input
+                    aria-label="启用邮件通知"
+                    type="checkbox"
+                    checked={smtpEnabled}
+                    onChange={(event) => {
+                      setSmtpEnabled(event.currentTarget.checked);
+                      setSaveError(false);
+                    }}
+                  />
+                </label>
+              </div>
+              <div class="smtp-grid">
+                <label>
+                  <span>SMTP 主机</span>
+                  <input
+                    aria-label="SMTP 主机"
+                    type="text"
+                    value={smtpHost}
+                    placeholder="smtp.example.com"
+                    spellcheck={false}
+                    onInput={(event) => {
+                      setSmtpHost(event.currentTarget.value);
+                      setSaveError(false);
+                    }}
+                  />
+                </label>
+                <label>
+                  <span>端口</span>
+                  <input
+                    aria-label="SMTP 端口"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    value={smtpPort}
+                    onInput={(event) => {
+                      setSmtpPort(event.currentTarget.value);
+                      setSaveError(false);
+                    }}
+                  />
+                </label>
+                <label>
+                  <span>加密</span>
+                  <select
+                    aria-label="SMTP 加密"
+                    value={smtpTlsMode}
+                    onChange={(event) => {
+                      setSmtpTlsMode(
+                        event.currentTarget.value as "tls" | "starttls",
+                      );
+                      setSaveError(false);
+                    }}
+                  >
+                    <option value="tls">TLS</option>
+                    <option value="starttls">STARTTLS</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                <span>用户名</span>
+                <input
+                  aria-label="SMTP 用户名"
+                  type="text"
+                  value={smtpUsername}
+                  autocomplete="off"
+                  spellcheck={false}
+                  onInput={(event) => {
+                    setSmtpUsername(event.currentTarget.value);
+                    setSaveError(false);
+                  }}
+                />
+              </label>
+              <div class="smtp-grid smtp-grid--sender">
+                <label>
+                  <span>发件地址</span>
+                  <input
+                    aria-label="SMTP 发件地址"
+                    type="email"
+                    value={smtpFromAddress}
+                    spellcheck={false}
+                    onInput={(event) => {
+                      setSmtpFromAddress(event.currentTarget.value);
+                      setSaveError(false);
+                    }}
+                  />
+                </label>
+                <label>
+                  <span>显示名称</span>
+                  <input
+                    aria-label="SMTP 发件名称"
+                    type="text"
+                    value={smtpFromName}
+                    placeholder="QuotaTide"
+                    onInput={(event) => {
+                      setSmtpFromName(event.currentTarget.value);
+                      setSaveError(false);
+                    }}
+                  />
+                </label>
+              </div>
+              <label>
+                <span>应用密码</span>
+                <input
+                  aria-label="SMTP 应用密码"
+                  type="password"
+                  value={smtpPassword}
+                  placeholder={
+                    settings.smtp.credentialStatus === "configured"
+                      ? "留空以保留现有密码"
+                      : "输入应用专用密码"
+                  }
+                  autocomplete="new-password"
+                  disabled={deleteSmtpPassword}
+                  onInput={(event) => {
+                    setSmtpPassword(event.currentTarget.value);
+                    setDeleteSmtpPassword(false);
+                    setSaveError(false);
+                  }}
+                />
+              </label>
+              {settings.smtp.credentialStatus !== "missing" ? (
+                <label class="smtp-delete-secret">
+                  <input
+                    aria-label="删除已保存的 SMTP 密码"
+                    type="checkbox"
+                    checked={deleteSmtpPassword}
+                    onChange={(event) => {
+                      setDeleteSmtpPassword(event.currentTarget.checked);
+                      if (event.currentTarget.checked) {
+                        setSmtpPassword("");
+                      }
+                    }}
+                  />
+                  <span>保存时删除已保存的密码</span>
+                </label>
+              ) : null}
+              <div class="smtp-recipients">
+                <div class="smtp-recipients__head">
+                  <span>收件地址</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSmtpRecipients((current) => [
+                        ...current,
+                        { address: "", enabled: true },
+                      ]);
+                    }}
+                  >
+                    添加
+                  </button>
+                </div>
+                {smtpRecipients.map((recipient, index) => (
+                  <div class="smtp-recipient" key={index}>
+                    <input
+                      aria-label={`收件地址 ${String(index + 1)}`}
+                      type="email"
+                      value={recipient.address}
+                      spellcheck={false}
+                      onInput={(event) => {
+                        setSmtpRecipients((current) =>
+                          current.map((item, itemIndex) =>
+                            itemIndex === index
+                              ? {
+                                  ...item,
+                                  address: event.currentTarget.value,
+                                }
+                              : item,
+                          ),
+                        );
+                        setSaveError(false);
+                      }}
+                    />
+                    <input
+                      aria-label={`启用收件地址 ${String(index + 1)}`}
+                      type="checkbox"
+                      checked={recipient.enabled}
+                      onChange={(event) => {
+                        setSmtpRecipients((current) =>
+                          current.map((item, itemIndex) =>
+                            itemIndex === index
+                              ? {
+                                  ...item,
+                                  enabled: event.currentTarget.checked,
+                                }
+                              : item,
+                          ),
+                        );
+                      }}
+                    />
+                    <button
+                      type="button"
+                      aria-label={`删除收件地址 ${String(index + 1)}`}
+                      onClick={() => {
+                        setSmtpRecipients((current) =>
+                          current.filter((_, itemIndex) => itemIndex !== index),
+                        );
+                      }}
+                    >
+                      −
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div class="smtp-actions">
+                <button
+                  type="button"
+                  disabled={
+                    !onSendTestEmail ||
+                    testEmailState === "sending" ||
+                    !settings.smtp.enabled ||
+                    settings.smtp.credentialStatus !== "configured"
+                  }
+                  onClick={() => {
+                    if (!onSendTestEmail) {
+                      return;
+                    }
+                    setTestEmailState("sending");
+                    void onSendTestEmail()
+                      .then((count) => {
+                        setTestEmailCount(count);
+                        setTestEmailState("sent");
+                      })
+                      .catch(() => {
+                        setTestEmailState("error");
+                      });
+                  }}
+                >
+                  {testEmailState === "sending" ? "正在发送…" : "发送测试邮件"}
+                </button>
+                <span role="status">
+                  {testEmailState === "sent"
+                    ? `已发送到 ${String(testEmailCount)} 个地址`
+                    : testEmailState === "error"
+                      ? "发送失败，请检查 SMTP 设置"
+                      : "先保存设置，再执行测试"}
+                </span>
+              </div>
+            </div>
+            {!smtpValid ? (
+              <p class="settings-error" role="alert">
+                启用邮件时，请填写有效主机、端口、账号、发件地址和至少一个收件地址。
+              </p>
+            ) : null}
           </section>
         )}
         {saveError ? (
@@ -440,7 +776,7 @@ function SettingsView({
         <button
           type="button"
           class="settings-save"
-          disabled={!policyValid || saving}
+          disabled={!settingsValid || saving}
           onClick={save}
         >
           {saving ? "正在保存…" : "保存全部设置"}
@@ -459,6 +795,7 @@ export function TrayApp({
   onHide,
   onRefresh,
   onRequestNotificationPermission,
+  onSendTestEmail,
   onSaveSettings,
   onReloadSettings,
 }: TrayAppProps) {
@@ -571,6 +908,7 @@ export function TrayApp({
               }
             : undefined
         }
+        onSendTestEmail={onSendTestEmail}
         onSave={async (draft) => {
           if (!onSaveSettings) {
             return;

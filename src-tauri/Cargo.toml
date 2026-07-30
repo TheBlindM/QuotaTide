@@ -23,6 +23,13 @@ tauri-build = { version = "=2.6.3", features = [] }
 base64 = "=0.22.1"
 chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 futures-util = "=0.3.33"
+keyring = "=4.1.5"
+lettre = { version = "=0.11.22", default-features = false, features = [
+  "builder",
+  "pool",
+  "smtp-transport",
+  "tokio1-rustls-tls",
+] }
 quotatide-core = { path = "../crates/quotatide-core", version = "=0.1.0" }
 quotatide-native-notifications = { path = "../crates/quotatide-native-notifications", version = "=0.1.0" }
 reqwest = { version = "=0.13.4", default-features = false, features = ["json", "native-tls", "stream"] }

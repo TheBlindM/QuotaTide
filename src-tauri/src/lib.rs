@@ -3,8 +3,10 @@
 pub mod auth_file;
 pub mod background_lifecycle;
 pub mod codex_usage;
+mod credential_vault;
 mod platform_notifications;
 pub mod reset_radar;
+mod smtp;
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,16 +14,19 @@ use std::sync::{Arc, Mutex};
 use auth_file::AuthFileReader;
 use background_lifecycle::{AUTOSTART_ARGUMENT, LaunchMode, notify_secondary, start_primary};
 use codex_usage::{CodexUsageClient, ConfiguredCodexUsageSource};
+use credential_vault::SystemCredentialVault;
 use platform_notifications::{PlatformNotificationError, PlatformNotifier};
 use quotatide_core::{
     AccountApplication, AccountSettingsStore, AlertChannel, AlertTarget, Application,
     AtomicSettingsManager, AutostartControl, BuildInfo, Clock, DashboardChanged, DeliveryWorker,
-    NotificationPermissionStatus, PhysicalRect as CoreRect, PhysicalSize as CoreSize,
-    PublicAlertInbox, PublicError, PublicErrorCode, PublicLiveQuotaState, PublicSettings,
-    RefreshCoordinator, RefreshTrigger, SafeNotification, SettingsChanged, SettingsDraft,
-    SettingsManager, ShellEffect, ShellEvent, SystemNotifier, TrayShell, place_tray_window,
+    EmailDeliveryWorker, NotificationPermissionStatus, PhysicalRect as CoreRect,
+    PhysicalSize as CoreSize, PublicAlertInbox, PublicError, PublicErrorCode, PublicLiveQuotaState,
+    PublicSettings, RefreshCoordinator, RefreshTrigger, SafeNotification, SettingsChanged,
+    SettingsDraft, SettingsManager, ShellEffect, ShellEvent, SystemNotifier, TestEmailError,
+    TrayShell, place_tray_window,
 };
 use reset_radar::ResetRadarClient;
+use smtp::LettreMailTransport;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::utils::WindowEffect;
@@ -70,8 +75,10 @@ impl Clock for SystemClock {
 }
 
 type LiveApplication = Application<AuthFileReader, ConfiguredCodexUsageSource, SystemClock>;
-type LiveAtomicSettings = AtomicSettingsManager<AuthFileReader, SystemAutostart>;
+type LiveAtomicSettings =
+    AtomicSettingsManager<AuthFileReader, SystemAutostart, SystemCredentialVault>;
 type LiveDeliveryWorker = DeliveryWorker<DesktopSystemNotifier>;
+type LiveEmailDeliveryWorker = EmailDeliveryWorker<SystemCredentialVault, LettreMailTransport>;
 
 #[derive(Clone, Default)]
 struct SharedNotificationPermission {
@@ -116,20 +123,34 @@ struct DeliveryWorkerState {
     cancelled: AtomicBool,
     wake: Notify,
     worker: Mutex<Option<LiveDeliveryWorker>>,
+    email_worker: Mutex<Option<LiveEmailDeliveryWorker>>,
     event_app: Mutex<Option<AppHandle>>,
 }
 
 impl DeliveryWorkerLifecycle {
-    fn configure(&self, worker: LiveDeliveryWorker, app: AppHandle) -> bool {
+    fn configure(
+        &self,
+        worker: LiveDeliveryWorker,
+        email_worker: LiveEmailDeliveryWorker,
+        app: AppHandle,
+    ) -> bool {
         let configured = self
             .state
             .worker
             .lock()
             .is_ok_and(|mut configured| configured.replace(worker).is_none());
-        if configured && let Ok(mut event_app) = self.state.event_app.lock() {
+        let email_configured = self
+            .state
+            .email_worker
+            .lock()
+            .is_ok_and(|mut configured| configured.replace(email_worker).is_none());
+        if configured
+            && email_configured
+            && let Ok(mut event_app) = self.state.event_app.lock()
+        {
             *event_app = Some(app);
         }
-        configured
+        configured && email_configured
     }
 
     fn start(&self) -> bool {
@@ -150,25 +171,56 @@ impl DeliveryWorkerLifecycle {
 
     async fn run(self) {
         while !self.state.cancelled.load(Ordering::Acquire) {
-            let worker = self
+            let system_worker = self
                 .state
                 .worker
                 .lock()
                 .ok()
                 .and_then(|configured| configured.clone());
-            if let Some(worker) = worker {
-                match worker.deliver_pending(SystemClock.now_unix_ms()).await {
-                    Ok(sweep) if sweep != quotatide_core::DeliverySweep::default() => {
-                        if let Ok(event_app) = self.state.event_app.lock()
-                            && let Some(app) = event_app.as_ref()
-                        {
-                            let _ = app.emit(ALERTS_CHANGED_EVENT, ());
-                        }
+            let email_worker = self
+                .state
+                .email_worker
+                .lock()
+                .ok()
+                .and_then(|configured| configured.clone());
+            let now = SystemClock.now_unix_ms();
+            let system_sweep = async {
+                match system_worker {
+                    Some(worker) => worker.deliver_pending(now).await.map(Some),
+                    None => Ok(None),
+                }
+            };
+            let email_sweep = async {
+                match email_worker {
+                    Some(worker) => worker.deliver_pending(now).await.map(Some),
+                    None => Ok(None),
+                }
+            };
+            let (system_result, email_result) = tokio::join!(system_sweep, email_sweep);
+            match system_result {
+                Ok(Some(sweep)) if sweep != quotatide_core::DeliverySweep::default() => {
+                    if let Ok(event_app) = self.state.event_app.lock()
+                        && let Some(app) = event_app.as_ref()
+                    {
+                        let _ = app.emit(ALERTS_CHANGED_EVENT, ());
                     }
-                    Ok(_) => {}
-                    Err(error) => {
-                        eprintln!("QuotaTide: notification delivery sweep failed: {error}");
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("QuotaTide: notification delivery sweep failed: {error}");
+                }
+            }
+            match email_result {
+                Ok(Some(sweep)) if sweep != quotatide_core::DeliverySweep::default() => {
+                    if let Ok(event_app) = self.state.event_app.lock()
+                        && let Some(app) = event_app.as_ref()
+                    {
+                        let _ = app.emit(ALERTS_CHANGED_EVENT, ());
                     }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("QuotaTide: email delivery sweep failed: {error}");
                 }
             }
             tokio::select! {
@@ -430,6 +482,29 @@ async fn save_settings(
     Ok(saved)
 }
 
+#[tauri::command]
+async fn send_test_email(
+    worker: tauri::State<'_, LiveEmailDeliveryWorker>,
+) -> Result<u32, PublicError> {
+    worker.send_test_email().await.map_err(|error| match error {
+        TestEmailError::NotConfigured => PublicError::new(
+            PublicErrorCode::InvalidSmtpSettings,
+            "settings.smtp_not_configured",
+        ),
+        TestEmailError::CredentialMissing | TestEmailError::CredentialUnavailable => {
+            PublicError::new(
+                PublicErrorCode::CredentialUnavailable,
+                "settings.credential_unavailable",
+            )
+        }
+        TestEmailError::DeliveryFailed => PublicError::new(
+            PublicErrorCode::EmailDeliveryFailed,
+            "settings.smtp_test_failed",
+        ),
+        TestEmailError::StorageUnavailable => storage_public_error(),
+    })
+}
+
 #[cfg(test)]
 async fn configure_selected_auth(
     application: &AccountApplication<AuthFileReader>,
@@ -666,6 +741,7 @@ fn spawn_dashboard_event_bridge(
     });
 }
 
+#[allow(clippy::too_many_lines)] // Wires the desktop dependency graph in one startup transaction.
 fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -689,7 +765,8 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         store.clone(),
         AuthFileReader,
         SystemAutostart::new(app.handle().clone()),
-    );
+    )
+    .with_credential_vault(SystemCredentialVault);
     tauri::async_runtime::block_on(atomic_settings.recover_external_changes())
         .map_err(|_| "failed to recover an interrupted settings operation")?;
     app.manage(atomic_settings);
@@ -741,7 +818,18 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         notifier,
         format!("desktop-{}", std::process::id()),
     );
-    if !delivery_worker.configure(live_delivery_worker, app.handle().clone()) {
+    let live_email_worker = EmailDeliveryWorker::new(
+        store.clone(),
+        SystemCredentialVault,
+        LettreMailTransport::default(),
+        format!("desktop-email-{}", std::process::id()),
+    );
+    app.manage(live_email_worker.clone());
+    if !delivery_worker.configure(
+        live_delivery_worker,
+        live_email_worker,
+        app.handle().clone(),
+    ) {
         return Err("failed to configure the notification delivery worker".into());
     }
     app.manage(delivery_worker.clone());
@@ -875,7 +963,8 @@ pub fn run() {
             get_live_quota,
             get_alerts,
             request_system_notification_permission,
-            save_settings
+            save_settings,
+            send_test_email
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the QuotaTide desktop shell");

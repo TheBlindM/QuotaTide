@@ -11,7 +11,7 @@ License：MIT
 ## 当前状态
 
 项目正在从旧 Node/Docker 原型重构为 Rust/Tauri 桌面应用。目前已完成
-**Ticket 14–21 的桌面骨架、实时数据、策略和后台生命周期**：
+**Ticket 14–23 的桌面骨架、实时数据、策略、提醒和安全邮件投递**：
 
 - Rust workspace 与框架无关的 `quotatide-core`；
 - Tauri 2 隐藏窗口和单一 Tide Dial 托盘入口；
@@ -19,7 +19,7 @@ License：MIT
 - 界面配置并只读校验单账号 `auth.json` 路径，不修改或复制令牌；
 - 启动、每小时、唤醒和手动触发的真实 Codex 当前周额度刷新；
 - 独立接入 codex-resets.com 的 24 小时重置概率、来源健康与安全外链；
-- SQLite v8 的账号隔离观测、来源健康、额度 epoch、每日账本、不可变策略版本、
+- SQLite v10 的账号隔离观测、来源健康、额度 epoch、每日账本、不可变策略版本、
   提醒偏好与可恢复外部变更 journal；
 - 严格展示当前额度周期的七个自然日，未知日期不伪造为 0；
 - 支持逐日编辑 `16/16/16/16/16/10/10` 模板、IANA 策略时区和同一自然周
@@ -27,11 +27,14 @@ License：MIT
 - 账号、七日额度、提醒偏好和当前用户开机启动采用单次 revisioned 原子保存；
 - macOS LaunchAgent、Windows 当前用户启动、单实例唤醒、登录隐藏启动、
   睡眠恢复合并和后台 worker 单启动保护；
+- 持久提醒 outbox、macOS/Windows 原生系统通知、点击聚焦和失败恢复；
+- TLS/required STARTTLS SMTP、macOS Keychain/Windows Credential Manager
+  双槽密码、逐收件人邮件重试与独立测试邮件；
 - macOS/Windows bundle CI 骨架。
 
-当前版本尚未完成邮件投递和正式发布 smoke。旧 Node 服务
-仍暂时保留供行为迁移测试使用，但新桌面应用不启动它、不读取它的数据库，
-也不依赖 Docker。
+当前版本尚未完成隐私恢复工具、本地化/可访问性、开源清理和正式发布 smoke。
+旧 Node 服务仍暂时保留供行为迁移测试使用，但新桌面应用不启动它、不读取
+它的数据库，也不依赖 Docker。
 
 ## 开发要求
 

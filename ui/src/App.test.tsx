@@ -80,9 +80,21 @@ vi.mock("./api/account-settings", () => ({
     quotaPolicy,
     alertPreferences: appAlertPreferences,
     autostartEnabled: false,
+    smtp: {
+      enabled: false,
+      host: "",
+      port: 465,
+      tlsMode: "tls",
+      username: "",
+      fromAddress: "",
+      fromName: "",
+      recipients: [],
+      credentialStatus: "missing",
+    },
   }),
   onSettingsChanged: vi.fn().mockResolvedValue(vi.fn()),
   saveSettings: vi.fn(),
+  sendTestEmail: vi.fn(),
 }));
 
 vi.mock("./api/alerts", () => ({
@@ -171,6 +183,17 @@ describe("QuotaTide tray app", () => {
       quotaPolicy,
       alertPreferences: appAlertPreferences,
       autostartEnabled: false,
+      smtp: {
+        enabled: false,
+        host: "",
+        port: 465,
+        tlsMode: "tls",
+        username: "",
+        fromAddress: "",
+        fromName: "",
+        recipients: [],
+        credentialStatus: "missing",
+      },
     });
     render(<App />);
     expect(await screen.findByText(/已用 42%/)).toBeInTheDocument();
