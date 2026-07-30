@@ -59,3 +59,9 @@ Ticket 仍不能关闭：GitHub 仓库、最终 updater key/恢复演练和同�
 与 `release-evidence-<version>.tar.gz`，在 immutable tag 上执行证据门禁，
 通过后才清除 draft 标记。仓库绑定后仍必须给 `public-release` Environment
 配置 required reviewers，并禁止在 GitHub UI 手工绕过。
+
+2026-07-30：本机发现并修复 native HTTP client 未启用 reqwest
+`system-proxy`、导致使用系统代理时 Codex 超时的回归。真实账号测试在 2.02
+秒内取得严格当前七日窗口，`auth.json` 前后哈希一致；修复后的 universal app
+与 DMG 已重新构建并验证。该结果仅补充本机预检，不改变上述真机矩阵的
+`BLOCKED` 状态。

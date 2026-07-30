@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: ready-for-human
 Type: spec
 Source: ./map.md
 

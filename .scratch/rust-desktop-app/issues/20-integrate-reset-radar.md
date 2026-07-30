@@ -6,7 +6,7 @@
 
 **Blocked by:** 18 — 建立当前七日额度账本
 
-**Status:** completed
+**Status:** closed
 
 - [x] Radar adapter 只访问固定 `codex-resets.com` HTTPS origin，使用 10 秒
   超时并复用 client。
