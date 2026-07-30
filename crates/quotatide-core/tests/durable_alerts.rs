@@ -100,6 +100,7 @@ impl SystemNotifier for RecordingNotifier {
 struct BlockingNotifier {
     entered: Arc<Notify>,
     release: Arc<Notify>,
+    sent: Arc<Mutex<Vec<SafeNotification>>>,
 }
 
 impl SystemNotifier for BlockingNotifier {
@@ -113,11 +114,15 @@ impl SystemNotifier for BlockingNotifier {
 
     fn notify(
         &self,
-        _notification: SafeNotification,
+        notification: SafeNotification,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         let entered = Arc::clone(&self.entered);
         let release = Arc::clone(&self.release);
+        let sent = Arc::clone(&self.sent);
         async move {
+            sent.lock()
+                .expect("blocked notification recorder")
+                .push(notification);
             entered.notify_one();
             release.notified().await;
             Ok(())
@@ -215,6 +220,42 @@ async fn daily_crossings_create_one_event_and_system_delivery_in_the_refresh_tra
         deliveries,
         vec![("system".to_owned(), "pending".to_owned(), 2)]
     );
+}
+
+#[tokio::test]
+async fn one_observation_crossing_both_daily_boundaries_persists_both_events() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open_with_policy_timezone(&database, "Asia/Shanghai")
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+
+    for (captured, used) in [
+        ("2026-07-30T01:00:00Z", 0),
+        ("2026-07-30T02:00:00Z", 17_000_000),
+    ] {
+        store
+            .record_usage_success(&binding(), observation(timestamp_ms(captured), used))
+            .await
+            .expect("record threshold observation");
+    }
+    drop(store);
+
+    let connection =
+        tokio_rusqlite::rusqlite::Connection::open(database).expect("inspect alert events");
+    let kinds = connection
+        .prepare("SELECT event_kind FROM alert_events ORDER BY id")
+        .expect("prepare events")
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("query events")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect events");
+
+    assert_eq!(kinds, vec!["daily_80", "daily_100"]);
 }
 
 #[tokio::test]
@@ -545,14 +586,20 @@ async fn an_abandoned_lease_is_reclaimed_only_after_expiry() {
     let now = timestamp_ms("2026-07-30T02:00:01Z");
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
+    let first_sent = Arc::new(Mutex::new(Vec::new()));
     let blocked = {
         let store = store.clone();
         let entered = Arc::clone(&entered);
         let release = Arc::clone(&release);
+        let blocked_sent = Arc::clone(&first_sent);
         tokio::spawn(async move {
             DeliveryWorker::new(
                 store,
-                BlockingNotifier { entered, release },
+                BlockingNotifier {
+                    entered,
+                    release,
+                    sent: blocked_sent,
+                },
                 "worker-crashed",
             )
             .deliver_pending(now)
@@ -582,4 +629,57 @@ async fn an_abandoned_lease_is_reclaimed_only_after_expiry() {
         1
     );
     assert_eq!(sent.lock().expect("reclaimed notification").len(), 1);
+    assert_eq!(
+        first_sent.lock().expect("first notification")[0].delivery_key,
+        sent.lock().expect("replacement notification")[0].delivery_key,
+        "the platform adapter receives the same stable replacement identity"
+    );
+}
+
+#[tokio::test]
+async fn a_delivery_due_during_sleep_runs_once_on_the_resume_sweep() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    seed_daily_warning(&store).await;
+    let before_sleep = timestamp_ms("2026-07-30T02:00:01Z");
+    DeliveryWorker::new(
+        store.clone(),
+        RecordingNotifier {
+            permission: NotificationPermissionStatus::Granted,
+            sent: Arc::new(Mutex::new(Vec::new())),
+            fail: true,
+        },
+        "worker-before-sleep",
+    )
+    .deliver_pending(before_sleep)
+    .await
+    .expect("record retry before sleep");
+
+    let notifier = RecordingNotifier::granted();
+    let sent = Arc::clone(&notifier.sent);
+    let worker = DeliveryWorker::new(store, notifier, "worker-after-resume");
+    let resumed_at = before_sleep + 3_600_000;
+    assert_eq!(
+        worker
+            .deliver_pending(resumed_at)
+            .await
+            .expect("resume sweep")
+            .delivered,
+        1
+    );
+    assert_eq!(
+        worker
+            .deliver_pending(resumed_at)
+            .await
+            .expect("deduplicated follow-up sweep")
+            .claimed,
+        0
+    );
+    assert_eq!(sent.lock().expect("resumed notification").len(), 1);
 }

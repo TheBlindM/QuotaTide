@@ -3848,7 +3848,7 @@ fn persist_daily_policy_snapshots(
                 day.used_micropoints,
             ],
         )?;
-        if let Some(transition) = day.threshold_transition {
+        for transition in day.threshold_transitions.iter().copied() {
             persist_daily_threshold_alert(transaction, stream_id, now_unix_ms, &day, transition)?;
         }
     }

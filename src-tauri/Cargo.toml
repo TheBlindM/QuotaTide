@@ -24,6 +24,7 @@ base64 = "=0.22.1"
 chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 futures-util = "=0.3.33"
 quotatide-core = { path = "../crates/quotatide-core", version = "=0.1.0" }
+quotatide-native-notifications = { path = "../crates/quotatide-native-notifications", version = "=0.1.0" }
 reqwest = { version = "=0.13.4", default-features = false, features = ["json", "native-tls", "stream"] }
 secrecy = "=0.10.3"
 serde = { version = "=1.0.229", features = ["derive"] }
@@ -31,7 +32,6 @@ serde_json = "=1.0.149"
 sha2 = "=0.10.9"
 tauri = { version = "=2.11.5", features = ["image-png", "macos-private-api", "tray-icon"] }
 tauri-plugin-autostart = "=2.5.1"
-tauri-plugin-notification = "=2.3.3"
 tauri-plugin-single-instance = "=2.4.3"
 thiserror = "=2.0.19"
 tokio = { version = "=1.49.0", features = ["sync", "time"] }

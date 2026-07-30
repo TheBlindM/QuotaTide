@@ -214,6 +214,11 @@ function AlertInbox({ alerts }: { alerts: PublicAlertInbox | null }) {
   const permissionUnavailable =
     alerts.notificationPermissionStatus === "denied" ||
     alerts.notificationPermissionStatus === "error";
+  const deliveryFailed = alerts.events.some(
+    (event) =>
+      event.systemDeliveryState === "retry_wait" ||
+      event.systemDeliveryState === "failed",
+  );
   return (
     <section class="alert-inbox" aria-label="最近提醒">
       <div class="alert-inbox__heading">
@@ -223,6 +228,10 @@ function AlertInbox({ alerts }: { alerts: PublicAlertInbox | null }) {
       {permissionUnavailable ? (
         <p class="alert-inbox__permission" role="status">
           系统通知未授权，应用内提醒仍会保留。
+        </p>
+      ) : deliveryFailed ? (
+        <p class="alert-inbox__permission" role="status">
+          系统通知发送失败，应用内提醒已保留；可稍后重试。
         </p>
       ) : null}
       <div class="alert-inbox__events">

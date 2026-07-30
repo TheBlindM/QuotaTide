@@ -124,7 +124,7 @@ pub struct PolicyDayProjection {
     pub limit_micropoints: i64,
     pub used_micropoints: Option<i64>,
     pub status: DailyPolicyStatus,
-    pub threshold_transition: Option<ThresholdTransition>,
+    pub threshold_transitions: Vec<ThresholdTransition>,
     pub finalized: bool,
 }
 
@@ -211,26 +211,33 @@ impl QuotaPolicy {
         self.policy_timezone
     }
 
-    /// Returns a notification boundary only for a newly crossed threshold.
+    /// Returns every notification boundary newly crossed by one observation.
+    ///
+    /// A single hourly sample can move directly from normal to exceeded. In
+    /// that case both reminders are durable facts and must be returned in
+    /// threshold order.
     #[must_use]
-    pub fn threshold_transition(
+    pub fn threshold_transitions(
         previous: DailyPolicyStatus,
         current: DailyPolicyStatus,
-    ) -> Option<ThresholdTransition> {
-        match current {
-            DailyPolicyStatus::Warning
-                if !matches!(
-                    previous,
-                    DailyPolicyStatus::Warning | DailyPolicyStatus::Exceeded
-                ) =>
-            {
-                Some(ThresholdTransition::Warning)
-            }
-            DailyPolicyStatus::Exceeded if previous != DailyPolicyStatus::Exceeded => {
-                Some(ThresholdTransition::Exceeded)
-            }
-            _ => None,
+    ) -> Vec<ThresholdTransition> {
+        let warning_crossed = matches!(
+            previous,
+            DailyPolicyStatus::Unknown | DailyPolicyStatus::Normal
+        ) && matches!(
+            current,
+            DailyPolicyStatus::Warning | DailyPolicyStatus::Exceeded
+        );
+        let exceeded_crossed = !matches!(previous, DailyPolicyStatus::Exceeded)
+            && matches!(current, DailyPolicyStatus::Exceeded);
+        let mut transitions = Vec::with_capacity(2);
+        if warning_crossed {
+            transitions.push(ThresholdTransition::Warning);
         }
+        if exceeded_crossed {
+            transitions.push(ThresholdTransition::Exceeded);
+        }
+        transitions
     }
 
     /// Projects explainable base, carry, limit, and status facts in date order.
@@ -286,7 +293,7 @@ impl QuotaPolicy {
                 };
             let limit = base.saturating_add(carry);
             let status = daily_status(fact.used_micropoints, limit, finalized);
-            let threshold_transition = Self::threshold_transition(
+            let threshold_transitions = Self::threshold_transitions(
                 fact.previous_status.unwrap_or(DailyPolicyStatus::Unknown),
                 status,
             );
@@ -299,7 +306,7 @@ impl QuotaPolicy {
                 limit_micropoints: limit,
                 used_micropoints: fact.used_micropoints,
                 status,
-                threshold_transition,
+                threshold_transitions,
                 finalized,
             });
             if self.carry_workdays_enabled && workday {
@@ -406,32 +413,39 @@ mod tests {
     #[test]
     fn threshold_notifications_only_fire_when_a_boundary_is_crossed() {
         assert_eq!(
-            QuotaPolicy::threshold_transition(
+            QuotaPolicy::threshold_transitions(
                 DailyPolicyStatus::Normal,
                 DailyPolicyStatus::Warning,
             ),
-            Some(ThresholdTransition::Warning),
+            vec![ThresholdTransition::Warning],
         );
         assert_eq!(
-            QuotaPolicy::threshold_transition(
+            QuotaPolicy::threshold_transitions(
                 DailyPolicyStatus::Warning,
                 DailyPolicyStatus::Warning,
             ),
-            None,
+            vec![],
         );
         assert_eq!(
-            QuotaPolicy::threshold_transition(
+            QuotaPolicy::threshold_transitions(
                 DailyPolicyStatus::Warning,
                 DailyPolicyStatus::Exceeded,
             ),
-            Some(ThresholdTransition::Exceeded),
+            vec![ThresholdTransition::Exceeded],
         );
         assert_eq!(
-            QuotaPolicy::threshold_transition(
+            QuotaPolicy::threshold_transitions(
                 DailyPolicyStatus::Exceeded,
                 DailyPolicyStatus::Exceeded,
             ),
-            None,
+            vec![],
+        );
+        assert_eq!(
+            QuotaPolicy::threshold_transitions(
+                DailyPolicyStatus::Normal,
+                DailyPolicyStatus::Exceeded,
+            ),
+            vec![ThresholdTransition::Warning, ThresholdTransition::Exceeded],
         );
     }
 

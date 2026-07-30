@@ -16,6 +16,7 @@ import {
 } from "./api/account-settings";
 import {
   getAlerts,
+  onAlertsChanged,
   onNotificationOpened,
   requestSystemNotificationPermission,
 } from "./api/alerts";
@@ -153,6 +154,7 @@ export function App() {
     let unlistenDashboard: (() => void) | undefined;
     let unlistenSettings: (() => void) | undefined;
     let unlistenNotification: (() => void) | undefined;
+    let unlistenAlerts: (() => void) | undefined;
     const reloadDashboard = () => {
       void Promise.all([getSettings(), getLiveQuota(), getAlerts()])
         .then(([settings, liveQuotaState, alerts]) => {
@@ -176,6 +178,7 @@ export function App() {
     void Promise.all([
       onDashboardChanged(reloadDashboard),
       onSettingsChanged(reloadDashboard),
+      onAlertsChanged(reloadDashboard),
       onNotificationOpened((target) => {
         if (active) {
           setState((current) =>
@@ -186,23 +189,33 @@ export function App() {
         }
       }),
     ])
-      .then(([disposeDashboard, disposeSettings, disposeNotification]) => {
+      .then(
+        ([
+          disposeDashboard,
+          disposeSettings,
+          disposeAlerts,
+          disposeNotification,
+        ]) => {
         if (active) {
           unlistenDashboard = disposeDashboard;
           unlistenSettings = disposeSettings;
+          unlistenAlerts = disposeAlerts;
           unlistenNotification = disposeNotification;
           reloadDashboard();
         } else {
           disposeDashboard();
           disposeSettings();
+          disposeAlerts();
           disposeNotification();
         }
-      })
+        },
+      )
       .catch(() => undefined);
     return () => {
       active = false;
       unlistenDashboard?.();
       unlistenSettings?.();
+      unlistenAlerts?.();
       unlistenNotification?.();
     };
   }, [isPreview]);

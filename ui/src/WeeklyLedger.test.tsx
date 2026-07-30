@@ -43,6 +43,39 @@ describe("Weekly Ledger overview", () => {
     expect(document.activeElement).toHaveAttribute("id", "quota-target-today");
   });
 
+  it("keeps a safe in-app error visible when system notification delivery fails", () => {
+    const alerts: PublicAlertInbox = {
+      notificationPermissionStatus: "granted",
+      events: [
+        {
+          eventId: 42,
+          eventKind: "weekly_remaining_10",
+          localDate: null,
+          source: null,
+          target: "today",
+          systemDeliveryState: "retry_wait",
+          createdAtUnixMs: 1_785_347_200_000,
+        },
+      ],
+    };
+
+    render(
+      <WeeklyLedger
+        fixture={ledgerFixtures.fresh}
+        alerts={alerts}
+        onOpenSettings={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("region", { name: "最近提醒" })).toHaveTextContent(
+      "本周额度仅剩 10%",
+    );
+    expect(screen.getByText(/系统通知发送失败/)).toHaveTextContent(
+      "应用内提醒已保留",
+    );
+  });
+
   it("shows the current account's complete seven-day window", () => {
     render(
       <WeeklyLedger

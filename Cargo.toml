@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/quotatide-core", "src-tauri"]
+members = [
+  "crates/quotatide-core",
+  "crates/quotatide-native-notifications",
+  "src-tauri",
+]
 resolver = "2"
 
 [workspace.package]

@@ -3,6 +3,7 @@
 pub mod auth_file;
 pub mod background_lifecycle;
 pub mod codex_usage;
+mod platform_notifications;
 pub mod reset_radar;
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -11,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use auth_file::AuthFileReader;
 use background_lifecycle::{AUTOSTART_ARGUMENT, LaunchMode, notify_secondary, start_primary};
 use codex_usage::{CodexUsageClient, ConfiguredCodexUsageSource};
+use platform_notifications::{PlatformNotificationError, PlatformNotifier};
 use quotatide_core::{
     AccountApplication, AccountSettingsStore, AlertChannel, AlertTarget, Application,
     AtomicSettingsManager, AutostartControl, BuildInfo, Clock, DashboardChanged, DeliveryWorker,
@@ -28,7 +30,6 @@ use tauri::{
     App, AppHandle, Emitter, Manager, PhysicalPosition, Rect, RunEvent, WebviewWindow, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
-use tauri_plugin_notification::{NotificationExt as _, PermissionState};
 use tokio::sync::Notify;
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -37,6 +38,7 @@ const WINDOW_GAP: f64 = 8.0;
 const DASHBOARD_CHANGED_EVENT: &str = "quotatide://dashboard-changed";
 const SETTINGS_CHANGED_EVENT: &str = "quotatide://settings-changed";
 const NOTIFICATION_OPENED_EVENT: &str = "quotatide://notification-opened";
+const ALERTS_CHANGED_EVENT: &str = "quotatide://alerts-changed";
 
 #[derive(Debug, Default)]
 struct DesktopShell {
@@ -62,11 +64,6 @@ impl Clock for SystemClock {
 type LiveApplication = Application<AuthFileReader, ConfiguredCodexUsageSource, SystemClock>;
 type LiveAtomicSettings = AtomicSettingsManager<AuthFileReader, SystemAutostart>;
 type LiveDeliveryWorker = DeliveryWorker<DesktopSystemNotifier>;
-
-#[derive(Default)]
-struct NotificationFocus {
-    target: Mutex<Option<AlertTarget>>,
-}
 
 #[derive(Clone, Default)]
 struct SharedNotificationPermission {
@@ -111,14 +108,20 @@ struct DeliveryWorkerState {
     cancelled: AtomicBool,
     wake: Notify,
     worker: Mutex<Option<LiveDeliveryWorker>>,
+    event_app: Mutex<Option<AppHandle>>,
 }
 
 impl DeliveryWorkerLifecycle {
-    fn configure(&self, worker: LiveDeliveryWorker) -> bool {
-        self.state
+    fn configure(&self, worker: LiveDeliveryWorker, app: AppHandle) -> bool {
+        let configured = self
+            .state
             .worker
             .lock()
-            .is_ok_and(|mut configured| configured.replace(worker).is_none())
+            .is_ok_and(|mut configured| configured.replace(worker).is_none());
+        if configured && let Ok(mut event_app) = self.state.event_app.lock() {
+            *event_app = Some(app);
+        }
+        configured
     }
 
     fn start(&self) -> bool {
@@ -146,8 +149,18 @@ impl DeliveryWorkerLifecycle {
                 .ok()
                 .and_then(|configured| configured.clone());
             if let Some(worker) = worker {
-                if let Err(error) = worker.deliver_pending(SystemClock.now_unix_ms()).await {
-                    eprintln!("QuotaTide: notification delivery sweep failed: {error}");
+                match worker.deliver_pending(SystemClock.now_unix_ms()).await {
+                    Ok(sweep) if sweep != quotatide_core::DeliverySweep::default() => {
+                        if let Ok(event_app) = self.state.event_app.lock()
+                            && let Some(app) = event_app.as_ref()
+                        {
+                            let _ = app.emit(ALERTS_CHANGED_EVENT, ());
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!("QuotaTide: notification delivery sweep failed: {error}");
+                    }
                 }
             }
             tokio::select! {
@@ -169,64 +182,29 @@ impl DeliveryWorkerLifecycle {
 
 #[derive(Clone)]
 struct DesktopSystemNotifier {
-    app: AppHandle,
+    platform: PlatformNotifier,
     permission: SharedNotificationPermission,
 }
 
-impl DesktopSystemNotifier {
-    const fn new(app: AppHandle, permission: SharedNotificationPermission) -> Self {
-        Self { app, permission }
-    }
-}
-
 impl SystemNotifier for DesktopSystemNotifier {
-    type Error = tauri_plugin_notification::Error;
+    type Error = PlatformNotificationError;
 
     async fn permission_state(&self) -> Result<NotificationPermissionStatus, Self::Error> {
         let persisted = self.permission.get();
         if persisted != NotificationPermissionStatus::Granted {
             return Ok(persisted);
         }
-        self.app.notification().permission_state().map(|state| {
-            let status = notification_permission_status(state);
-            self.permission.set(status);
-            status
+        self.platform.permission_state().await.inspect(|status| {
+            self.permission.set(*status);
         })
     }
 
     async fn notify(&self, notification: SafeNotification) -> Result<(), Self::Error> {
-        if let Ok(mut target) = self.app.state::<NotificationFocus>().target.lock() {
-            *target = Some(notification.target);
-        }
-        self.app
-            .notification()
-            .builder()
-            .title(notification.title)
-            .body(notification.body)
-            .show()
+        self.platform.notify(notification).await
     }
 
     fn is_transient(error: &Self::Error) -> bool {
-        matches!(
-            error,
-            tauri_plugin_notification::Error::Io(source)
-                if matches!(
-                    source.kind(),
-                    std::io::ErrorKind::Interrupted
-                        | std::io::ErrorKind::TimedOut
-                        | std::io::ErrorKind::WouldBlock
-                )
-        )
-    }
-}
-
-const fn notification_permission_status(state: PermissionState) -> NotificationPermissionStatus {
-    match state {
-        PermissionState::Granted => NotificationPermissionStatus::Granted,
-        PermissionState::Denied => NotificationPermissionStatus::Denied,
-        PermissionState::Prompt | PermissionState::PromptWithRationale => {
-            NotificationPermissionStatus::Unknown
-        }
+        error.is_transient()
     }
 }
 
@@ -241,12 +219,15 @@ const fn should_request_notification_permission(
         && (!was_configured || !system_alerts_were_enabled)
 }
 
-fn request_notification_permission_with_modal(app: &AppHandle) -> NotificationPermissionStatus {
+async fn request_notification_permission_with_modal(
+    app: &AppHandle,
+    platform: &PlatformNotifier,
+) -> NotificationPermissionStatus {
     let _ = dispatch_shell_event(app, ShellEvent::ModalActivityOpened, None);
-    let status = app.notification().request_permission().map_or(
-        NotificationPermissionStatus::Error,
-        notification_permission_status,
-    );
+    let status = platform
+        .request_permission()
+        .await
+        .unwrap_or(NotificationPermissionStatus::Error);
     let _ = dispatch_shell_event(app, ShellEvent::ModalActivityClosed, None);
     status
 }
@@ -348,9 +329,10 @@ async fn request_system_notification_permission(
     app: AppHandle,
     store: tauri::State<'_, AccountSettingsStore>,
     permission: tauri::State<'_, SharedNotificationPermission>,
+    notifier: tauri::State<'_, PlatformNotifier>,
     delivery_worker: tauri::State<'_, DeliveryWorkerLifecycle>,
 ) -> Result<NotificationPermissionStatus, PublicError> {
-    let status = request_notification_permission_with_modal(&app);
+    let status = request_notification_permission_with_modal(&app, &notifier).await;
     store
         .set_notification_permission_status(status, SystemClock.now_unix_ms())
         .await
@@ -369,12 +351,14 @@ async fn request_system_notification_permission(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri injects each managed command dependency.
 async fn save_settings(
     app: AppHandle,
     settings: tauri::State<'_, LiveAtomicSettings>,
     application: tauri::State<'_, LiveApplication>,
     store: tauri::State<'_, AccountSettingsStore>,
     permission: tauri::State<'_, SharedNotificationPermission>,
+    notifier: tauri::State<'_, PlatformNotifier>,
     delivery_worker: tauri::State<'_, DeliveryWorkerLifecycle>,
     draft: SettingsDraft,
 ) -> Result<PublicSettings, PublicError> {
@@ -402,7 +386,7 @@ async fn save_settings(
         .await
         .map_err(|error| error.public::<AuthFileReader>())?;
     if should_request_permission && saved.configured {
-        let status = request_notification_permission_with_modal(&app);
+        let status = request_notification_permission_with_modal(&app, &notifier).await;
         if let Err(error) = store
             .set_notification_permission_status(status, SystemClock.now_unix_ms())
             .await
@@ -506,12 +490,18 @@ fn show_main_window(app: &AppHandle) -> Result<(), String> {
     position_main_window(app)?;
     window.show().map_err(platform_error)?;
     window.set_focus().map_err(platform_error)?;
-    if let Ok(mut pending) = app.state::<NotificationFocus>().target.lock()
-        && let Some(target) = pending.take()
-    {
-        let _ = app.emit(NOTIFICATION_OPENED_EVENT, target);
-    }
     Ok(())
+}
+
+fn activate_notification(app: &AppHandle, target: AlertTarget) {
+    let activation_app = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Err(error) = show_main_window(&activation_app) {
+            eprintln!("QuotaTide: failed to open notification target: {error}");
+            return;
+        }
+        let _ = activation_app.emit(NOTIFICATION_OPENED_EVENT, target);
+    });
 }
 
 fn position_main_window(app: &AppHandle) -> Result<(), String> {
@@ -695,17 +685,22 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let application = Application::new(AccountApplication::new(settings), refresh);
     app.manage(application.clone());
     let delivery_worker = DeliveryWorkerLifecycle::default();
-    let notifier = DesktopSystemNotifier::new(app.handle().clone(), notification_permission);
+    let platform_notifier = PlatformNotifier::new(app.handle())
+        .map_err(|_| "failed to initialize native notifications")?;
+    app.manage(platform_notifier.clone());
+    let notifier = DesktopSystemNotifier {
+        platform: platform_notifier,
+        permission: notification_permission,
+    };
     let live_delivery_worker = DeliveryWorker::new(
         store.clone(),
         notifier,
         format!("desktop-{}", std::process::id()),
     );
-    if !delivery_worker.configure(live_delivery_worker) {
+    if !delivery_worker.configure(live_delivery_worker, app.handle().clone()) {
         return Err("failed to configure the notification delivery worker".into());
     }
     app.manage(delivery_worker.clone());
-    app.manage(NotificationFocus::default());
     spawn_dashboard_event_bridge(
         app.handle().clone(),
         application.clone(),
@@ -781,7 +776,6 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec![AUTOSTART_ARGUMENT]),
         ))
-        .plugin(tauri_plugin_notification::init())
         .manage(SharedDesktopShell::default())
         .setup(setup_application)
         .on_menu_event(|app, event| {

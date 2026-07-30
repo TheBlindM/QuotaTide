@@ -25,3 +25,7 @@ export async function onNotificationOpened(
     },
   );
 }
+
+export async function onAlertsChanged(callback: () => void): Promise<() => void> {
+  return await listen("quotatide://alerts-changed", callback);
+}

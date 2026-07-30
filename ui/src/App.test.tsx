@@ -90,6 +90,7 @@ vi.mock("./api/alerts", () => ({
     notificationPermissionStatus: "granted",
     events: [],
   }),
+  onAlertsChanged: vi.fn().mockResolvedValue(vi.fn()),
   onNotificationOpened: vi.fn().mockResolvedValue(vi.fn()),
   requestSystemNotificationPermission: vi.fn().mockResolvedValue("granted"),
 }));
