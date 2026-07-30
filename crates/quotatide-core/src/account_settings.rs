@@ -2900,7 +2900,7 @@ impl AccountSettingsStore {
         worker_id: &str,
         attempted_at_ms: i64,
         duration_ms: i64,
-    ) -> Result<(), SettingsStoreError> {
+    ) -> Result<bool, SettingsStoreError> {
         self.finish_system_delivery(
             delivery_id,
             worker_id,
@@ -2929,6 +2929,80 @@ impl AccountSettingsStore {
             transient,
         )
         .await
+        .map(|_| ())
+    }
+
+    /// Corrects a submitted Windows notification when `WinRT` reports a late
+    /// asynchronous display failure.
+    ///
+    /// The callback may race with the worker's successful `Show` commit, so
+    /// both `leased` and `delivered` are valid source states. A correction is
+    /// idempotent and never changes another channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the durable correction cannot be stored.
+    pub async fn record_late_system_delivery_failure(
+        &self,
+        delivery_key: &str,
+        failed_at_ms: i64,
+    ) -> Result<bool, SettingsStoreError> {
+        let delivery_key = delivery_key.to_owned();
+        self.connection
+            .call(move |database| {
+                use rusqlite::OptionalExtension as _;
+
+                let transaction =
+                    database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let current = transaction
+                    .query_row(
+                        "SELECT id, state, attempt_count
+                         FROM alert_deliveries
+                         WHERE delivery_key = ?1 AND channel = 'system'
+                           AND state IN ('leased', 'delivered')",
+                        [&delivery_key],
+                        |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, i64>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                let Some((delivery_id, state, attempt_count)) = current else {
+                    return Ok::<_, rusqlite::Error>(false);
+                };
+                let next_count = if state == "leased" {
+                    attempt_count.saturating_add(1)
+                } else {
+                    attempt_count
+                };
+                transaction.execute(
+                    "INSERT INTO delivery_attempts
+                     (delivery_id, attempted_at_ms, outcome, public_error_code, duration_ms)
+                     VALUES (?1, ?2, 'permanent_failure',
+                             'notification_send_failed', 0)",
+                    rusqlite::params![delivery_id, failed_at_ms],
+                )?;
+                let changed = transaction.execute(
+                    "UPDATE alert_deliveries
+                     SET state = 'permanent_failure', attempt_count = ?1,
+                         next_attempt_at_ms = NULL, lease_owner = NULL,
+                         lease_until_ms = NULL,
+                         public_error_code = 'notification_send_failed',
+                         updated_at_ms = ?2
+                     WHERE id = ?3 AND state = ?4",
+                    rusqlite::params![next_count, failed_at_ms, delivery_id, state],
+                )?;
+                if changed != 1 {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+                transaction.commit()?;
+                Ok(true)
+            })
+            .await
+            .map_err(SettingsStoreError::database)
     }
 
     async fn finish_system_delivery(
@@ -2939,18 +3013,38 @@ impl AccountSettingsStore {
         duration_ms: i64,
         delivered: bool,
         transient: bool,
-    ) -> Result<(), SettingsStoreError> {
+    ) -> Result<bool, SettingsStoreError> {
         let worker_id = worker_id.to_owned();
         self.connection
             .call(move |database| {
+                use rusqlite::OptionalExtension as _;
+
                 let transaction =
                     database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                let attempt_count: i64 = transaction.query_row(
-                    "SELECT attempt_count FROM alert_deliveries
-                     WHERE id = ?1 AND state = 'leased' AND lease_owner = ?2",
-                    rusqlite::params![delivery_id, worker_id],
-                    |row| row.get(0),
-                )?;
+                let attempt_count = transaction
+                    .query_row(
+                        "SELECT attempt_count FROM alert_deliveries
+                         WHERE id = ?1 AND state = 'leased' AND lease_owner = ?2",
+                        rusqlite::params![delivery_id, worker_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?;
+                let Some(attempt_count) = attempt_count else {
+                    let corrected_late_failure: bool = transaction.query_row(
+                        "SELECT EXISTS(
+                           SELECT 1 FROM alert_deliveries
+                           WHERE id = ?1 AND state = 'permanent_failure'
+                             AND public_error_code = 'notification_send_failed'
+                         )",
+                        [delivery_id],
+                        |row| row.get(0),
+                    )?;
+                    if corrected_late_failure {
+                        transaction.commit()?;
+                        return Ok(false);
+                    }
+                    return Err(rusqlite::Error::InvalidQuery);
+                };
                 let next_count = attempt_count.saturating_add(1);
                 let (state, outcome, public_error, next_attempt_at) = if delivered {
                     ("delivered", "delivered", None, None)
@@ -3002,7 +3096,8 @@ impl AccountSettingsStore {
                 if changed != 1 {
                     return Err(rusqlite::Error::InvalidQuery);
                 }
-                transaction.commit()
+                transaction.commit()?;
+                Ok(true)
             })
             .await
             .map_err(SettingsStoreError::database)

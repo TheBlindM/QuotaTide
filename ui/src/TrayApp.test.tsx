@@ -136,6 +136,37 @@ describe("tray-window navigation", () => {
     ).toBeInTheDocument();
   });
 
+  it("leaves settings and opens the target when a notification is activated", async () => {
+    const { rerender } = render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        settings={atomicSettings}
+        focusRequest={null}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    expect(screen.getByRole("heading", { name: "设置" })).toBeInTheDocument();
+
+    rerender(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        settings={atomicSettings}
+        focusRequest={{ target: "radar", activationId: 1 }}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("region", { name: "重置雷达" }),
+      ).toHaveFocus();
+    });
+  });
+
   it("requests notification permission only from the explicit alerts action", () => {
     const onRequestNotificationPermission = vi.fn().mockResolvedValue("granted");
     render(
@@ -156,6 +187,28 @@ describe("tray-window navigation", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "启用系统通知" }),
     );
+
+    expect(onRequestNotificationPermission).toHaveBeenCalledOnce();
+  });
+
+  it("lets a denied permission be checked again without hiding in-app alerts", () => {
+    const onRequestNotificationPermission = vi.fn().mockResolvedValue("denied");
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        settings={{
+          ...atomicSettings,
+          notificationPermissionStatus: "denied",
+        }}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+        onRequestNotificationPermission={onRequestNotificationPermission}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "提醒" }));
+    fireEvent.click(screen.getByRole("button", { name: "重新检查权限" }));
 
     expect(onRequestNotificationPermission).toHaveBeenCalledOnce();
   });

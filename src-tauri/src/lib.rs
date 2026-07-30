@@ -6,7 +6,7 @@ pub mod codex_usage;
 mod platform_notifications;
 pub mod reset_radar;
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use auth_file::AuthFileReader;
@@ -39,6 +39,14 @@ const DASHBOARD_CHANGED_EVENT: &str = "quotatide://dashboard-changed";
 const SETTINGS_CHANGED_EVENT: &str = "quotatide://settings-changed";
 const NOTIFICATION_OPENED_EVENT: &str = "quotatide://notification-opened";
 const ALERTS_CHANGED_EVENT: &str = "quotatide://alerts-changed";
+static NOTIFICATION_ACTIVATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NotificationOpened {
+    target: AlertTarget,
+    activation_id: u64,
+}
 
 #[derive(Debug, Default)]
 struct DesktopShell {
@@ -332,7 +340,14 @@ async fn request_system_notification_permission(
     notifier: tauri::State<'_, PlatformNotifier>,
     delivery_worker: tauri::State<'_, DeliveryWorkerLifecycle>,
 ) -> Result<NotificationPermissionStatus, PublicError> {
-    let status = request_notification_permission_with_modal(&app, &notifier).await;
+    let status = if permission.get() == NotificationPermissionStatus::Unknown {
+        request_notification_permission_with_modal(&app, &notifier).await
+    } else {
+        notifier
+            .permission_state()
+            .await
+            .unwrap_or(NotificationPermissionStatus::Error)
+    };
     store
         .set_notification_permission_status(status, SystemClock.now_unix_ms())
         .await
@@ -494,13 +509,20 @@ fn show_main_window(app: &AppHandle) -> Result<(), String> {
 }
 
 fn activate_notification(app: &AppHandle, target: AlertTarget) {
+    let activation_id = NOTIFICATION_ACTIVATION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
     let activation_app = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Err(error) = show_main_window(&activation_app) {
             eprintln!("QuotaTide: failed to open notification target: {error}");
             return;
         }
-        let _ = activation_app.emit(NOTIFICATION_OPENED_EVENT, target);
+        let _ = activation_app.emit(
+            NOTIFICATION_OPENED_EVENT,
+            NotificationOpened {
+                target,
+                activation_id,
+            },
+        );
     });
 }
 
@@ -685,7 +707,29 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let application = Application::new(AccountApplication::new(settings), refresh);
     app.manage(application.clone());
     let delivery_worker = DeliveryWorkerLifecycle::default();
-    let platform_notifier = PlatformNotifier::new(app.handle())
+    let late_failure_store = store.clone();
+    let late_failure_app = app.handle().clone();
+    let late_failure_callback = Arc::new(move |delivery_key: String| {
+        let store = late_failure_store.clone();
+        let event_app = late_failure_app.clone();
+        tauri::async_runtime::spawn(async move {
+            match store
+                .record_late_system_delivery_failure(&delivery_key, SystemClock.now_unix_ms())
+                .await
+            {
+                Ok(true) => {
+                    let _ = event_app.emit(ALERTS_CHANGED_EVENT, ());
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!(
+                        "QuotaTide: failed to persist asynchronous notification failure: {error}"
+                    );
+                }
+            }
+        });
+    });
+    let platform_notifier = PlatformNotifier::new(app.handle(), late_failure_callback)
         .map_err(|_| "failed to initialize native notifications")?;
     app.manage(platform_notifier.clone());
     let notifier = DesktopSystemNotifier {

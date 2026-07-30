@@ -203,7 +203,8 @@ impl<N: SystemNotifier> DeliveryWorker<N> {
             let started = std::time::Instant::now();
             match self.notifier.notify(notification).await {
                 Ok(()) => {
-                    self.store
+                    let delivered = self
+                        .store
                         .complete_system_delivery(
                             delivery.id,
                             &self.worker_id,
@@ -211,7 +212,11 @@ impl<N: SystemNotifier> DeliveryWorker<N> {
                             elapsed_ms(started),
                         )
                         .await?;
-                    sweep.delivered = sweep.delivered.saturating_add(1);
+                    if delivered {
+                        sweep.delivered = sweep.delivered.saturating_add(1);
+                    } else {
+                        sweep.failed = sweep.failed.saturating_add(1);
+                    }
                 }
                 Err(error) => {
                     let transient = N::is_transient(&error);

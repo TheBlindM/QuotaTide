@@ -33,3 +33,13 @@ windows = { version = "=0.61.3", features = [
   "Foundation",
   "UI_Notifications",
 ] }
+
+# This crate cannot inherit the workspace's `unsafe_code = "forbid"` because
+# objc2 requires audited unsafe declarations. Keep every other workspace lint
+# strict and allow unsafe only at the annotated macOS FFI boundaries.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }

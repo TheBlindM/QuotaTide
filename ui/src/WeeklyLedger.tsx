@@ -153,6 +153,7 @@ type WeeklyLedgerProps = {
   fixture: LedgerFixture;
   alerts?: PublicAlertInbox | null;
   focusTarget?: AlertTarget | null;
+  focusActivationId?: number | null;
   onOpenSettings: () => void;
   onRefresh: () => unknown;
   refreshing?: boolean;
@@ -302,6 +303,7 @@ export function WeeklyLedger({
   fixture,
   alerts = null,
   focusTarget = null,
+  focusActivationId = null,
   onOpenSettings,
   onRefresh,
   refreshing = false,
@@ -313,7 +315,7 @@ export function WeeklyLedger({
         preventScroll: true,
       });
     }
-  }, [focusTarget]);
+  }, [focusActivationId, focusTarget]);
 
   if (fixture.tone === "unconfigured") {
     return (

@@ -1,7 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 
 import type { AlertEventKind } from "./bindings/AlertEventKind";
-import type { AlertTarget } from "./bindings/AlertTarget";
 import type { BuildInfo } from "./bindings/BuildInfo";
 import type { PublicAlertInbox } from "./bindings/PublicAlertInbox";
 import type { PublicLedgerDay } from "./bindings/PublicLedgerDay";
@@ -19,6 +18,7 @@ import {
   onAlertsChanged,
   onNotificationOpened,
   requestSystemNotificationPermission,
+  type NotificationActivation,
 } from "./api/alerts";
 import { loadBuildInfo } from "./api/build-info";
 import { getLiveQuota, onDashboardChanged } from "./api/live-quota";
@@ -36,7 +36,7 @@ type ViewState =
       info: BuildInfo;
       settings: PublicSettings;
       alerts: PublicAlertInbox;
-      focusTarget: AlertTarget | null;
+      focusRequest: NotificationActivation | null;
       liveQuota: PublicLiveQuota | null;
       radar: PublicResetRadar;
       refreshing: boolean;
@@ -105,7 +105,9 @@ export function App() {
                 ],
               }
             : { notificationPermissionStatus: "unknown", events: [] },
-          focusTarget: previewAlerts ? "today" : null,
+          focusRequest: previewAlerts
+            ? { target: "today", activationId: 1 }
+            : null,
           liveQuota: null,
           radar: emptyRadarState,
           refreshing: false,
@@ -128,7 +130,7 @@ export function App() {
             info,
             settings,
             alerts,
-            focusTarget: null,
+            focusRequest: null,
             liveQuota: liveQuotaState.quota,
             radar: liveQuotaState.radar,
             refreshing: liveQuotaState.refreshing,
@@ -179,11 +181,11 @@ export function App() {
       onDashboardChanged(reloadDashboard),
       onSettingsChanged(reloadDashboard),
       onAlertsChanged(reloadDashboard),
-      onNotificationOpened((target) => {
+      onNotificationOpened((activation) => {
         if (active) {
           setState((current) =>
             current.kind === "ready"
-              ? { ...current, focusTarget: target }
+              ? { ...current, focusRequest: activation }
               : current,
           );
         }
@@ -278,7 +280,7 @@ export function App() {
       fixture={fixture}
       settings={state.settings}
       alerts={state.alerts}
-      focusTarget={state.focusTarget}
+      focusRequest={state.focusRequest}
       externalRefreshing={state.refreshing}
       onHide={() => {
         void hideMainWindow().catch(() => undefined);

@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use quotatide_core::{AlertTarget, NotificationPermissionStatus, SafeNotification};
 use quotatide_native_notifications::{
-    NativeAlertTarget, NativeNotification, NativeNotificationError, NativeNotifier,
-    NativePermissionStatus,
+    DeliveryFailureHandler, NativeAlertTarget, NativeNotification, NativeNotificationError,
+    NativeNotifier, NativePermissionStatus,
 };
 use tauri::AppHandle;
 
@@ -19,7 +19,10 @@ pub struct PlatformNotifier {
 }
 
 impl PlatformNotifier {
-    pub fn new(app: &AppHandle) -> Result<Self, PlatformNotificationError> {
+    pub fn new(
+        app: &AppHandle,
+        delivery_failure: DeliveryFailureHandler,
+    ) -> Result<Self, PlatformNotificationError> {
         let app_id = app.config().identifier.clone();
         let activation_app = app.clone();
         let native = NativeNotifier::new(
@@ -27,6 +30,7 @@ impl PlatformNotifier {
             Arc::new(move |target| {
                 activate_notification(&activation_app, map_target_from_native(target));
             }),
+            delivery_failure,
         )?;
         Ok(Self { native })
     }
@@ -62,7 +66,7 @@ impl PlatformNotifier {
             body: notification.body,
             target: map_target_to_native(notification.target),
         };
-        tauri::async_runtime::spawn_blocking(move || native.notify(notification))
+        tauri::async_runtime::spawn_blocking(move || native.notify(&notification))
             .await
             .map_err(|_| NativeNotificationError::Delivery)?
     }

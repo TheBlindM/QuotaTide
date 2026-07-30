@@ -11,6 +11,7 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 
 pub type ActivationHandler = Arc<dyn Fn(NativeAlertTarget) + Send + Sync + 'static>;
+pub type DeliveryFailureHandler = Arc<dyn Fn(String) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeAlertTarget {
@@ -59,14 +60,26 @@ pub struct NativeNotifier {
     app_id: String,
     #[cfg(target_os = "windows")]
     activation: ActivationHandler,
+    #[cfg(target_os = "windows")]
+    delivery_failure: DeliveryFailureHandler,
+    #[cfg(target_os = "windows")]
+    pending_toasts: windows::PendingToasts,
     #[cfg(target_os = "macos")]
     _delegate: objc2::rc::Retained<macos::NotificationDelegate>,
 }
 
 impl NativeNotifier {
+    /// Builds the platform notification adapter and installs its activation callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeNotificationError`] when the current platform cannot initialize
+    /// native notifications.
+    #[allow(clippy::needless_pass_by_value)] // Ownership is retained on Windows only.
     pub fn new(
         app_id: impl Into<String>,
         activation: ActivationHandler,
+        delivery_failure: DeliveryFailureHandler,
     ) -> Result<Self, NativeNotificationError> {
         let app_id = app_id.into();
         #[cfg(target_os = "macos")]
@@ -75,17 +88,28 @@ impl NativeNotifier {
         let _ = app_id;
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let _ = activation;
+        #[cfg(not(target_os = "windows"))]
+        let _ = delivery_failure;
 
         Ok(Self {
             #[cfg(target_os = "windows")]
             app_id,
             #[cfg(target_os = "windows")]
             activation,
+            #[cfg(target_os = "windows")]
+            delivery_failure,
+            #[cfg(target_os = "windows")]
+            pending_toasts: windows::PendingToasts::default(),
             #[cfg(target_os = "macos")]
             _delegate: delegate,
         })
     }
 
+    /// Reads the operating system's current notification permission state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeNotificationError`] when the native authorization API fails.
     pub fn permission_state(&self) -> Result<NativePermissionStatus, NativeNotificationError> {
         #[cfg(target_os = "macos")]
         {
@@ -101,6 +125,11 @@ impl NativeNotifier {
         }
     }
 
+    /// Requests notification permission where the platform supports a prompt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeNotificationError`] when the authorization request fails.
     pub fn request_permission(&self) -> Result<NativePermissionStatus, NativeNotificationError> {
         #[cfg(target_os = "macos")]
         {
@@ -116,15 +145,27 @@ impl NativeNotifier {
         }
     }
 
-    pub fn notify(&self, notification: NativeNotification) -> Result<(), NativeNotificationError> {
-        let identifier = stable_identifier(&notification);
+    /// Sends one native notification using a stable delivery identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeNotificationError`] when the platform rejects or cannot deliver it.
+    pub fn notify(&self, notification: &NativeNotification) -> Result<(), NativeNotificationError> {
+        let identifier = stable_identifier(notification);
         #[cfg(target_os = "macos")]
         {
-            macos::notify(notification, identifier)
+            macos::notify(notification, &identifier)
         }
         #[cfg(target_os = "windows")]
         {
-            windows::notify(&self.app_id, &self.activation, notification, &identifier)
+            windows::notify(
+                &self.app_id,
+                &self.activation,
+                &self.delivery_failure,
+                &self.pending_toasts,
+                notification.clone(),
+                &identifier,
+            )
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
@@ -185,7 +226,10 @@ mod macos {
         UNUserNotificationCenter, UNUserNotificationCenterDelegate,
     };
 
-    use super::*;
+    use super::{
+        ActivationHandler, NativeNotification, NativeNotificationError, NativePermissionStatus,
+        target_from_identifier,
+    };
 
     const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -241,6 +285,7 @@ mod macos {
     );
 
     impl NotificationDelegate {
+        #[allow(unsafe_code)]
         fn new(activation: ActivationHandler) -> Retained<Self> {
             let this = Self::alloc().set_ivars(NotificationDelegateIvars { activation });
             // SAFETY: NSObject's `init` signature is correct and the ivars were
@@ -258,6 +303,7 @@ mod macos {
         delegate
     }
 
+    #[allow(unsafe_code)]
     pub(super) fn permission_state() -> Result<NativePermissionStatus, NativeNotificationError> {
         let (sender, receiver) = mpsc::sync_channel(1);
         let completion = RcBlock::new(move |settings: NonNull<UNNotificationSettings>| {
@@ -298,19 +344,19 @@ mod macos {
     }
 
     pub(super) fn notify(
-        notification: NativeNotification,
-        identifier: String,
+        notification: &NativeNotification,
+        identifier: &str,
     ) -> Result<(), NativeNotificationError> {
         let content = UNMutableNotificationContent::new();
         content.setTitle(&NSString::from_str(&notification.title));
         content.setBody(&NSString::from_str(&notification.body));
         content.setSound(Some(&UNNotificationSound::defaultSound()));
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
-            &NSString::from_str(&identifier),
+            &NSString::from_str(identifier),
             &content,
             None,
         );
-        let identifier = NSString::from_str(&identifier);
+        let identifier = NSString::from_str(identifier);
         let identifiers = NSArray::from_slice(&[&*identifier]);
         let center = UNUserNotificationCenter::currentNotificationCenter();
         // Re-delivery after a crash replaces the already visible reminder
@@ -344,14 +390,49 @@ mod macos {
 
 #[cfg(target_os = "windows")]
 mod windows {
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicU8, Ordering};
+    use std::sync::{Arc, Mutex};
+
     use ::windows::Data::Xml::Dom::XmlDocument;
     use ::windows::Foundation::TypedEventHandler;
     use ::windows::UI::Notifications::{
-        NotificationSetting, ToastNotification, ToastNotificationManager,
+        NotificationSetting, ToastFailedEventArgs, ToastNotification, ToastNotificationManager,
     };
     use ::windows::core::{HSTRING, IInspectable};
 
-    use super::*;
+    use super::{
+        ActivationHandler, DeliveryFailureHandler, NativeNotification, NativeNotificationError,
+        NativePermissionStatus,
+    };
+
+    const DELIVERY_PENDING: u8 = 0;
+    const DELIVERY_SUBMITTED: u8 = 1;
+    const DELIVERY_FAILED_EARLY: u8 = 2;
+    const MAX_PENDING_TOASTS: usize = 128;
+
+    #[derive(Clone, Default)]
+    pub(super) struct PendingToasts {
+        inner: Arc<Mutex<VecDeque<(String, ToastNotification)>>>,
+    }
+
+    impl PendingToasts {
+        fn insert(&self, identifier: String, toast: ToastNotification) {
+            if let Ok(mut pending) = self.inner.lock() {
+                pending.retain(|(current, _)| current != &identifier);
+                pending.push_back((identifier, toast));
+                while pending.len() > MAX_PENDING_TOASTS {
+                    pending.pop_front();
+                }
+            }
+        }
+
+        fn remove(&self, identifier: &str) {
+            if let Ok(mut pending) = self.inner.lock() {
+                pending.retain(|(current, _)| current != identifier);
+            }
+        }
+    }
 
     pub(super) fn permission_state(
         app_id: &str,
@@ -370,9 +451,12 @@ mod windows {
             .map_err(|_| NativeNotificationError::Authorization)
     }
 
+    #[allow(clippy::needless_pass_by_value)] // Target ownership must outlive the callback.
     pub(super) fn notify(
         app_id: &str,
         activation: &ActivationHandler,
+        delivery_failure: &DeliveryFailureHandler,
+        pending_toasts: &PendingToasts,
         notification: NativeNotification,
         identifier: &str,
     ) -> Result<(), NativeNotificationError> {
@@ -395,16 +479,56 @@ mod windows {
             .map_err(|_| NativeNotificationError::Delivery)?;
         let on_activation = activation.clone();
         let target = notification.target;
+        let activation_identifier = identifier.to_owned();
+        let activation_toasts = pending_toasts.clone();
         let handler = TypedEventHandler::<ToastNotification, IInspectable>::new(move |_, _| {
+            activation_toasts.remove(&activation_identifier);
             on_activation(target);
             Ok(())
         });
         toast
             .Activated(&handler)
             .map_err(|_| NativeNotificationError::Delivery)?;
-        ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(app_id))
-            .and_then(|notifier| notifier.Show(&toast))
-            .map_err(|_| NativeNotificationError::Delivery)
+        let delivery_state = Arc::new(AtomicU8::new(DELIVERY_PENDING));
+        let failed_state = delivery_state.clone();
+        let failed_identifier = identifier.to_owned();
+        let failed_delivery_key = notification.delivery_key;
+        let failed_callback = delivery_failure.clone();
+        let failed_toasts = pending_toasts.clone();
+        let failed_handler =
+            TypedEventHandler::<ToastNotification, ToastFailedEventArgs>::new(move |_, _| {
+                failed_toasts.remove(&failed_identifier);
+                if let Err(DELIVERY_SUBMITTED) = failed_state.compare_exchange(
+                    DELIVERY_PENDING,
+                    DELIVERY_FAILED_EARLY,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    failed_callback(failed_delivery_key.clone());
+                }
+                Ok(())
+            });
+        toast
+            .Failed(&failed_handler)
+            .map_err(|_| NativeNotificationError::Delivery)?;
+        pending_toasts.insert(identifier.to_owned(), toast.clone());
+        let show_result =
+            ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(app_id))
+                .and_then(|notifier| notifier.Show(&toast))
+                .map_err(|_| NativeNotificationError::Delivery);
+        if show_result.is_err() {
+            pending_toasts.remove(identifier);
+            return show_result;
+        }
+        match delivery_state.compare_exchange(
+            DELIVERY_PENDING,
+            DELIVERY_SUBMITTED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(NativeNotificationError::Delivery),
+        }
     }
 
     fn escape_xml(value: &str) -> String {

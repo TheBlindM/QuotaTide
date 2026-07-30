@@ -5,6 +5,11 @@ import type { AlertTarget } from "../bindings/AlertTarget";
 import type { NotificationPermissionStatus } from "../bindings/NotificationPermissionStatus";
 import type { PublicAlertInbox } from "../bindings/PublicAlertInbox";
 
+export type NotificationActivation = {
+  target: AlertTarget;
+  activationId: number;
+};
+
 export async function getAlerts(): Promise<PublicAlertInbox> {
   return await invoke<PublicAlertInbox>("get_alerts");
 }
@@ -16,9 +21,9 @@ export async function requestSystemNotificationPermission(): Promise<Notificatio
 }
 
 export async function onNotificationOpened(
-  callback: (target: AlertTarget) => void,
+  callback: (activation: NotificationActivation) => void,
 ): Promise<() => void> {
-  return await listen<AlertTarget>(
+  return await listen<NotificationActivation>(
     "quotatide://notification-opened",
     (event) => {
       callback(event.payload);

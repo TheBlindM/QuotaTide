@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, within } from "@testing-library/preact";
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/preact";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { PublicAlertInbox } from "./bindings/PublicAlertInbox";
@@ -10,6 +16,43 @@ import { WeeklyLedger, ledgerFixtures } from "./WeeklyLedger";
 afterEach(cleanup);
 
 describe("Weekly Ledger overview", () => {
+  it("refocuses the same notification target for every activation", async () => {
+    const { rerender } = render(
+      <WeeklyLedger
+        fixture={ledgerFixtures.fresh}
+        focusTarget="today"
+        focusActivationId={1}
+        onOpenSettings={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(document.activeElement).toHaveAttribute(
+        "id",
+        "quota-target-today",
+      );
+    });
+    (document.activeElement as HTMLElement).blur();
+
+    rerender(
+      <WeeklyLedger
+        fixture={ledgerFixtures.fresh}
+        focusTarget="today"
+        focusActivationId={2}
+        onOpenSettings={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(document.activeElement).toHaveAttribute(
+        "id",
+        "quota-target-today",
+      );
+    });
+  });
+
   it("keeps durable in-app reminders visible when system notification permission is denied", () => {
     const alerts: PublicAlertInbox = {
       notificationPermissionStatus: "denied",
@@ -31,6 +74,7 @@ describe("Weekly Ledger overview", () => {
         fixture={ledgerFixtures.fresh}
         alerts={alerts}
         focusTarget="today"
+        focusActivationId={1}
         onOpenSettings={vi.fn()}
         onRefresh={vi.fn()}
       />,

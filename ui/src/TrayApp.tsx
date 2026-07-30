@@ -3,11 +3,11 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { AlertChannel } from "./bindings/AlertChannel";
 import type { AlertEventKind } from "./bindings/AlertEventKind";
 import type { AlertPreferenceDraft } from "./bindings/AlertPreferenceDraft";
-import type { AlertTarget } from "./bindings/AlertTarget";
 import type { NotificationPermissionStatus } from "./bindings/NotificationPermissionStatus";
 import type { PublicAlertInbox } from "./bindings/PublicAlertInbox";
 import type { PublicSettings } from "./bindings/PublicSettings";
 import type { SettingsDraft } from "./bindings/SettingsDraft";
+import type { NotificationActivation } from "./api/alerts";
 import { WeeklyLedger, type LedgerFixture } from "./WeeklyLedger";
 
 const alertEvents: ReadonlyArray<{
@@ -82,7 +82,7 @@ type TrayAppProps = {
   fixture: LedgerFixture;
   settings?: PublicSettings;
   alerts?: PublicAlertInbox | null;
-  focusTarget?: AlertTarget | null;
+  focusRequest?: NotificationActivation | null;
   externalRefreshing?: boolean;
   onHide: () => void;
   onRefresh: () => unknown;
@@ -363,7 +363,7 @@ function SettingsView({
               role="status"
             >
               <span>系统通知</span>
-              {settings.notificationPermissionStatus === "unknown" &&
+              {settings.notificationPermissionStatus !== "granted" &&
               onRequestNotificationPermission ? (
                 <button
                   type="button"
@@ -371,7 +371,9 @@ function SettingsView({
                     void onRequestNotificationPermission().catch(() => undefined);
                   }}
                 >
-                  启用系统通知
+                  {settings.notificationPermissionStatus === "unknown"
+                    ? "启用系统通知"
+                    : "重新检查权限"}
                 </button>
               ) : (
                 <strong>
@@ -452,7 +454,7 @@ export function TrayApp({
   fixture,
   settings = unconfiguredSettings,
   alerts = null,
-  focusTarget = null,
+  focusRequest = null,
   externalRefreshing = false,
   onHide,
   onRefresh,
@@ -480,6 +482,12 @@ export function TrayApp({
   useEffect(() => {
     setCurrentSettings(settings);
   }, [settings]);
+
+  useEffect(() => {
+    if (focusRequest !== null) {
+      setView("ledger");
+    }
+  }, [focusRequest?.activationId]);
 
   const handleRefresh = useCallback(() => {
     if (refreshingRef.current || externalRefreshing || coolingDownRef.current) {
@@ -584,7 +592,8 @@ export function TrayApp({
     <WeeklyLedger
       fixture={fixture}
       alerts={alerts}
-      focusTarget={focusTarget}
+      focusTarget={focusRequest?.target}
+      focusActivationId={focusRequest?.activationId}
       onOpenSettings={() => {
         setView("settings");
       }}

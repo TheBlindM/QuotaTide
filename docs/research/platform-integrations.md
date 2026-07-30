@@ -10,7 +10,8 @@ v1 的平台集成方案可行，但必须区分“API 已存在”和“视觉/
 - 托盘、左击显示窗口、右键菜单、失焦隐藏、macOS 隐藏 Dock、Windows 隐藏任务栏图标都有官方 API 支持。
 - Windows 10/11 可使用 Acrylic，Windows 11 还可使用 Mica；失败时降级为不透明主题背景。
 - macOS 可使用 `Popover`/`HudWindow` 原生材质，但 Tauri 的窗口效果要求透明窗口，而 macOS 透明 WebView 需要 `macos-private-api`。Tauri 明确警告该 private API 会阻止 Mac App Store 上架。因此 v1 不能同时默认承诺“完整毛玻璃”和“Mac App Store 兼容”。
-- 系统通知、开机启动和原生文件选择器使用 Tauri 官方插件，但全部从 Rust 侧调用，不向 WebView 开放插件的通用 guest 权限。
+- 系统通知使用窄原生 Rust 边界；开机启动和原生文件选择器使用 Tauri
+  官方插件。全部系统能力只从 Rust 侧调用，不向 WebView 开放通用 guest 权限。
 - SMTP 密码使用 Rust `keyring` 生态接入 macOS Keychain 与 Windows Credential Manager；普通配置只保存稳定的凭证引用，绝不回退到明文密码。
 
 ## 平台能力矩阵
@@ -23,7 +24,7 @@ v1 的平台集成方案可行，但必须区分“API 已存在”和“视觉/
 | 隐藏应用入口 | `ActivationPolicy::Accessory`，不显示 Dock 和应用菜单栏 | `skipTaskbar: true` | 设置失败时应用仍可运行，但必须在诊断状态中显示平台错误 |
 | 失焦隐藏 | `WindowEvent::Focused(false)` 时 `hide()` | 同左 | 正在打开文件对话框或通知权限提示时暂时抑制自动隐藏 |
 | 毛玻璃界面 | `Popover` 或 `HudWindow` + transparent window | Windows 10/11 Acrylic；Windows 11 可回退 Mica | 任一原生效果失败则使用不透明、对比度合格的语义背景 |
-| 系统通知 | notification plugin，显式检查/申请权限 | notification plugin；正式通知只在已安装应用中可靠工作 | 拒绝或发送失败时保留提醒事件，在窗口中显示；邮件若已启用仍独立发送 |
+| 系统通知 | `UNUserNotificationCenter`，显式检查/申请权限、稳定 request ID 和 delegate activation | WinRT `ToastNotifier`/`ToastNotification`，稳定 Tag + Group；正式外观只由已安装应用验收 | 拒绝或发送失败时保留提醒事件，在窗口中显示；邮件若已启用仍独立发送 |
 | 开机启动 | autostart plugin，`LaunchAgent` | autostart plugin | 启用失败时回滚开关并显示可操作错误，不影响手动启动 |
 | 选择 `auth.json` | dialog plugin 的原生文件选择器 | 同左 | 取消不改变配置；不可读或结构无效则保留旧路径 |
 | SMTP 密码 | macOS Keychain | Windows Credential Manager | 缺失、锁定或访问失败时禁用邮件发送并提示重新保存，不写明文 fallback |
@@ -136,9 +137,22 @@ Mac App Store 是否属于 v1 发布目标由“决定安装、更新与开源�
 
 ## 4. 系统通知
 
-Tauri notification plugin 支持 macOS 和 Windows，并提供 Rust API。官方流程是先检查权限、必要时申请权限，再发送通知。[Tauri Notifications](https://v2.tauri.app/plugin/notification/)
+QuotaTide 使用一个很小的原生 Rust 边界，而不是把通用 notification plugin
+能力暴露给 WebView：
 
-Windows 的官方限制必须进入 QA：插件文档说明通知只对已安装应用正常工作，开发环境会显示 PowerShell 名称和图标。因此 `cargo tauri dev` 不能作为 Windows 通知外观和身份的验收证据。
+- macOS 使用 `UNUserNotificationCenter` 获取真实授权状态、提交本地通知并接收
+  被点击通知的 delegate callback。事件的 delivery key 映射为稳定 request
+  identifier；Apple 文档说明相同 identifier 会替换原请求，重试前还会移除
+  同 identifier 的已送达通知。[Apple notification request identifier](https://developer.apple.com/documentation/usernotifications/unnotificationrequest/identifier)
+- Windows 使用 `Windows.UI.Notifications`。`ToastNotifier.Setting` 区分系统、
+  用户或应用级阻止；稳定 `Tag + Group` 标识同一用户提醒；`Activated` 事件只把
+  实际被点击通知的 target 送回现有托盘进程。`Failed` handler 随 toast 保持
+  存活：同步失败直接返回 worker，较晚的异步失败按 delivery key 修正 SQLite
+  状态并刷新应用内提醒，不用固定超时猜测投递成功。[ToastNotifier.Setting](https://learn.microsoft.com/en-us/uwp/api/windows.ui.notifications.toastnotifier.setting)、[ToastNotification](https://learn.microsoft.com/en-us/uwp/api/windows.ui.notifications.toastnotification)
+
+Tauri shell 只持有窄的 `permission_state`、`request_permission`、`notify` 接口。
+平台返回真实提交错误后，delivery 才会写成 delivered；平台错误原文不会进入
+UI 或数据库。
 
 ### v1 决定
 
@@ -150,6 +164,13 @@ Windows 的官方限制必须进入 QA：插件文档说明通知只对已安装
   - 托盘窗口显示未送达状态和系统设置提示；
   - 已启用的邮件渠道仍独立尝试发送。
 - 通知正文不显示 access token、完整邮箱、完整 Account ID 或 SMTP 错误原文。
+- 同一 delivery 的稳定平台 ID 用于崩溃恢复后的替换，不叠加第二条用户提醒。
+- 只有 notification activation callback 会唤起并聚焦对应区域；普通托盘打开
+  不消费“最近发送”状态。
+- 每次 activation 都携带单调递增的本进程序号，使连续点击同一区域的通知也会
+  重新聚焦；设置页收到 activation 时先回到概览。
+- `denied`/`error` 状态保留“重新检查权限”入口；该显式操作读取系统真实状态，
+  不会在后台循环重新弹出权限请求。
 
 ### 真机验收
 

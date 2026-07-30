@@ -2,9 +2,9 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use quotatide_core::{
-    AccountSettingsStore, DeliveryWorker, NotificationPermissionStatus, QuotaUnits,
-    RadarObservation, RadarSnapshot, RadarSourceErrorCode, RefreshAccountBinding, SafeNotification,
-    SystemNotifier, UsageSourceErrorCode, WeeklyUsageObservation,
+    AccountSettingsStore, DeliveryWorker, NotificationPermissionStatus, PublicDeliveryState,
+    QuotaUnits, RadarObservation, RadarSnapshot, RadarSourceErrorCode, RefreshAccountBinding,
+    SafeNotification, SystemNotifier, UsageSourceErrorCode, WeeklyUsageObservation,
 };
 use tempfile::tempdir;
 use tokio::sync::Notify;
@@ -131,6 +131,43 @@ impl SystemNotifier for BlockingNotifier {
 
     fn is_transient(_error: &Self::Error) -> bool {
         true
+    }
+}
+
+#[derive(Clone)]
+struct LateFailingNotifier {
+    store: AccountSettingsStore,
+    failed_at_ms: i64,
+}
+
+impl SystemNotifier for LateFailingNotifier {
+    type Error = RecordingNotifierError;
+
+    fn permission_state(
+        &self,
+    ) -> impl Future<Output = Result<NotificationPermissionStatus, Self::Error>> + Send {
+        std::future::ready(Ok(NotificationPermissionStatus::Granted))
+    }
+
+    fn notify(
+        &self,
+        notification: SafeNotification,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let store = self.store.clone();
+        let failed_at_ms = self.failed_at_ms;
+        async move {
+            assert!(
+                store
+                    .record_late_system_delivery_failure(&notification.delivery_key, failed_at_ms,)
+                    .await
+                    .expect("record late failure")
+            );
+            Ok(())
+        }
+    }
+
+    fn is_transient(_error: &Self::Error) -> bool {
+        false
     }
 }
 
@@ -420,6 +457,111 @@ async fn delivery_worker_sends_each_system_alert_once_and_records_the_attempt() 
         )
         .expect("delivery facts");
     assert_eq!(facts, ("delivered".to_owned(), 1, 1));
+}
+
+#[tokio::test]
+async fn a_late_platform_failure_wins_the_race_with_the_success_commit() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    seed_daily_warning(&store).await;
+    let now = timestamp_ms("2026-07-30T02:00:01Z");
+    let sweep = DeliveryWorker::new(
+        store.clone(),
+        LateFailingNotifier {
+            store,
+            failed_at_ms: now,
+        },
+        "worker-late-failure",
+    )
+    .deliver_pending(now)
+    .await
+    .expect("late failure sweep");
+
+    assert_eq!(sweep.delivered, 0);
+    assert_eq!(sweep.failed, 1);
+    let connection =
+        tokio_rusqlite::rusqlite::Connection::open(database).expect("inspect late failure");
+    let facts: (String, String, i64) = connection
+        .query_row(
+            "SELECT state, public_error_code,
+                    (SELECT COUNT(*) FROM delivery_attempts)
+             FROM alert_deliveries",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("late failure facts");
+    assert_eq!(
+        facts,
+        (
+            "permanent_failure".to_owned(),
+            "notification_send_failed".to_owned(),
+            1,
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_failure_callback_after_success_durably_corrects_the_delivery() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    seed_daily_warning(&store).await;
+    let now = timestamp_ms("2026-07-30T02:00:01Z");
+    DeliveryWorker::new(
+        store.clone(),
+        RecordingNotifier::granted(),
+        "worker-success",
+    )
+    .deliver_pending(now)
+    .await
+    .expect("successful sweep");
+
+    assert!(
+        store
+            .record_late_system_delivery_failure(
+                "stream:1:epoch:1:date:2026-07-30:daily_80:system",
+                now + 1_000,
+            )
+            .await
+            .expect("correct delivered notification")
+    );
+    assert!(
+        !store
+            .record_late_system_delivery_failure(
+                "stream:1:epoch:1:date:2026-07-30:daily_80:system",
+                now + 2_000,
+            )
+            .await
+            .expect("deduplicate correction")
+    );
+
+    let alerts = store.public_alerts(10).await.expect("public alerts");
+    assert_eq!(
+        alerts.events[0].system_delivery_state,
+        Some(PublicDeliveryState::Failed)
+    );
+    drop(store);
+    let connection =
+        tokio_rusqlite::rusqlite::Connection::open(database).expect("inspect corrected delivery");
+    let attempts: i64 = connection
+        .query_row("SELECT COUNT(*) FROM delivery_attempts", [], |row| {
+            row.get(0)
+        })
+        .expect("attempt count");
+    assert_eq!(attempts, 2);
 }
 
 #[tokio::test]
