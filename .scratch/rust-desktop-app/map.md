@@ -45,6 +45,7 @@ Type: wayfinder:map
 - [建立当前七日额度账本](./issues/18-build-current-seven-day-ledger.md) — 已交付整数高水位账本、双事实重置与 schedule 修正确认、IANA/DST 自然日归属、不可变 SQLite v4 事实和旧数据隔离迁移，以及严格当前 epoch 的七日语义投影。
 - [实现每日策略与工作日结转](./issues/19-implement-daily-policy-and-carry.md) — 已交付可编辑七日模板、IANA 策略版本、不可变历史日快照、只从每日基础未用量产生且不重复分配的同周工作日结转、80%/100% 去重提醒候选，以及 Rust-owned 今日额度说明。
 - [接入 Reset Radar](./issues/20-integrate-reset-radar.md) — 已交付固定 HTTPS 契约的 24 小时第三方预测、独立来源健康与有效期投影、同轮并发和单事务 dashboard revision、新公告下一轮账号复核、未配置账号仍按小时运行，以及明确的非 OpenAI 承诺与安全来源链接。
+- [完成原子设置与后台生命周期](./issues/21-implement-atomic-settings-and-background-lifecycle.md) — 已交付 SQLite v8 revisioned 原子设置、外部变更 journal 与自启回滚、macOS LaunchAgent/Windows 当前用户入口、登录隐藏与单实例唤醒、scheduler/delivery worker 单启动保护、共享 modal guard 和统一设置界面。
 
 ## Not yet specified
 
