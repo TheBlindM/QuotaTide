@@ -29,7 +29,7 @@ License：MIT
   睡眠恢复合并和后台 worker 单启动保护；
 - macOS/Windows bundle CI 骨架。
 
-当前版本尚未完成系统通知、邮件和正式发布 smoke。旧 Node 服务
+当前版本尚未完成邮件投递和正式发布 smoke。旧 Node 服务
 仍暂时保留供行为迁移测试使用，但新桌面应用不启动它、不读取它的数据库，
 也不依赖 Docker。
 
