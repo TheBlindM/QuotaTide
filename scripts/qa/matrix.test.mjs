@@ -28,9 +28,10 @@ test("release matrix includes every documented gate group", () => {
   ]) {
     assert.ok(REQUIRED_TEST_IDS.includes(id), `${id} missing`);
   }
-  assert.equal(requiredRecordKeys().length, 400);
+  assert.equal(requiredRecordKeys().length, 401);
   assert.equal(REQUIRED_RECORDS["W25-B/WEBVIEW-02"].blocking, true);
-  assert.equal(REQUIRED_RECORDS["M14-C/COMPAT-01"].blocking, false);
+  assert.equal(REQUIRED_RECORDS["M14-A/COMPAT-01"].blocking, false);
+  assert.equal(REQUIRED_RECORDS["M14-I/COMPAT-01"].blocking, false);
 });
 
 test("architecture and screen-reader gates target the correct platforms", () => {

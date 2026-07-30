@@ -1,16 +1,23 @@
 export const REQUIRED_ENVIRONMENTS = {
-  "M15-A": "macOS 15 latest patch / Apple Silicon",
-  "M15-I": "macOS 15 latest patch / Intel",
-  "MC-A": "Current stable macOS / Apple Silicon",
-  "W25-X": "Windows 11 25H2 latest patch / x64",
-  "W26-X": "Windows 11 26H1 latest patch / x64",
-  "W25-B": "Windows 11 25H2 clean VM / x64 / WebView2 bootstrapper",
-  "W25-F": "Windows 11 25H2 clean VM / x64 / bootstrapper failure",
-  "W25-U": "Windows 11 25H2 / x64 / updated WebView2 first launch",
-  "M14-C": "macOS 14 latest patch / compatibility only",
-  "W10-C": "Windows 10 22H2 build 19045 / x64 / compatibility only",
-  "W24-C": "Windows 11 24H2 / x64 / compatibility only",
+  "M15-A": "macOS 15.7.8 / Apple Silicon",
+  "M15-I": "macOS 15.7.8 / Intel",
+  "MC-A": "macOS 26.6 / Apple Silicon",
+  "W25-X": "Windows 11 25H2 build 26200.8875 / x64",
+  "W26-X": "Windows 11 26H1 build 28000.2525 / x64",
+  "W25-B":
+    "Windows 11 25H2 build 26200.8875 / x64 / WebView2 bootstrapper",
+  "W25-F":
+    "Windows 11 25H2 build 26200.8875 / x64 / bootstrapper failure",
+  "W25-U":
+    "Windows 11 25H2 build 26200.8875 / x64 / updated WebView2 first launch",
+  "M14-A": "macOS 14.8.8 / Apple Silicon / compatibility only",
+  "M14-I": "macOS 14.8.8 / Intel / compatibility only",
+  "W10-C":
+    "Windows 10 22H2 build 19045.7548 / x64 / compatibility only",
+  "W24-C":
+    "Windows 11 24H2 build 26100.8875 / x64 / compatibility only",
 };
+export const PLATFORM_BASELINE_AS_OF = "2026-07-30";
 
 const ids = (prefix, count) =>
   Array.from(
@@ -149,7 +156,8 @@ const specializedRecords = [
   ["W25-B", "WEBVIEW-02", ["SMOKE"], true],
   ["W25-F", "WEBVIEW-03", ["SMOKE"], true],
   ["W25-U", "WEBVIEW-04", ["SMOKE"], true],
-  ["M14-C", "COMPAT-01", ["SMOKE"], false],
+  ["M14-A", "COMPAT-01", ["SMOKE"], false],
+  ["M14-I", "COMPAT-01", ["SMOKE"], false],
   ["W10-C", "COMPAT-02", ["SMOKE"], false],
   ["W24-C", "COMPAT-03", ["SMOKE"], false],
 ];
@@ -182,31 +190,43 @@ export function requiredRecordKeys() {
 
 export function expectedPlatformIdentity(environmentId) {
   if (environmentId === "M15-A") {
-    return { cpu: "arm64", osBuild: /^macOS 15\.\d+(?:\.\d+)? \(build [^)]+\)$/ };
+    return { cpu: "arm64", osBuild: /^macOS 15\.7\.8 \(build [^)]+\)$/ };
   }
   if (environmentId === "M15-I") {
-    return {
-      cpu: "x86_64",
-      osBuild: /^macOS 15\.\d+(?:\.\d+)? \(build [^)]+\)$/,
-    };
+    return { cpu: "x86_64", osBuild: /^macOS 15\.7\.8 \(build [^)]+\)$/ };
   }
   if (environmentId === "MC-A") {
-    return { cpu: "arm64", osBuild: /^macOS \d+\.\d+(?:\.\d+)? \(build [^)]+\)$/ };
+    return { cpu: "arm64", osBuild: /^macOS 26\.6 \(build [^)]+\)$/ };
   }
-  if (environmentId === "M14-C") {
-    return { cpu: "arm64", osBuild: /^macOS 14\.\d+(?:\.\d+)? \(build [^)]+\)$/ };
+  if (environmentId === "M14-A") {
+    return { cpu: "arm64", osBuild: /^macOS 14\.8\.8 \(build [^)]+\)$/ };
+  }
+  if (environmentId === "M14-I") {
+    return { cpu: "x86_64", osBuild: /^macOS 14\.8\.8 \(build [^)]+\)$/ };
   }
   if (environmentId === "W10-C") {
-    return { cpu: "x64", osBuild: /^Windows 10 22H2 \(build 19045\.\d+\)$/ };
+    return {
+      cpu: "x64",
+      osBuild: /^Windows 10 22H2 \(build 19045\.7548\)$/,
+    };
   }
   if (environmentId.startsWith("W25")) {
-    return { cpu: "x64", osBuild: /^Windows 11 25H2 \(build \d+\.\d+\)$/ };
+    return {
+      cpu: "x64",
+      osBuild: /^Windows 11 25H2 \(build 26200\.8875\)$/,
+    };
   }
   if (environmentId === "W26-X") {
-    return { cpu: "x64", osBuild: /^Windows 11 26H1 \(build \d+\.\d+\)$/ };
+    return {
+      cpu: "x64",
+      osBuild: /^Windows 11 26H1 \(build 28000\.2525\)$/,
+    };
   }
   if (environmentId === "W24-C") {
-    return { cpu: "x64", osBuild: /^Windows 11 24H2 \(build \d+\.\d+\)$/ };
+    return {
+      cpu: "x64",
+      osBuild: /^Windows 11 24H2 \(build 26100\.8875\)$/,
+    };
   }
   throw new Error(`Unknown release environment: ${environmentId}`);
 }

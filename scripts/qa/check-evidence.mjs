@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import {
   dirname,
   isAbsolute,
@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 
 import { releaseArtifactInventory } from "../release/artifacts.mjs";
 import {
+  PLATFORM_BASELINE_AS_OF,
   REQUIRED_ENVIRONMENTS,
   REQUIRED_RECORDS,
   expectedPlatformIdentity,
@@ -39,6 +40,11 @@ assert.equal(evidence.release.product, "QuotaTide");
 assert.match(evidence.release.version, /^\d+\.\d+\.\d+(?:-rc\.\d+)?$/);
 assert.match(evidence.release.commit, /^[a-f0-9]{40}$/);
 assert.ok(!Number.isNaN(Date.parse(evidence.release.generatedAt)));
+assert.equal(
+  evidence.release.platformBaselineAsOf,
+  PLATFORM_BASELINE_AS_OF,
+  "Release evidence uses a stale platform baseline",
+);
 assert.equal(evidence.release.version, tauri.version);
 assert.equal(evidence.release.commit, currentCommit.trim());
 assert.equal(
@@ -154,7 +160,10 @@ for (const key of requiredKeys) {
         continue;
       }
       try {
-        await access(resolvedPath);
+        const evidenceFile = await stat(resolvedPath);
+        if (!evidenceFile.isFile()) {
+          blockers.push(`${key}: evidence path is not a file ${path}`);
+        }
       } catch {
         blockers.push(`${key}: missing evidence file ${path}`);
       }

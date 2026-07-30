@@ -16,6 +16,7 @@ import { promisify } from "node:util";
 
 import { releaseArtifactInventory } from "../release/artifacts.mjs";
 import {
+  PLATFORM_BASELINE_AS_OF,
   REQUIRED_ENVIRONMENTS,
   REQUIRED_RECORDS,
   expectedPlatformIdentity,
@@ -29,18 +30,20 @@ const checker = fileURLToPath(new URL("check-evidence.mjs", import.meta.url));
 function validOsBuild(environmentId) {
   if (environmentId.startsWith("M15")) return "macOS 15.7.8 (build 24G222)";
   if (environmentId === "MC-A") return "macOS 26.6 (build 25G86)";
-  if (environmentId === "M14-C") return "macOS 14.8.8 (build 23J123)";
+  if (environmentId.startsWith("M14")) {
+    return "macOS 14.8.8 (build 23J123)";
+  }
   if (environmentId === "W10-C") {
-    return "Windows 10 22H2 (build 19045.6216)";
+    return "Windows 10 22H2 (build 19045.7548)";
   }
   if (environmentId.startsWith("W25")) {
-    return "Windows 11 25H2 (build 26200.1000)";
+    return "Windows 11 25H2 (build 26200.8875)";
   }
   if (environmentId === "W26-X") {
-    return "Windows 11 26H1 (build 26300.1000)";
+    return "Windows 11 26H1 (build 28000.2525)";
   }
   if (environmentId === "W24-C") {
-    return "Windows 11 24H2 (build 26100.4946)";
+    return "Windows 11 24H2 (build 26100.8875)";
   }
   throw new Error(`Missing test platform identity for ${environmentId}`);
 }
@@ -75,6 +78,7 @@ async function createCompleteEvidence(directory) {
       commit: commit.trim(),
       generatedAt: "2026-07-30T00:00:00.000Z",
       finalCandidate: true,
+      platformBaselineAsOf: PLATFORM_BASELINE_AS_OF,
     },
     artifacts,
     records: requiredRecordKeys().map((key) => {
@@ -120,7 +124,7 @@ test("release evidence gate accepts only a complete audited matrix", async (t) =
   const evidence = await createCompleteEvidence(directory);
 
   const { stdout } = await runChecker(evidence, directory);
-  assert.match(stdout, /400 audited records/);
+  assert.match(stdout, /401 audited records/);
 
   evidence.records[0].osBuild = null;
   await assert.rejects(

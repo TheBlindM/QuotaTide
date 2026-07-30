@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 
 import {
+  PLATFORM_BASELINE_AS_OF,
   REQUIRED_ENVIRONMENTS,
   REQUIRED_RECORDS,
   requiredRecordKeys,
@@ -31,6 +32,7 @@ const evidence = {
     commit: commit.trim(),
     generatedAt,
     finalCandidate: false,
+    platformBaselineAsOf: PLATFORM_BASELINE_AS_OF,
   },
   artifacts: [],
   records: requiredRecordKeys().map((key) => {

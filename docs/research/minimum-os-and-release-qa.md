@@ -406,4 +406,4 @@ release blocking evidence。
   预检不能把这些 `SMOKE`、`LIVE`、`MANUAL` 项改写为 PASS。
 - Ticket 27 的 JSON gate 要求正确平台身份、规定证据等级和真实证据文件；
   全部阻断项必须为 PASS 或有批准理由的 N/A。受保护的 `publish.yml` 是唯一
-  支持的公开发布路径；当前 400 条记录显式 BLOCKED，因此不得公开发布。
+  支持的公开发布路径；当前 401 条记录显式 BLOCKED，因此不得公开发布。

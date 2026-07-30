@@ -25,6 +25,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Require the protected main branch
         shell: bash
         run: test "$GITHUB_REF_NAME" = main
@@ -42,6 +43,7 @@ jobs:
         run: |
           node scripts/release/check-version.mjs "$RELEASE_TAG"
           node scripts/check-release-identity.mjs
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(git rev-parse HEAD)"
       - name: Reject secrets in tracked source
         run: node scripts/release/scan-secrets.mjs . --tracked
 

@@ -38,8 +38,9 @@
 
 2026-07-30：自动化证据框架已完成。生成器为五个正式环境与
 PKG/SHELL/FX/NOTIFY/START/FILE/VAULT/SMTP/DB/CORE/UPDATE/SEC/L10N/A11Y/
-PERF 创建 393 个主记录，并加入四个 WebView2 变体和三个扩大兼容记录，共
-400 条显式 `BLOCKED`。校验器要求 exact final candidate、七类 artifact、
+PERF 创建 393 个主记录，并加入四个 WebView2 变体和四个扩大兼容记录，共
+401 条显式 `BLOCKED`（macOS 14 Apple Silicon/Intel 分开记录）。校验器要求
+exact final candidate、七类 artifact、
 正确平台身份/证据等级、真实存在的证据文件和完整审计字段；阻断项的 FAIL、
 BLOCKED、缺失记录与无批准理由 N/A 均拒绝发布。
 
