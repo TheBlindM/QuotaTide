@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import {
   REQUIRED_ENVIRONMENTS,
+  REQUIRED_RECORDS,
   requiredRecordKeys,
 } from "./matrix.mjs";
 
@@ -38,6 +39,9 @@ const evidence = {
       environmentId,
       environment: REQUIRED_ENVIRONMENTS[environmentId],
       testId,
+      blocking: REQUIRED_RECORDS[key].blocking,
+      requiredEvidenceType:
+        REQUIRED_RECORDS[key].requiredEvidenceTypes.join(" + "),
       status: "BLOCKED",
       evidenceType: null,
       executor: null,

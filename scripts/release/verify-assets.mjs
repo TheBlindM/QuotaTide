@@ -1,22 +1,24 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import { releaseArtifactInventory } from "./artifacts.mjs";
 import { validateManifest } from "./manifest-lib.mjs";
 
 const directory = resolve(process.argv[2] ?? "release-assets");
 const version = process.argv[3];
+const includeEvidencePackage = process.argv.includes("--evidence-package");
 assert.match(version, /^0\.\d+\.\d+(?:-rc\.\d+)?$/);
-const expected = [
-  `QuotaTide_${version}_universal.dmg`,
-  `QuotaTide_${version}_universal.app.tar.gz`,
-  `QuotaTide_${version}_universal.app.tar.gz.sig`,
-  `QuotaTide_${version}_x64-setup.exe`,
-  `QuotaTide_${version}_x64-setup.exe.sig`,
-  "latest.json",
-  "SHA256SUMS",
-];
+const expected = releaseArtifactInventory(version);
+if (includeEvidencePackage) {
+  expected.push(`release-evidence-${version}.tar.gz`);
+}
+assert.deepEqual(
+  (await readdir(directory)).sort(),
+  expected.sort(),
+  "Release directory contains missing or unexpected assets",
+);
 await Promise.all(expected.map((name) => access(join(directory, name))));
 
 const manifest = JSON.parse(

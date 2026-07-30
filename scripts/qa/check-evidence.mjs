@@ -1,17 +1,28 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { isAbsolute, join, normalize, resolve } from "node:path";
+import { access, readFile } from "node:fs/promises";
+import {
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  relative,
+  resolve,
+} from "node:path";
 import { promisify } from "node:util";
 
+import { releaseArtifactInventory } from "../release/artifacts.mjs";
 import {
   REQUIRED_ENVIRONMENTS,
+  REQUIRED_RECORDS,
+  expectedPlatformIdentity,
   requiredRecordKeys,
 } from "./matrix.mjs";
 
 const input = resolve(process.argv[2] ?? "release-evidence.json");
 const artifactDirectory = resolve(process.argv[3] ?? "release-assets");
+const evidenceDirectory = resolve(process.argv[4] ?? dirname(input));
 const execFileAsync = promisify(execFile);
 const evidence = JSON.parse(await readFile(input, "utf8"));
 const root = new URL("../../", import.meta.url);
@@ -24,8 +35,10 @@ const { stdout: currentCommit } = await execFileAsync(
   { cwd: new URL(root), encoding: "utf8" },
 );
 assert.equal(evidence.schemaVersion, 1);
+assert.equal(evidence.release.product, "QuotaTide");
 assert.match(evidence.release.version, /^\d+\.\d+\.\d+(?:-rc\.\d+)?$/);
 assert.match(evidence.release.commit, /^[a-f0-9]{40}$/);
+assert.ok(!Number.isNaN(Date.parse(evidence.release.generatedAt)));
 assert.equal(evidence.release.version, tauri.version);
 assert.equal(evidence.release.commit, currentCommit.trim());
 assert.equal(
@@ -34,15 +47,7 @@ assert.equal(
   "Release evidence must identify the exact final candidate",
 );
 const version = evidence.release.version;
-const requiredArtifacts = [
-  `QuotaTide_${version}_universal.dmg`,
-  `QuotaTide_${version}_universal.app.tar.gz`,
-  `QuotaTide_${version}_universal.app.tar.gz.sig`,
-  `QuotaTide_${version}_x64-setup.exe`,
-  `QuotaTide_${version}_x64-setup.exe.sig`,
-  "latest.json",
-  "SHA256SUMS",
-];
+const requiredArtifacts = releaseArtifactInventory(version);
 assert.deepEqual(
   evidence.artifacts.map((artifact) => artifact.filename).sort(),
   requiredArtifacts.sort(),
@@ -77,25 +82,41 @@ if (records.size !== evidence.records.length) {
 }
 for (const key of requiredKeys) {
   const record = records.get(key);
+  const requirement = REQUIRED_RECORDS[key];
   if (!record) {
     blockers.push(`${key}: MISSING`);
     continue;
   }
-  if (!["PASS", "N/A"].includes(record.status)) {
+  const allowedStatuses = requirement.blocking
+    ? ["PASS", "N/A"]
+    : ["PASS", "FAIL", "N/A"];
+  if (!allowedStatuses.includes(record.status)) {
     blockers.push(`${key}: ${record.status}`);
-    continue;
   }
   if (record.status === "N/A" && !record.approvedReason?.trim()) {
     blockers.push(`${key}: N/A without approvedReason`);
   }
+  if (
+    !requirement.blocking &&
+    record.status === "FAIL" &&
+    !record.linkedDefect?.trim()
+  ) {
+    blockers.push(`${key}: compatibility FAIL without linkedDefect`);
+  }
   const expectedEnvironment = REQUIRED_ENVIRONMENTS[record.environmentId];
+  const expectedIdentity = expectedPlatformIdentity(record.environmentId);
   if (
     !record.executor?.trim() ||
     !record.executedAt ||
     Number.isNaN(Date.parse(record.executedAt)) ||
     !record.osBuild?.trim() ||
-    !record.cpu?.trim() ||
-    record.environment !== expectedEnvironment
+    !expectedIdentity.osBuild.test(record.osBuild) ||
+    record.cpu !== expectedIdentity.cpu ||
+    record.environment !== expectedEnvironment ||
+    record.blocking !== requirement.blocking ||
+    record.requiredEvidenceType !==
+      requirement.requiredEvidenceTypes.join(" + ") ||
+    !Object.hasOwn(record, "linkedDefect")
   ) {
     blockers.push(`${key}: incomplete audit fields`);
   }
@@ -104,17 +125,14 @@ for (const key of requiredKeys) {
       ? record.evidenceType.split("+").map((value) => value.trim())
       : [];
   if (
-    evidenceTypes.length === 0 ||
-    evidenceTypes.some(
-      (value) =>
-        !["AUTO", "BUILD", "SMOKE", "MANUAL", "LIVE", "SECURITY"].includes(
-          value,
-        ),
-    )
+    evidenceTypes.sort().join("+") !==
+    [...requirement.requiredEvidenceTypes].sort().join("+")
   ) {
-    blockers.push(`${key}: invalid evidenceType`);
+    blockers.push(
+      `${key}: evidenceType must be ${requirement.requiredEvidenceTypes.join(" + ")}`,
+    );
   }
-  if (
+  const invalidEvidencePaths =
     !Array.isArray(record.evidencePaths) ||
     record.evidencePaths.length === 0 ||
     record.evidencePaths.some(
@@ -122,10 +140,25 @@ for (const key of requiredKeys) {
         typeof path !== "string" ||
         !path.trim() ||
         isAbsolute(path) ||
+        path.includes("\\") ||
         normalize(path).startsWith(".."),
-    )
-  ) {
+    );
+  if (invalidEvidencePaths) {
     blockers.push(`${key}: evidencePaths must be non-empty relative paths`);
+  } else {
+    for (const path of record.evidencePaths) {
+      const resolvedPath = resolve(evidenceDirectory, path);
+      const fromEvidenceRoot = relative(evidenceDirectory, resolvedPath);
+      if (fromEvidenceRoot.startsWith("..") || isAbsolute(fromEvidenceRoot)) {
+        blockers.push(`${key}: evidence path escapes package`);
+        continue;
+      }
+      try {
+        await access(resolvedPath);
+      } catch {
+        blockers.push(`${key}: missing evidence file ${path}`);
+      }
+    }
   }
   if (record.environmentId.startsWith("W") && !record.webView2Version?.trim()) {
     blockers.push(`${key}: Windows WebView2 version is missing`);

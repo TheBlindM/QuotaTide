@@ -75,10 +75,13 @@ SmartScreen 可能提示风险。请勿全局关闭系统保护；请按文档�
 
 Production release generation is intentionally blocked until the public GitHub
 repository and final updater public key are bound. The committed key is a
-development-only key whose private half was destroyed.
+development-only key whose private half was destroyed. Even after binding,
+public publishing is allowed only through the audited
+[release-evidence gate](docs/qa/README.md).
 
 在公开 GitHub 仓库与最终 updater 公钥确认前，生产发布门禁会按设计失败。仓库
-当前提交的仅是开发公钥，其私钥已销毁，不能用于正式发布。
+当前提交的仅是开发公钥，其私钥已销毁，不能用于正式发布。完成绑定后也只能
+通过[发布证据门禁](docs/qa/README.md)公开发布。
 
 ## Privacy and security / 隐私与安全
 

@@ -36,11 +36,12 @@
 
 ## Comments
 
-2026-07-30：自动化证据框架已完成。生成器会为 M15-A、M15-I、MC-A、W25-X、
-W26-X 和 PKG/SHELL/FX/NOTIFY/START/FILE/VAULT/SMTP/DB/CORE/UPDATE/SEC/
-L10N/A11Y/PERF 门禁创建 393 条显式 `BLOCKED` 记录；校验器要求 exact final
-candidate、七类 artifact、完整审计字段，并拒绝 FAIL、BLOCKED、缺失记录和
-无批准理由的 N/A。
+2026-07-30：自动化证据框架已完成。生成器为五个正式环境与
+PKG/SHELL/FX/NOTIFY/START/FILE/VAULT/SMTP/DB/CORE/UPDATE/SEC/L10N/A11Y/
+PERF 创建 393 个主记录，并加入四个 WebView2 变体和三个扩大兼容记录，共
+400 条显式 `BLOCKED`。校验器要求 exact final candidate、七类 artifact、
+正确平台身份/证据等级、真实存在的证据文件和完整审计字段；阻断项的 FAIL、
+BLOCKED、缺失记录与无批准理由 N/A 均拒绝发布。
 
 本机预检已验证 universal slices、macOS 15.0、固定尺寸 DMG 挂载、updater
 archive/signature 与篡改拒绝、31,685-byte UI gzip、secret canary、完整
@@ -52,3 +53,8 @@ Ticket 仍不能关闭：GitHub 仓库、最终 updater key/恢复演练和同�
 25H2/26H1、WebView2 变体、VoiceOver/Narrator、真实 SMTP、跨版本更新与
 24 小时运行环境。剩余工作需要维护者绑定发布身份并在规定真机/VM 上执行，
 故转为 `ready-for-human`，所有 BLOCKED 状态继续阻止公开发布。
+
+公开发布只允许通过受保护的 `publish.yml`：它下载既有 draft 的最终 bytes
+与 `release-evidence-<version>.tar.gz`，在 immutable tag 上执行证据门禁，
+通过后才清除 draft 标记。仓库绑定后仍必须给 `public-release` Environment
+配置 required reviewers，并禁止在 GitHub UI 手工绕过。

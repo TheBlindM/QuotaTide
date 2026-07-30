@@ -232,11 +232,13 @@ jobs:
         run: |
           version="$RELEASE_TAG"
           version="${version#v}"
-          node scripts/qa/create-evidence.mjs "release-evidence-${version}.json"
+          mkdir "release-evidence-${version}"
+          node scripts/qa/create-evidence.mjs \
+            "release-evidence-${version}/release-evidence.json"
       - name: Upload release evidence template
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-evidence-${{ steps.release.outputs.version }}
           if-no-files-found: error
           retention-days: 30
-          path: release-evidence-*.json
+          path: release-evidence-${{ steps.release.outputs.version }}/

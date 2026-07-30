@@ -330,10 +330,10 @@ flowchart LR
   C --> E["Private workflow artifacts"]
   D --> E
   E --> F["Aggregate manifest / checksums / provenance"]
-  F --> G["Real-machine smoke evidence"]
-  G --> H["production-release approval"]
-  H --> I["Draft release + all assets"]
-  I --> J["Verify release assets"]
+  F --> G["Create immutable draft + final assets"]
+  G --> H["Real-machine evidence package"]
+  H --> I["public-release approval"]
+  I --> J["Re-download and verify exact draft bytes"]
   J --> K["Publish immutable release"]
 ```
 
@@ -341,8 +341,9 @@ flowchart LR
 - `release-signing` environment 保护 Apple 与 Tauri key；Windows 在 Azure
   可用时通过 OIDC 获得短期 token，否则只向 CA cloud-HSM adapter 提供最小
   短期凭证。
-- `production-release` environment 要求另一位 reviewer，启用
-  prevent self-review；只有最终 job 有 `contents: write`。
+- `public-release` environment 要求另一位 reviewer，启用
+  prevent self-review；只有创建 draft 的聚合 job 与最终 publish job 有
+  `contents: write`，构建 job 均为只读。
 - GitHub Environment 在公开仓库可提供 required reviewers、branch/tag
   restrictions 和审批后才可访问的 secrets。
   [GitHub deployment environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)
@@ -388,7 +389,7 @@ assets，再 publish；发布后 tag 和 assets 不允许被移动、替换或�
 | Contributor | fork PR、无 secrets、无 tag/release 权限 |
 | Maintainer | 合并代码、准备 version PR；不能单独完成生产发布 |
 | Release manager | 审批 `release-signing`，检查版本与 CI |
-| Publisher | 审批 `production-release`，不能与触发者是同一人 |
+| Publisher | 审批 `public-release`，不能与触发者是同一人 |
 | Apple Account Holder/Admin | 创建/轮换 Developer ID 与最小权限 API key |
 | Azure identity admin | 配置 federated credential 与 Artifact Signing signer role |
 

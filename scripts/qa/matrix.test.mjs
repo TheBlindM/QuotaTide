@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  REQUIRED_RECORDS,
   REQUIRED_TEST_IDS,
   requiredRecordKeys,
   testAppliesTo,
@@ -27,7 +28,9 @@ test("release matrix includes every documented gate group", () => {
   ]) {
     assert.ok(REQUIRED_TEST_IDS.includes(id), `${id} missing`);
   }
-  assert.ok(requiredRecordKeys().length > 350);
+  assert.equal(requiredRecordKeys().length, 400);
+  assert.equal(REQUIRED_RECORDS["W25-B/WEBVIEW-02"].blocking, true);
+  assert.equal(REQUIRED_RECORDS["M14-C/COMPAT-01"].blocking, false);
 });
 
 test("architecture and screen-reader gates target the correct platforms", () => {
@@ -35,4 +38,15 @@ test("architecture and screen-reader gates target the correct platforms", () => 
   assert.equal(testAppliesTo("PKG-01", "W25-X"), false);
   assert.equal(testAppliesTo("A11Y-05", "M15-A"), false);
   assert.equal(testAppliesTo("A11Y-05", "W25-X"), true);
+});
+
+test("manual and live gates cannot be replaced with automated evidence", () => {
+  assert.deepEqual(
+    REQUIRED_RECORDS["MC-A/A11Y-04"].requiredEvidenceTypes,
+    ["MANUAL"],
+  );
+  assert.deepEqual(
+    REQUIRED_RECORDS["W25-X/SMTP-01"].requiredEvidenceTypes,
+    ["LIVE"],
+  );
 });

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { copyFile, mkdir, readdir } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 
+import { releaseArtifactNames } from "./artifacts.mjs";
+
 const source = resolve(process.argv[2] ?? "downloaded-artifacts");
 const output = resolve(process.argv[3] ?? "release-assets");
 const version = process.argv[4];
@@ -35,21 +37,22 @@ const macArchive = one("macOS updater archive", (name) =>
 const windowsInstaller = one("Windows NSIS installer", (name) =>
   /setup\.exe$/i.test(name),
 );
+const names = releaseArtifactNames(version);
 const assets = [
-  [one("macOS DMG", (name) => name.endsWith(".dmg")), `QuotaTide_${version}_universal.dmg`],
-  [macArchive, `QuotaTide_${version}_universal.app.tar.gz`],
+  [one("macOS DMG", (name) => name.endsWith(".dmg")), names.macDmg],
+  [macArchive, names.macArchive],
   [
     one("macOS updater signature", (name) =>
       name.endsWith(".app.tar.gz.sig"),
     ),
-    `QuotaTide_${version}_universal.app.tar.gz.sig`,
+    names.macSignature,
   ],
-  [windowsInstaller, `QuotaTide_${version}_x64-setup.exe`],
+  [windowsInstaller, names.windowsInstaller],
   [
     one("Windows updater signature", (name) =>
       /setup\.exe\.sig$/i.test(name),
     ),
-    `QuotaTide_${version}_x64-setup.exe.sig`,
+    names.windowsSignature,
   ],
 ];
 

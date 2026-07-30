@@ -404,5 +404,6 @@ release blocking evidence。
 - 最终 updater key、同批 macOS/Windows release candidate、必测真机/VM、
   WebView2、辅助技术、真实 SMTP、跨版本和 24 小时受控运行仍未完成。自动化
   预检不能把这些 `SMOKE`、`LIVE`、`MANUAL` 项改写为 PASS。
-- Ticket 27 的 JSON gate 要求全部必测记录为 PASS 或有批准理由的 N/A；
-  当前显式 BLOCKED，因此不得公开发布。
+- Ticket 27 的 JSON gate 要求正确平台身份、规定证据等级和真实证据文件；
+  全部阻断项必须为 PASS 或有批准理由的 N/A。受保护的 `publish.yml` 是唯一
+  支持的公开发布路径；当前 400 条记录显式 BLOCKED，因此不得公开发布。
