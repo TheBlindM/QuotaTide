@@ -9,7 +9,7 @@
   "repository": "__GITHUB_REPOSITORY__",
   "scripts": {
     "icons": "node scripts/generate-icons.mjs",
-    "test": "node --test scripts/release/*.test.mjs",
+    "test": "node --test scripts/release/*.test.mjs scripts/qa/*.test.mjs",
     "check": "npm test && node scripts/check-desktop-versions.mjs && node scripts/check-desktop-identity.mjs && node scripts/check-updater-key.mjs"
   },
   "engines": {

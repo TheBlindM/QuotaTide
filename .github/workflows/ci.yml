@@ -37,6 +37,10 @@ jobs:
         run: cargo test -p quotatide-core
       - name: Check UI
         run: npm --prefix ui run check
+      - name: Check release tooling and UI size budget
+        run: |
+          npm test
+          node scripts/qa/check-ui-budget.mjs ui/dist
       - name: Check desktop version consistency
         run: node scripts/check-desktop-versions.mjs
       - name: Check desktop product identity

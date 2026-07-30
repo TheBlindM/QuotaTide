@@ -44,6 +44,7 @@ macOS/Windows `0.x` 未签名预览版候选，同时移除旧 Node/Docker 运�
 
 同批实现补齐中英 README、安全/贡献/隐私/安装/更新/卸载/校验文档，并删除旧
 Node server、浏览器页面、Docker、明文 SMTP 环境入口与旧运行库。开发机已
-构建出 macOS 15.0 universal app，并验证 `arm64`/`x86_64` slices；本机 DMG
-封装因系统数据卷仅余约 2.2 GiB 被 `hdiutil` 拒绝，最终安装包结构、签名与
-真实平台 smoke 由 Ticket 27 使用 release workflow 的同批候选产物验证。
+构建出 macOS 15.0 universal app，并验证 `arm64`/`x86_64` slices。初次 DMG
+因 `hdiutil` 自动估算的 HFS+ image 过小而失败；显式 128 MiB source image
+后已成功生成、校验、挂载并检查，release workflow 已采用该固定尺寸脚本。
+最终签名产物与真实平台 smoke 继续由 Ticket 27 执行。

@@ -15,8 +15,19 @@ const forbiddenNames = [
   "refresh_token",
 ];
 const privateKeyMarkers = [
-  "PRIVATE KEY-----",
-  "untrusted comment: minisign encrypted secret key",
+  ["PRIVATE", " KEY-----"].join(""),
+  ["untrusted comment: minisign encrypted", " secret key"].join(""),
+];
+const testCanaries = [
+  "access-ticket16-command-canary",
+  "account-ticket16-command-canary",
+  "jwt-ticket16-command-canary",
+  "access-ticket17-canary",
+  "smtp-secret-canary",
+  "first-secret-canary",
+  "second-secret-canary",
+  "auth-canary",
+  "nested-auth-canary",
 ];
 
 async function walk(path) {
@@ -60,6 +71,14 @@ for (const path of files) {
     if (error?.code === "ENOENT" && trackedOnly) continue;
     throw error;
   }
+  if (!trackedOnly) {
+    for (const canary of testCanaries) {
+      assert.ok(
+        !bytes.includes(Buffer.from(canary)),
+        `Test secret canary found in ${path}`,
+      );
+    }
+  }
   if (bytes.includes(0)) continue;
   const text = bytes.toString("utf8");
   for (const marker of privateKeyMarkers) {
@@ -67,5 +86,5 @@ for (const path of files) {
   }
 }
 console.log(
-  `No private-key material or auth.json found in ${trackedOnly ? "tracked source" : root}`,
+  `No private-key material, auth.json, or release canary found in ${trackedOnly ? "tracked source" : root}`,
 );

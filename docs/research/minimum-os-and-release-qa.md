@@ -398,7 +398,11 @@ release blocking evidence。
 
 - GitHub owner/repository 尚未确定，因此生产 updater endpoint、Release
   Environment、provenance 和最终下载 smoke 仍由仓库绑定决策补齐。
-- Rust/Tauri 工作区尚未实施，所有 `SMOKE`、`LIVE`、`BUILD` 与资源数据均为
-  待完成 release gate；本文没有把任何一项标为通过。
-- 实施 ticket 必须引用本文件中的 ID，并在完成条件中列出相关 gate；笼统写
-  “支持 macOS/Windows”不足以关闭平台工作。
+- Rust/Tauri 工作区、自动化门禁、universal app/DMG 与 release workflow 已
+  实施；本机预检见
+  [`docs/qa/0.1.0-local-preflight.md`](../qa/0.1.0-local-preflight.md)。
+- 最终 updater key、同批 macOS/Windows release candidate、必测真机/VM、
+  WebView2、辅助技术、真实 SMTP、跨版本和 24 小时受控运行仍未完成。自动化
+  预检不能把这些 `SMOKE`、`LIVE`、`MANUAL` 项改写为 PASS。
+- Ticket 27 的 JSON gate 要求全部必测记录为 PASS 或有批准理由的 N/A；
+  当前显式 BLOCKED，因此不得公开发布。

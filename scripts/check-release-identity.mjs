@@ -14,6 +14,7 @@ const [
   releaseConfig,
   publicKey,
   fingerprintFile,
+  codeowners,
 ] = await Promise.all([
     readFile(new URL("Cargo.toml", root), "utf8"),
     readFile(new URL("package.json", root), "utf8").then(JSON.parse),
@@ -26,6 +27,7 @@ const [
     ),
     readFile(new URL("src-tauri/updater.pubkey", root), "utf8"),
     readFile(new URL("src-tauri/updater.pubkey.sha256", root), "utf8"),
+    readFile(new URL(".github/CODEOWNERS", root), "utf8"),
   ]);
 
 const repository = workspace.match(
@@ -41,6 +43,11 @@ assert.match(
   repository,
   /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
   "Release blocked: repository must be a canonical HTTPS GitHub URL",
+);
+assert.doesNotMatch(
+  codeowners,
+  /__GITHUB_OWNER__/,
+  "Release blocked: bind CODEOWNERS to the confirmed maintainer or team",
 );
 
 const repositorySlug = new URL(repository).pathname.slice(1);

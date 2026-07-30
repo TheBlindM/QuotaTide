@@ -5,9 +5,9 @@
 
 **Blocked by:** 26 — 完成安装、更新与开源清理
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] release evidence 记录 version、commit、artifact SHA-256、OS/build、CPU、
+- [x] release evidence 记录 version、commit、artifact SHA-256、OS/build、CPU、
   WebView2、test ID、结果、执行者、时间、证据路径和 linked defect。
 - [ ] macOS 15 最新补丁分别在 Apple Silicon 和 Intel 安装同一 universal
   artifact，验证原生 slice、首次启动、升级、卸载和重装。
@@ -33,3 +33,22 @@
   兼容结果，不能因单次通过进入正式支持声明。
 - [ ] 所有必测项最终状态为 PASS/N/A 且 N/A 有批准理由；FAIL、BLOCKED 或
   未填写都会阻止发布。
+
+## Comments
+
+2026-07-30：自动化证据框架已完成。生成器会为 M15-A、M15-I、MC-A、W25-X、
+W26-X 和 PKG/SHELL/FX/NOTIFY/START/FILE/VAULT/SMTP/DB/CORE/UPDATE/SEC/
+L10N/A11Y/PERF 门禁创建 393 条显式 `BLOCKED` 记录；校验器要求 exact final
+candidate、七类 artifact、完整审计字段，并拒绝 FAIL、BLOCKED、缺失记录和
+无批准理由的 N/A。
+
+本机预检已验证 universal slices、macOS 15.0、固定尺寸 DMG 挂载、updater
+archive/signature 与篡改拒绝、31,685-byte UI gzip、secret canary、完整
+Rust/UI/依赖门禁和五分钟后台资源趋势。证据见
+[`docs/qa/0.1.0-local-preflight.md`](../../../docs/qa/0.1.0-local-preflight.md)。
+
+Ticket 仍不能关闭：GitHub 仓库、最终 updater key/恢复演练和同批最终候选包
+尚无；本机是 macOS 15.3 arm64 且桌面锁定，也没有 Intel Mac、Windows 11
+25H2/26H1、WebView2 变体、VoiceOver/Narrator、真实 SMTP、跨版本更新与
+24 小时运行环境。剩余工作需要维护者绑定发布身份并在规定真机/VM 上执行，
+故转为 `ready-for-human`，所有 BLOCKED 状态继续阻止公开发布。

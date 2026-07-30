@@ -36,11 +36,11 @@ jobs:
         run: |
           rustup toolchain install 1.88.0 --profile minimal
           rustup default 1.88.0
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
       - name: Verify version, repository, and final updater key
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          node scripts/release/check-version.mjs "${{ inputs.tag }}"
+          node scripts/release/check-version.mjs "$RELEASE_TAG"
           node scripts/check-release-identity.mjs
       - name: Reject secrets in tracked source
         run: node scripts/release/scan-secrets.mjs . --tracked
@@ -71,13 +71,24 @@ jobs:
         run: |
           npm --prefix ui ci
           cargo install tauri-cli --version 2.11.4 --locked
-      - name: Build universal DMG and signed updater archive
+      - name: Build universal app and signed updater archive
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: cargo tauri build --target universal-apple-darwin --bundles app,dmg --config src-tauri/tauri.release.conf.json
+        run: cargo tauri build --target universal-apple-darwin --bundles app --config src-tauri/tauri.release.conf.json
       - name: Verify universal slices and deployment target
         run: scripts/release/verify-macos-bundle.sh target/universal-apple-darwin/release/bundle/macos/QuotaTide.app/Contents/MacOS/quotatide
+      - name: Build and verify universal DMG
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          version="$RELEASE_TAG"
+          version="${version#v}"
+          scripts/release/build-macos-dmg.sh \
+            target/universal-apple-darwin/release/bundle/macos/QuotaTide.app \
+            "target/universal-apple-darwin/release/bundle/dmg/QuotaTide_${version}_universal.dmg" \
+            src-tauri/icons/icon.icns
       - name: Upload final macOS bytes
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -141,6 +152,14 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Resolve release version
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          version="$RELEASE_TAG"
+          echo "version=${version#v}" >> "$GITHUB_OUTPUT"
       - name: Checkout exact source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -155,8 +174,10 @@ jobs:
           path: downloaded-artifacts
       - name: Collect and verify release bytes
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          version="${{ inputs.tag }}"
+          version="$RELEASE_TAG"
           version="${version#v}"
           node scripts/release/collect-assets.mjs downloaded-artifacts release-assets "$version"
           SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
@@ -196,11 +217,26 @@ jobs:
       - name: Create or update draft only
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
         shell: bash
         run: |
-          gh release view "${{ inputs.tag }}" >/dev/null 2>&1 || \
-            gh release create "${{ inputs.tag }}" --draft --verify-tag \
-              --title "QuotaTide ${{ inputs.tag }} Preview / 预览版"
-          gh release upload "${{ inputs.tag }}" release-assets/* --clobber
-          test "$(gh release view "${{ inputs.tag }}" --json isDraft --jq .isDraft)" = true
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" --draft --verify-tag \
+              --title "QuotaTide $RELEASE_TAG Preview / 预览版"
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           echo "Draft verified. Publishing remains a separate maintainer action after platform QA."
+      - name: Create blocked-by-default release evidence template
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          version="$RELEASE_TAG"
+          version="${version#v}"
+          node scripts/qa/create-evidence.mjs "release-evidence-${version}.json"
+      - name: Upload release evidence template
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-evidence-${{ steps.release.outputs.version }}
+          if-no-files-found: error
+          retention-days: 30
+          path: release-evidence-*.json
