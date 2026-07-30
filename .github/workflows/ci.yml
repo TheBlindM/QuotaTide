@@ -29,6 +29,9 @@ jobs:
           cache-dependency-path: ui/package-lock.json
       - name: Install UI dependencies
         run: npm --prefix ui ci
+      - name: Install pinned browser test runtime
+        working-directory: ui
+        run: npx playwright install --with-deps chromium
       - name: Check Rust formatting
         run: cargo fmt --all --check
       - name: Lint quota core

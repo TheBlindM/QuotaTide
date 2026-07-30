@@ -2,6 +2,7 @@ node_modules/
 target/
 ui/node_modules/
 ui/dist/
+ui/.vitest-attachments/
 *.tsbuildinfo
 .eslintcache
 .env

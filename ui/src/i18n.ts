@@ -14,6 +14,7 @@ export const messages = {
     "time.minutePast.other": "{count} 分钟前",
     "settings.language": "界面语言",
     "settings.languageHelp": "文案语言不会改变日期格式或额度自然日时区。",
+    "surface.opaqueFallback": "系统毛玻璃不可用，已切换为不透明模式",
   },
   en: {
     "language.system": "System",
@@ -28,6 +29,8 @@ export const messages = {
     "settings.language": "Interface language",
     "settings.languageHelp":
       "The interface language does not change your date format or quota policy timezone.",
+    "surface.opaqueFallback":
+      "System glass is unavailable; opaque mode is active",
   },
 } as const;
 

@@ -45,14 +45,18 @@ import {
 } from "./api/local-data";
 import { PrivacyPanel, TrayApp } from "./TrayApp";
 import {
-  ledgerFixtures,
-  type LedgerTone,
+  type LedgerFixture,
 } from "./WeeklyLedger";
 import { I18nProvider, useI18n } from "./i18n-context";
+import {
+  createPreviewScenario,
+  PREVIEW_NOW_UNIX_MS,
+} from "./preview-fixtures";
 import {
   formatPercent,
   formatResetTime,
   resolveInterfaceLocale,
+  translate,
   type InterfaceLocale,
 } from "./i18n";
 
@@ -85,12 +89,11 @@ const previewAlertKinds: AlertEventKind[] = [
 
 export function App() {
   const { text } = useI18n();
-  const isPreview = new URLSearchParams(window.location.search).has("preview");
-  const previewRecovery = new URLSearchParams(window.location.search).get(
-    "recovery",
-  );
-  const previewAlerts =
-    new URLSearchParams(window.location.search).get("alerts") === "denied";
+  const searchParams = new URLSearchParams(window.location.search);
+  const isPreview = searchParams.has("preview");
+  const previewRecovery = searchParams.get("recovery");
+  const previewAlerts = searchParams.get("alerts") === "denied";
+  const preview = createPreviewScenario(searchParams);
   const [state, setState] = useState<ViewState>(
     isPreview
       ? previewRecovery !== null
@@ -118,9 +121,9 @@ export function App() {
           },
           settings: {
             settingsRevision: 0,
-            configured: false,
-            pathSummary: null,
-            accountLabel: null,
+            configured: preview.configured,
+            pathSummary: preview.configured ? "…/auth.json" : null,
+            accountLabel: preview.configured ? "Codex • PREVIEW" : null,
             notificationPermissionStatus: previewAlerts ? "denied" : "unknown",
             quotaPolicy: {
               policyRevision: 1,
@@ -137,11 +140,8 @@ export function App() {
             ]),
             autostartEnabled: false,
             autoUpdateEnabled: true,
-            interfaceLocale:
-              new URLSearchParams(window.location.search).get("lang") === "en"
-                ? "en"
-                : "zh-CN",
-            formatLocale: "zh-CN",
+            interfaceLocale: preview.interfaceLocale,
+            formatLocale: preview.formatLocale,
             smtp: {
               enabled: false,
               host: "",
@@ -173,8 +173,8 @@ export function App() {
           focusRequest: previewAlerts
             ? { target: "today", activationId: 1 }
             : null,
-          liveQuota: null,
-          radar: emptyRadarState,
+          liveQuota: preview.liveQuota,
+          radar: preview.radar,
           refreshing: false,
           recoveredFromBackup: false,
           updateState: {
@@ -356,10 +356,9 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    document.body.dataset.platformFallbackMessage = copy(
+    document.body.dataset.platformFallbackMessage = translate(
       platformFallbackLocale,
-      "系统毛玻璃不可用，已切换为不透明模式",
-      "System glass is unavailable; opaque mode is active",
+      "surface.opaqueFallback",
     );
   }, [platformFallbackLocale]);
 
@@ -435,20 +434,18 @@ export function App() {
     );
   }
 
-  const requestedState = new URLSearchParams(window.location.search).get("state");
-  const previewRadar = new URLSearchParams(window.location.search).get("radar");
-  const tone: LedgerTone =
-    requestedState !== null && requestedState in ledgerFixtures
-      ? (requestedState as LedgerTone)
-      : "fresh";
   const fixture = isPreview
-    ? {
-        ...ledgerFixtures[tone],
-        radar:
-          previewRadar === "active"
-            ? ledgerFixtures.fresh.radar
-            : ledgerFixtures[tone].radar,
-      }
+    ? projectLiveFixture(
+        state.settings,
+        state.liveQuota,
+        PREVIEW_NOW_UNIX_MS,
+        state.radar,
+        resolveInterfaceLocale(
+          state.settings.interfaceLocale,
+          state.settings.formatLocale,
+        ),
+        state.settings.formatLocale,
+      )
     : projectLiveFixture(
         state.settings,
         state.liveQuota,
@@ -678,17 +675,27 @@ export function projectLiveFixture(
   radar: PublicResetRadar = emptyRadarState,
   interfaceLocale: InterfaceLocale = "zh-CN",
   formatLocale = "zh-CN",
-): (typeof ledgerFixtures)[LedgerTone] {
+): LedgerFixture {
   if (!account.configured) {
     return {
-      ...ledgerFixtures.unconfigured,
+      tone: "unconfigured",
+      weeklyUsed: "",
+      weeklyRemaining: "",
+      todayAvailable: "",
+      todayLimit: "",
+      sourceHealth:
+        interfaceLocale === "zh-CN" ? "尚未连接" : "Not connected",
+      windowLabel: "",
+      lastSuccess:
+        interfaceLocale === "zh-CN" ? "尚未同步" : "Not synced yet",
+      resetAbsolute: "",
+      resetRelative: "",
       radar: projectRadarFixture(radar, interfaceLocale, formatLocale),
+      days: [],
     };
   }
-  const base = ledgerFixtures.fresh;
   if (live === null) {
     return {
-      ...base,
       tone: "stale",
       weeklyUsed: "",
       weeklyRemaining: "",
@@ -705,6 +712,7 @@ export function projectLiveFixture(
       ),
       resetAbsolute: "",
       resetRelative: "",
+      todayAvailable: "",
       todayLimit: "",
       radar: projectRadarFixture(radar, interfaceLocale, formatLocale),
       days: [],
@@ -743,7 +751,6 @@ export function projectLiveFixture(
           ? "warning"
           : "fresh";
   return {
-    ...base,
     tone,
     weeklyUsed: used,
     weeklyRemaining: remaining,
