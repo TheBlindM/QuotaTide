@@ -6,7 +6,8 @@
     "text": "Invalid probability.",
     "observed_at": "2026-07-28T00:27:37.000Z",
     "expires_at": "2026-07-29T00:27:37.000Z",
-    "reset_chance_24h": 100.01
+    "reset_chance_24h": 100.01,
+    "window_hours": 24
   },
   "events": []
 }

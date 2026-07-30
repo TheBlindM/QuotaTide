@@ -36,7 +36,7 @@ impl RadarChance {
 #[must_use]
 pub fn radar_bucket_label(chance: RadarChance) -> &'static str {
     match chance.basis_points() {
-        0..=999 => "<10%",
+        0..=999 => "可能暗示额外重置",
         1_000..=1_999 => ">10%",
         2_000..=2_999 => ">20%",
         3_000..=3_999 => ">30%",

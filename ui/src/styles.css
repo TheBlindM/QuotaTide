@@ -542,6 +542,16 @@ progress::-moz-progress-bar {
   text-align: center;
 }
 
+.unconfigured-content {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.unconfigured-content .empty-state {
+  min-height: 330px;
+}
+
 .empty-state__mark {
   display: grid;
   width: 68px;

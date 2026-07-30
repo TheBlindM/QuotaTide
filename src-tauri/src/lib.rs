@@ -406,9 +406,6 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let store = tauri::async_runtime::block_on(AccountSettingsStore::open(&database_path))
         .map_err(|_| "failed to open the account settings store")?;
     secure_database_files(&database_path)?;
-    let refresh_on_startup = tauri::async_runtime::block_on(store.public_settings())
-        .map_err(|_| "failed to read account settings")?
-        .configured;
     let usage_client =
         CodexUsageClient::new().map_err(|_| "failed to initialize Codex usage client")?;
     let refresh = RefreshCoordinator::new(
@@ -423,7 +420,7 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let application = Application::new(AccountApplication::new(settings), refresh);
     app.manage(application.clone());
     spawn_dashboard_event_bridge(app.handle().clone(), application.clone());
-    spawn_refresh_scheduler(application, refresh_on_startup);
+    spawn_refresh_scheduler(application, true);
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         apply_platform_material(&window);
     }

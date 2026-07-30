@@ -65,6 +65,30 @@ struct BarrierUsageSource {
     barrier: Arc<Barrier>,
 }
 
+#[derive(Clone)]
+struct MissingAccountSource;
+
+impl UsageRefreshSource for MissingAccountSource {
+    type AuthMaterial = ();
+
+    async fn read_current_auth(
+        &self,
+    ) -> Result<CurrentUsageAuth<Self::AuthMaterial>, UsageAuthReadFailure> {
+        Err(UsageAuthReadFailure::new(
+            None,
+            UsageSourceError::new(UsageSourceErrorCode::AuthPathUnavailable),
+        ))
+    }
+
+    async fn fetch_usage<'a>(
+        &'a self,
+        _auth: &'a Self::AuthMaterial,
+        _captured_at_unix_ms: i64,
+    ) -> Result<WeeklyUsageObservation, UsageSourceError> {
+        unreachable!("missing account never reaches the usage endpoint")
+    }
+}
+
 impl UsageRefreshSource for BarrierUsageSource {
     type AuthMaterial = ();
 
@@ -517,6 +541,60 @@ async fn codex_and_radar_run_concurrently_and_commit_partial_success_independent
         .expect("radar");
     assert_eq!(radar.public_error, Some(RadarSourceErrorCode::Timeout));
     assert_eq!(radar.consecutive_failures, 1);
+    let (dashboard_revision, _, _) = store
+        .public_dashboard_snapshot(1_785_000_000_000)
+        .await
+        .expect("dashboard");
+    assert_eq!(
+        dashboard_revision, 2,
+        "one refresh flight must publish exactly one coherent dashboard revision"
+    );
+}
+
+#[tokio::test]
+async fn a_radar_storage_failure_rolls_back_the_whole_dashboard_revision() {
+    let (directory, store) = configured_store().await;
+    {
+        let connection =
+            tokio_rusqlite::rusqlite::Connection::open(directory.path().join("state.sqlite3"))
+                .expect("open fault injector");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_radar_health
+                 BEFORE INSERT ON radar_source_health
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected Radar failure');
+                 END;",
+            )
+            .expect("install fault injector");
+    }
+    let radar = RadarObservation::new(
+        "2081899343091843463",
+        7_500,
+        1_784_999_000_000,
+        1_785_086_400_000,
+        "Possible additional reset.",
+        "https://x.com/thsottiaux/status/2081899343091843463",
+    )
+    .expect("radar");
+    let coordinator = RefreshCoordinator::new(
+        store.clone(),
+        FakeSource::successful(1_785_000_000_000),
+        FakeClock::new(1_785_000_000_000),
+    )
+    .with_reset_radar_source(BarrierRadarSource {
+        barrier: Arc::new(Barrier::new(1)),
+        result: Ok(RadarSnapshot::new(Some(radar), None)),
+    });
+
+    assert!(coordinator.refresh(RefreshTrigger::Hourly).await.is_err());
+    let (revision, quota, radar) = store
+        .public_dashboard_snapshot(1_785_000_000_000)
+        .await
+        .expect("dashboard");
+    assert_eq!(revision, 1);
+    assert!(quota.is_none());
+    assert!(radar.prediction.is_none());
 }
 
 #[tokio::test]
@@ -561,6 +639,55 @@ async fn radar_success_survives_a_codex_source_failure() {
 }
 
 #[tokio::test]
+async fn radar_refreshes_without_an_account_and_still_obeys_the_hourly_deadline() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    let radar = RadarObservation::new(
+        "2081899343091843463",
+        7_500,
+        1_784_999_000_000,
+        1_785_086_400_000,
+        "Possible additional reset.",
+        "https://x.com/thsottiaux/status/2081899343091843463",
+    )
+    .expect("radar");
+    let coordinator = RefreshCoordinator::new(
+        store.clone(),
+        MissingAccountSource,
+        FakeClock::new(1_785_000_000_000),
+    )
+    .with_reset_radar_source(BarrierRadarSource {
+        barrier: Arc::new(Barrier::new(1)),
+        result: Ok(RadarSnapshot::new(Some(radar), None)),
+    });
+
+    let first = coordinator
+        .refresh(RefreshTrigger::Startup)
+        .await
+        .expect("startup refresh");
+    let early = coordinator
+        .refresh_if_due(RefreshTrigger::Resume, 3_600_000)
+        .await
+        .expect("resume due check");
+
+    assert_eq!(
+        first.outcome,
+        RefreshOutcome::Failed(UsageSourceErrorCode::AuthPathUnavailable)
+    );
+    assert_eq!(early.outcome, RefreshOutcome::NotDue);
+    assert!(
+        store
+            .public_reset_radar(1_785_000_000_000)
+            .await
+            .expect("radar")
+            .prediction
+            .is_some()
+    );
+}
+
+#[tokio::test]
 async fn a_new_announcement_requests_one_account_only_recheck() {
     let (_directory, store) = configured_store().await;
     let source = FakeSource::successful(1_785_000_000_000);
@@ -572,7 +699,8 @@ async fn a_new_announcement_requests_one_account_only_recheck() {
         "https://x.com/thsottiaux/status/2082317452755751098",
     )
     .expect("announcement");
-    let coordinator = RefreshCoordinator::new(store, source, FakeClock::new(1_785_000_000_000))
+    let clock = FakeClock::new(1_785_000_000_000);
+    let coordinator = RefreshCoordinator::new(store, source, clock.clone())
         .with_reset_radar_source(BarrierRadarSource {
             barrier: Arc::new(Barrier::new(1)),
             result: Ok(RadarSnapshot::new(None, Some(announcement))),
@@ -582,13 +710,24 @@ async fn a_new_announcement_requests_one_account_only_recheck() {
         .refresh(RefreshTrigger::Hourly)
         .await
         .expect("first refresh");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "announcement recheck belongs to the next coordinator round"
+    );
+
+    clock.set(1_785_000_000_001);
+    coordinator
+        .refresh_if_due(RefreshTrigger::Resume, 3_600_000)
+        .await
+        .expect("pending announcement recheck");
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 
     coordinator
-        .refresh(RefreshTrigger::Hourly)
+        .refresh_if_due(RefreshTrigger::Resume, 3_600_000)
         .await
-        .expect("same announcement refresh");
-    assert_eq!(calls.load(Ordering::SeqCst), 3);
+        .expect("same announcement is no longer pending");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

@@ -180,12 +180,19 @@ export function App() {
   }
 
   const requestedState = new URLSearchParams(window.location.search).get("state");
+  const previewRadar = new URLSearchParams(window.location.search).get("radar");
   const tone: LedgerTone =
     requestedState !== null && requestedState in ledgerFixtures
       ? (requestedState as LedgerTone)
       : "fresh";
   const fixture = isPreview
-    ? ledgerFixtures[tone]
+    ? {
+        ...ledgerFixtures[tone],
+        radar:
+          previewRadar === "active"
+            ? ledgerFixtures.fresh.radar
+            : ledgerFixtures[tone].radar,
+      }
     : projectLiveFixture(
         state.accountSettings,
         state.liveQuota,
@@ -260,7 +267,10 @@ export function projectLiveFixture(
   radar: PublicResetRadar = emptyRadarState,
 ): (typeof ledgerFixtures)[LedgerTone] {
   if (!account.configured) {
-    return ledgerFixtures.unconfigured;
+    return {
+      ...ledgerFixtures.unconfigured,
+      radar: projectRadarFixture(radar),
+    };
   }
   const base = ledgerFixtures.fresh;
   if (live === null) {
@@ -275,7 +285,7 @@ export function projectLiveFixture(
       resetAbsolute: "",
       resetRelative: "",
       todayLimit: "",
-      radar: projectRadarFixture(radar, now),
+      radar: projectRadarFixture(radar),
       days: [],
     };
   }
@@ -322,7 +332,7 @@ export function projectLiveFixture(
     resetRelative: resetMs === null ? "" : formatRelative(resetMs - now),
     todayAvailable,
     todayLimit,
-    radar: projectRadarFixture(radar, now),
+    radar: projectRadarFixture(radar),
     days,
   };
 }
@@ -337,10 +347,7 @@ export const emptyRadarState: PublicResetRadar = {
   latestAnnouncement: null,
 };
 
-export function projectRadarFixture(
-  radar: PublicResetRadar,
-  now = Date.now(),
-) {
+export function projectRadarFixture(radar: PublicResetRadar) {
   const announcement =
     radar.latestAnnouncement === null
       ? null
@@ -351,12 +358,7 @@ export function projectRadarFixture(
             radar.latestAnnouncement.announcedAtUnixMs,
           ),
         };
-  const prediction =
-    radar.prediction !== null &&
-    radar.prediction.observedAtUnixMs <= now &&
-    now < radar.prediction.expiresAtUnixMs
-      ? radar.prediction
-      : null;
+  const prediction = radar.prediction;
   if (prediction !== null) {
     const health =
       radar.sourceStatus === "fresh"

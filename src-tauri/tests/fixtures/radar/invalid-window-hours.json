@@ -1,0 +1,13 @@
+{
+  "generated_at": "2026-07-28T08:00:00Z",
+  "watch": {
+    "tweet_id": "2081899343091843463",
+    "tweet_url": "https://x.com/thsottiaux/status/2081899343091843463",
+    "text": "Possible additional reset in the next 24 hours",
+    "observed_at": "2026-07-28T07:00:00Z",
+    "expires_at": "2026-07-29T07:00:00Z",
+    "reset_chance_24h": 75,
+    "window_hours": 0
+  },
+  "events": []
+}

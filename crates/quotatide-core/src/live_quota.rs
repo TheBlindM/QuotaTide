@@ -11,8 +11,7 @@ use ts_rs::TS;
 
 use crate::{
     AccountApplication, AccountConfigError, AccountSettingsStore, AuthCandidateValidator,
-    PublicAccountSettings, PublicResetRadar, RadarCommitDisposition, RadarSnapshot,
-    RadarSourceError, ResetRadarSource, SettingsStoreError,
+    PublicAccountSettings, PublicResetRadar, ResetRadarSource, SettingsStoreError,
 };
 
 /// Millionths of one percentage point. `100% == 100_000_000`.
@@ -330,6 +329,11 @@ pub struct RefreshReceipt {
     pub retry_after_ms: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CombinedRefreshDisposition {
+    pub(crate) outcome: RefreshOutcome,
+}
+
 /// Clock seam used by scheduling and deterministic coordinator tests.
 pub trait Clock: Clone + Send + Sync + 'static {
     fn now_unix_ms(&self) -> i64;
@@ -416,7 +420,26 @@ pub struct RefreshCoordinator<S, C> {
 pub struct Application<V, S, C> {
     account: AccountApplication<V>,
     refresh: RefreshCoordinator<S, C>,
+    query: AppQuery,
     scheduler: Arc<SchedulerControl>,
+}
+
+#[derive(Clone)]
+struct AppQuery {
+    store: AccountSettingsStore,
+}
+
+impl AppQuery {
+    const fn new(store: AccountSettingsStore) -> Self {
+        Self { store }
+    }
+
+    async fn dashboard(
+        &self,
+        now_unix_ms: i64,
+    ) -> Result<(u64, Option<PublicLiveQuota>, PublicResetRadar), SettingsStoreError> {
+        self.store.public_dashboard_snapshot(now_unix_ms).await
+    }
 }
 
 struct SchedulerControl {
@@ -434,9 +457,11 @@ where
     #[must_use]
     pub fn new(account: AccountApplication<V>, refresh: RefreshCoordinator<S, C>) -> Self {
         let (resume_sender, _) = watch::channel(0);
+        let query = AppQuery::new(refresh.store.clone());
         Self {
             account,
             refresh,
+            query,
             scheduler: Arc::new(SchedulerControl {
                 cancellation: CancellationToken::new(),
                 resume_sequence: AtomicU64::new(0),
@@ -496,9 +521,8 @@ where
         loop {
             let before = self.refresh.refreshing().await;
             let (dashboard_revision, quota, radar) = self
-                .refresh
-                .store
-                .public_dashboard_snapshot(now_unix_ms)
+                .query
+                .dashboard(now_unix_ms)
                 .await
                 .map_err(AccountConfigError::Storage)?;
             let after = self.refresh.refreshing().await;
@@ -789,9 +813,24 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
         interval_ms: i64,
     ) -> Result<RefreshReceipt, RefreshCoordinatorError> {
         let now = self.clock.now_unix_ms();
-        let current = self.store.public_live_quota(now).await.map_err(map_store)?;
-        if current
-            .is_some_and(|quota| now.saturating_sub(quota.last_attempt_at_unix_ms) < interval_ms)
+        let account_recheck_pending = self
+            .store
+            .radar_account_recheck_pending()
+            .await
+            .map_err(map_store)?;
+        let (_, quota, radar) = self
+            .store
+            .public_dashboard_snapshot(now)
+            .await
+            .map_err(map_store)?;
+        let last_attempt_at_unix_ms = quota
+            .map(|quota| quota.last_attempt_at_unix_ms)
+            .into_iter()
+            .chain(radar.last_attempt_at_unix_ms)
+            .max();
+        if !account_recheck_pending
+            && last_attempt_at_unix_ms
+                .is_some_and(|attempt| now.saturating_sub(attempt) < interval_ms)
         {
             return Ok(RefreshReceipt {
                 attempted_at_unix_ms: now,
@@ -818,90 +857,16 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
                 None,
             )
         };
-        let (usage_commit, radar_commit) = tokio::join!(
-            self.commit_usage_attempt(attempt, attempted_at_unix_ms),
-            self.commit_radar_attempt(radar_attempt, attempted_at_unix_ms),
-        );
-        let outcome = usage_commit?;
-        let radar_disposition = radar_commit?;
-
-        if radar_disposition.is_some_and(|disposition| disposition.new_announcement) {
-            // A third-party announcement only asks the account source to
-            // re-check its own facts. It never creates or closes an epoch.
-            let recheck_at_unix_ms = attempted_at_unix_ms.saturating_add(1);
-            let recheck = collect_current_usage(&self.source, recheck_at_unix_ms).await;
-            let _ = self
-                .commit_usage_attempt(recheck, recheck_at_unix_ms)
-                .await?;
-        }
+        let disposition = self
+            .store
+            .record_refresh_attempt(attempt, radar_attempt, attempted_at_unix_ms)
+            .await
+            .map_err(map_store)?;
         Ok(RefreshReceipt {
             attempted_at_unix_ms,
-            outcome,
+            outcome: disposition.outcome,
             retry_after_ms: 0,
         })
-    }
-
-    async fn commit_usage_attempt(
-        &self,
-        attempt: UsageRefreshAttempt,
-        attempted_at_unix_ms: i64,
-    ) -> Result<RefreshOutcome, RefreshCoordinatorError> {
-        let outcome = match attempt.result {
-            Ok(observation) => {
-                let Some(binding) = attempt.binding.as_ref() else {
-                    return Ok(RefreshOutcome::Superseded);
-                };
-                match self
-                    .store
-                    .record_usage_success(binding, observation)
-                    .await
-                    .map_err(map_store)?
-                {
-                    crate::UsageCommitDisposition::Committed => RefreshOutcome::Updated,
-                    crate::UsageCommitDisposition::Superseded => RefreshOutcome::Superseded,
-                }
-            }
-            Err(error) => {
-                let code = error.code();
-                if let Some(binding) = attempt.binding.as_ref()
-                    && self
-                        .store
-                        .record_usage_failure(binding, attempted_at_unix_ms, code)
-                        .await
-                        .map_err(map_store)?
-                        == crate::UsageCommitDisposition::Superseded
-                {
-                    return Ok(RefreshOutcome::Superseded);
-                }
-                RefreshOutcome::Failed(code)
-            }
-        };
-        Ok(outcome)
-    }
-
-    async fn commit_radar_attempt(
-        &self,
-        attempt: Option<Result<RadarSnapshot, RadarSourceError>>,
-        attempted_at_unix_ms: i64,
-    ) -> Result<Option<RadarCommitDisposition>, RefreshCoordinatorError> {
-        let Some(attempt) = attempt else {
-            return Ok(None);
-        };
-        match attempt {
-            Ok(snapshot) => self
-                .store
-                .record_radar_success(attempted_at_unix_ms, snapshot)
-                .await
-                .map(Some)
-                .map_err(map_store),
-            Err(error) => {
-                self.store
-                    .record_radar_failure(attempted_at_unix_ms, error.code())
-                    .await
-                    .map_err(map_store)?;
-                Ok(None)
-            }
-        }
     }
 
     async fn with_trigger_retry_after(

@@ -294,7 +294,7 @@ describe("QuotaTide tray app", () => {
     );
   });
 
-  it("projects valid, expired, and failed Radar states without inventing a probability", () => {
+  it("formats Rust-projected Radar states without reimplementing expiry policy", () => {
     const active = {
       lastAttemptAtUnixMs: 1_785_000_000_000,
       lastSuccessAtUnixMs: 1_785_000_000_000,
@@ -313,32 +313,63 @@ describe("QuotaTide tray app", () => {
       latestAnnouncement: null,
     };
 
-    expect(projectRadarFixture(active, 1_785_000_000_000)).toMatchObject({
+    expect(projectRadarFixture(active)).toMatchObject({
       kind: "active",
       chance: ">70%",
       sourceUrl:
         "https://x.com/thsottiaux/status/2081899343091843463",
     });
     expect(
-      projectRadarFixture(active, active.prediction.expiresAtUnixMs),
+      projectRadarFixture(active),
     ).toMatchObject({
-      kind: "empty",
-      message: "当前无有效预测",
+      kind: "active",
+      chance: ">70%",
     });
     expect(
-      projectRadarFixture(
-        {
+      projectRadarFixture({
           ...active,
           sourceStatus: "stale_after_failure",
           publicError: "timeout",
           prediction: null,
           consecutiveFailures: 1,
-        },
-        1_785_000_000_000,
-      ),
+        }),
     ).toMatchObject({
       kind: "empty",
       message: "预测数据暂不可用",
     });
+  });
+
+  it("keeps Radar visible while the Codex account is unconfigured", () => {
+    const fixture = projectLiveFixture(
+      {
+        settingsRevision: 0,
+        configured: false,
+        pathSummary: null,
+        accountLabel: null,
+        quotaPolicy,
+      },
+      null,
+      1_785_000_000_000,
+      {
+        lastAttemptAtUnixMs: 1_785_000_000_000,
+        lastSuccessAtUnixMs: 1_785_000_000_000,
+        consecutiveFailures: 0,
+        sourceStatus: "fresh",
+        publicError: null,
+        prediction: {
+          chanceBasisPoints: 7_500,
+          displayChance: ">70%",
+          observedAtUnixMs: 1_784_999_000_000,
+          expiresAtUnixMs: 1_785_086_400_000,
+          explanation: "第三方预测",
+          sourceUrl:
+            "https://x.com/thsottiaux/status/2081899343091843463",
+        },
+        latestAnnouncement: null,
+      },
+    );
+
+    expect(fixture.tone).toBe("unconfigured");
+    expect(fixture.radar).toMatchObject({ kind: "active", chance: ">70%" });
   });
 });

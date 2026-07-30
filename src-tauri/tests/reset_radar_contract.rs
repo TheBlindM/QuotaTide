@@ -49,6 +49,8 @@ fn malformed_probability_time_or_source_link_is_a_contract_failure() {
         "out-of-range.json",
         "invalid-time.json",
         "unsafe-source.json",
+        "missing-window-hours.json",
+        "invalid-window-hours.json",
     ] {
         let error = decode_reset_radar(&fixture(name), ACTIVE_NOW_MS).expect_err(name);
         assert_eq!(error.code(), RadarSourceErrorCode::ContractViolation);

@@ -21,8 +21,8 @@ fn valid_observation(chance_basis_points: u16) -> RadarObservation {
 #[test]
 fn probability_buckets_match_the_source_site_without_false_precision() {
     let cases = [
-        (0, "<10%"),
-        (999, "<10%"),
+        (0, "可能暗示额外重置"),
+        (999, "可能暗示额外重置"),
         (1_000, ">10%"),
         (6_999, ">60%"),
         (7_000, ">70%"),
@@ -161,4 +161,35 @@ async fn a_failure_keeps_only_an_unexpired_last_known_good_prediction() {
         .await
         .expect("expired radar");
     assert!(expired.prediction.is_none());
+}
+
+#[tokio::test]
+async fn a_changed_probability_at_the_same_source_timestamp_becomes_current() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .record_radar_success(
+            NOW_MS,
+            RadarSnapshot::new(Some(valid_observation(6_500)), None),
+        )
+        .await
+        .expect("first probability");
+    store
+        .record_radar_success(
+            NOW_MS + 1,
+            RadarSnapshot::new(Some(valid_observation(7_500)), None),
+        )
+        .await
+        .expect("changed probability");
+
+    let current = store
+        .public_reset_radar(NOW_MS + 1)
+        .await
+        .expect("current radar")
+        .prediction
+        .expect("prediction");
+    assert_eq!(current.chance_basis_points, 7_500);
+    assert_eq!(current.display_chance, ">70%");
 }

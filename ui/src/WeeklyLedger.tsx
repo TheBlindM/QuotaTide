@@ -189,6 +189,49 @@ const tonePresentations: Record<ConfiguredTone, TonePresentation> = {
   },
 };
 
+function RadarCard({ radar }: { radar: RadarFixture | null }) {
+  if (radar === null) {
+    return null;
+  }
+  return (
+    <section class="radar-card" aria-label="重置雷达">
+      <div class="radar-card__header">
+        <div>
+          <span>重置雷达 · 第三方预测</span>
+          <small>第三方 AI 估算 · 非 OpenAI 承诺</small>
+        </div>
+        {radar.kind === "active" ? <strong>{radar.chance}</strong> : null}
+      </div>
+      {radar.kind === "active" ? (
+        <div class="radar-card__body">
+          <p>{radar.explanation}</p>
+          <small>
+            {radar.timing} · {radar.health}
+          </small>
+          <a href={radar.sourceUrl} rel="noreferrer" target="_blank">
+            查看原始来源
+          </a>
+        </div>
+      ) : (
+        <p class="radar-card__empty">{radar.message}</p>
+      )}
+      {radar.announcement === null ? null : (
+        <div class="radar-card__announcement">
+          <span>最近一次全局额外重置公告</span>
+          <p>{radar.announcement.text}</p>
+          <a
+            href={radar.announcement.sourceUrl}
+            rel="noreferrer"
+            target="_blank"
+          >
+            {radar.announcement.announcedAt} · 查看公告
+          </a>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function WeeklyLedger({
   fixture,
   onOpenSettings,
@@ -205,17 +248,20 @@ export function WeeklyLedger({
             <p>{fixture.sourceHealth}</p>
           </div>
         </header>
-        <main class="empty-state">
-          <span class="empty-state__mark" aria-hidden="true">
-            ◌
-          </span>
-          <h2>连接 Codex 账号</h2>
-          <p>
-            选择 Codex 自动维护的 auth.json。QuotaTide 仅在本机读取，不会修改或上传令牌。
-          </p>
-          <button type="button" onClick={onOpenSettings}>
-            选择 auth.json
-          </button>
+        <main class="ledger-content unconfigured-content">
+          <section class="empty-state">
+            <span class="empty-state__mark" aria-hidden="true">
+              ◌
+            </span>
+            <h2>连接 Codex 账号</h2>
+            <p>
+              选择 Codex 自动维护的 auth.json。QuotaTide 仅在本机读取，不会修改或上传令牌。
+            </p>
+            <button type="button" onClick={onOpenSettings}>
+              选择 auth.json
+            </button>
+          </section>
+          <RadarCard radar={fixture.radar} />
         </main>
         <footer class="ledger-footer ledger-footer--empty">
           <span>{fixture.lastSuccess}</span>
@@ -349,49 +395,7 @@ export function WeeklyLedger({
           </table>
         </section>
 
-        {fixture.radar === null ? null : (
-          <section class="radar-card" aria-label="重置雷达">
-            <div class="radar-card__header">
-              <div>
-                <span>重置雷达 · 第三方预测</span>
-                <small>第三方 AI 估算 · 非 OpenAI 承诺</small>
-              </div>
-              {fixture.radar.kind === "active" ? (
-                <strong>{fixture.radar.chance}</strong>
-              ) : null}
-            </div>
-            {fixture.radar.kind === "active" ? (
-              <div class="radar-card__body">
-                <p>{fixture.radar.explanation}</p>
-                <small>
-                  {fixture.radar.timing} · {fixture.radar.health}
-                </small>
-                <a
-                  href={fixture.radar.sourceUrl}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  查看原始来源
-                </a>
-              </div>
-            ) : (
-              <p class="radar-card__empty">{fixture.radar.message}</p>
-            )}
-            {fixture.radar.announcement === null ? null : (
-              <div class="radar-card__announcement">
-                <span>最近一次全局额外重置公告</span>
-                <p>{fixture.radar.announcement.text}</p>
-                <a
-                  href={fixture.radar.announcement.sourceUrl}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  {fixture.radar.announcement.announcedAt} · 查看公告
-                </a>
-              </div>
-            )}
-          </section>
-        )}
+        <RadarCard radar={fixture.radar} />
       </main>
 
       <footer class="ledger-footer">

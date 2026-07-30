@@ -6,7 +6,8 @@
     "text": "Invalid timestamp.",
     "observed_at": "not-a-time",
     "expires_at": "2026-07-29T00:27:37.000Z",
-    "reset_chance_24h": 75
+    "reset_chance_24h": 75,
+    "window_hours": 24
   },
   "events": []
 }

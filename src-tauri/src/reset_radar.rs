@@ -104,6 +104,7 @@ struct RawWatch {
     observed_at: String,
     expires_at: String,
     reset_chance_24h: f64,
+    window_hours: f64,
 }
 
 #[derive(Deserialize)]
@@ -124,8 +125,11 @@ pub fn decode_reset_radar(
     bytes: &[u8],
     now_unix_ms: i64,
 ) -> Result<RadarSnapshot, RadarSourceError> {
-    let document: RadarDocument = serde_json::from_slice(bytes).map_err(|source| {
+    let raw: serde_json::Value = serde_json::from_slice(bytes).map_err(|source| {
         RadarSourceError::with_source(RadarSourceErrorCode::InvalidJson, source)
+    })?;
+    let document: RadarDocument = serde_json::from_value(raw).map_err(|source| {
+        RadarSourceError::with_source(RadarSourceErrorCode::ContractViolation, source)
     })?;
     let observation = document
         .watch
@@ -146,7 +150,11 @@ fn normalize_watch(
     watch: RawWatch,
     now_unix_ms: i64,
 ) -> Result<Option<RadarObservation>, RadarSourceError> {
-    if !watch.reset_chance_24h.is_finite() || !(0.0..=100.0).contains(&watch.reset_chance_24h) {
+    if !watch.window_hours.is_finite()
+        || watch.window_hours <= 0.0
+        || !watch.reset_chance_24h.is_finite()
+        || !(0.0..=100.0).contains(&watch.reset_chance_24h)
+    {
         return Err(contract_failure());
     }
     let chance_basis_points = (watch.reset_chance_24h * 100.0).round();
