@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AlertEventKind } from "./bindings/AlertEventKind";
 import type { PublicSettings } from "./bindings/PublicSettings";
 import type { SettingsDraft } from "./bindings/SettingsDraft";
+import { I18nProvider } from "./i18n-context";
 import { PrivacyPanel, TrayApp } from "./TrayApp";
 import { ledgerFixtures } from "./WeeklyLedger";
 
@@ -52,6 +53,8 @@ const atomicSettings: PublicSettings = {
   quotaPolicy,
   alertPreferences,
   autostartEnabled: false,
+  interfaceLocale: "system",
+  formatLocale: "zh-CN",
   smtp: {
     enabled: false,
     host: "",
@@ -116,6 +119,8 @@ describe("tray-window navigation", () => {
             : preference,
         ),
         autostartEnabled: true,
+        interfaceLocale: "system",
+        formatLocale: "en",
         smtp: {
           enabled: false,
           host: "",
@@ -429,6 +434,60 @@ describe("tray-window navigation", () => {
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onHide).toHaveBeenCalledOnce();
+  });
+
+  it("implements the standard arrow, Home, and End tab keyboard model", () => {
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    const account = screen.getByRole("tab", { name: "账号" });
+    account.focus();
+
+    fireEvent.keyDown(account, { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "额度" })).toHaveFocus();
+    expect(screen.getByRole("tabpanel", { name: "额度" })).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByRole("tab", { name: "额度" }), {
+      key: "End",
+    });
+    expect(screen.getByRole("tab", { name: "隐私" })).toHaveFocus();
+
+    fireEvent.keyDown(screen.getByRole("tab", { name: "隐私" }), {
+      key: "Home",
+    });
+    expect(screen.getByRole("tab", { name: "账号" })).toHaveFocus();
+  });
+
+  it("renders the complete core workflow in English", () => {
+    render(
+      <I18nProvider preference="en">
+        <TrayApp
+          fixture={ledgerFixtures.fresh}
+          settings={{ ...atomicSettings, interfaceLocale: "en" }}
+          onHide={vi.fn()}
+          onRefresh={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(
+      screen.getByRole("table", { name: /Current seven-day window/u }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Weekly remaining")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
+    expect(screen.getByRole("heading", { name: "Settings" })).toHaveFocus();
+    expect(
+      screen.getByRole("combobox", { name: "Interface language" }),
+    ).toHaveValue("en");
+    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }));
+    expect(
+      screen.getByRole("heading", { name: "Diagnostics and deletion" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps data visible and coalesces refreshes while one is running", () => {

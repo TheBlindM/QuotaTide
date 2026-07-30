@@ -303,7 +303,7 @@ async fn newer_schema_is_rejected_without_downgrade() {
         let connection =
             tokio_rusqlite::rusqlite::Connection::open(&database).expect("seed database");
         connection
-            .pragma_update(None, "user_version", 11)
+            .pragma_update(None, "user_version", 12)
             .expect("seed newer schema");
     }
     let before = std::fs::read(&database).expect("snapshot newer database");
@@ -323,7 +323,7 @@ async fn newer_schema_is_rejected_without_downgrade() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read schema version");
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
 }
 
 #[tokio::test]
@@ -376,8 +376,8 @@ async fn version_one_settings_are_preserved_while_live_quota_and_ledger_tables_a
         })
         .expect("migration count");
 
-    assert_eq!(version, 10);
-    assert_eq!(migration_count, 10);
+    assert_eq!(version, 11);
+    assert_eq!(migration_count, 11);
     assert_eq!(quota_table, "usage_observations");
     assert_eq!(ledger_table, "daily_ledgers");
     let backups = std::fs::read_dir(directory.path().join("backups"))
@@ -585,7 +585,7 @@ async fn populated_version_three_is_upgraded_without_rewriting_its_checksum() {
     assert_eq!(
         facts,
         (
-            10,
+            11,
             2,
             "quotatide-v3-current-seven-day-ledger".to_owned(),
             "quotatide-v4-immutable-observations-iana-policy".to_owned(),

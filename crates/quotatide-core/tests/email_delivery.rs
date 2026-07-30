@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use quotatide_core::{
     AccountSettingsStore, AlertChannel, AlertEventKind, AlertPreferenceDraft,
     AtomicSettingsManager, AuthCandidateValidator, AutostartControl, CredentialVault,
-    EmailDeliveryWorker, MailTransport, PublicError, QuotaPolicyDraft, QuotaUnits,
-    RefreshAccountBinding, SafeMail, SecretUpdate, SettingsDraft, SmtpConnection,
+    EmailDeliveryWorker, InterfaceLocalePreference, MailTransport, PublicError, QuotaPolicyDraft,
+    QuotaUnits, RefreshAccountBinding, SafeMail, SecretUpdate, SettingsDraft, SmtpConnection,
     SmtpRecipientDraft, SmtpSettingsDraft, SmtpTlsMode, ValidatedAccountCandidate,
     WeeklyUsageObservation,
 };
@@ -158,6 +158,8 @@ fn settings_draft() -> SettingsDraft {
         },
         alert_preferences: preferences(),
         autostart_enabled: false,
+        interface_locale: InterfaceLocalePreference::System,
+        format_locale: "en-US".to_owned(),
         smtp: SmtpSettingsDraft {
             enabled: true,
             host: "smtp.example.com".to_owned(),

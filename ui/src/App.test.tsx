@@ -18,6 +18,7 @@ import {
   openLocalDataDirectory,
   retryLocalRecovery,
 } from "./api/local-data";
+import { setAccessibleSurface } from "./api/tray-shell";
 
 const { quotaPolicy, appAlertPreferences } = vi.hoisted(() => {
   const alertKinds = [
@@ -91,6 +92,8 @@ vi.mock("./api/account-settings", () => ({
     quotaPolicy,
     alertPreferences: appAlertPreferences,
     autostartEnabled: false,
+    interfaceLocale: "zh-CN",
+    formatLocale: "zh-CN",
     smtp: {
       enabled: false,
       host: "",
@@ -175,6 +178,12 @@ vi.mock("./api/local-data", () => ({
   clearAllLocalData: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("./api/tray-shell", () => ({
+  hideMainWindow: vi.fn().mockResolvedValue(undefined),
+  requestManualRefresh: vi.fn().mockResolvedValue(0),
+  setAccessibleSurface: vi.fn().mockResolvedValue(true),
+}));
+
 afterEach(() => {
   cleanup();
   vi.mocked(getStartupState).mockResolvedValue({
@@ -186,6 +195,7 @@ afterEach(() => {
   delete document.documentElement.dataset.theme;
   delete document.documentElement.dataset.surface;
   delete document.documentElement.dataset.platformFallback;
+  Reflect.deleteProperty(window, "matchMedia");
 });
 
 describe("QuotaTide tray app", () => {
@@ -248,6 +258,8 @@ describe("QuotaTide tray app", () => {
       quotaPolicy,
       alertPreferences: appAlertPreferences,
       autostartEnabled: false,
+      interfaceLocale: "zh-CN",
+      formatLocale: "zh-CN",
       smtp: {
         enabled: false,
         host: "",
@@ -313,6 +325,53 @@ describe("QuotaTide tray app", () => {
     render(<App />);
 
     expect(document.documentElement).toHaveAttribute("data-surface", "opaque");
+  });
+
+  it("keeps the native window material synchronized with accessibility display changes", async () => {
+    const listeners = new Set<() => void>();
+    const queries = [
+      { matches: false },
+      { matches: false },
+      { matches: false },
+    ].map((state) => ({
+      ...state,
+      media: "",
+      onchange: null,
+      addEventListener: (_name: string, listener: () => void) =>
+        listeners.add(listener),
+      removeEventListener: (_name: string, listener: () => void) =>
+        listeners.delete(listener),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    const matchMedia = vi
+      .fn()
+      .mockImplementation(() => queries.shift() ?? queries[0]);
+    window.matchMedia = matchMedia;
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(setAccessibleSurface).toHaveBeenCalledWith(false);
+    });
+    const reducedTransparency = matchMedia.mock.results[0]
+      ?.value as MediaQueryList;
+    Object.defineProperty(reducedTransparency, "matches", {
+      configurable: true,
+      value: true,
+    });
+    for (const listener of listeners) {
+      listener();
+    }
+
+    await waitFor(() => {
+      expect(setAccessibleSurface).toHaveBeenLastCalledWith(true);
+    });
+    expect(document.documentElement).toHaveAttribute(
+      "data-surface",
+      "opaque",
+    );
   });
 
   it("projects a safe current error alongside the last successful quota", () => {

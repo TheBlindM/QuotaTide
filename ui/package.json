@@ -25,6 +25,7 @@
     "@testing-library/jest-dom": "7.0.0",
     "@testing-library/preact": "3.2.4",
     "@types/node": "26.1.2",
+    "axe-core": "^4.10.3",
     "eslint": "10.8.0",
     "jsdom": "30.0.0",
     "typescript": "6.0.3",

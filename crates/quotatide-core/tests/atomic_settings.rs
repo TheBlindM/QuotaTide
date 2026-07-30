@@ -6,9 +6,10 @@ use std::sync::{Arc, Mutex};
 
 use quotatide_core::{
     AccountSettingsStore, AlertChannel, AlertEventKind, AlertPreferenceDraft,
-    AtomicSettingsManager, AuthCandidateValidator, AutostartControl, CredentialVault, PublicError,
-    QuotaPolicyDraft, SecretUpdate, SettingsDraft, SmtpCredentialStatus, SmtpRecipientDraft,
-    SmtpSettingsDraft, SmtpTlsMode, ValidatedAccountCandidate,
+    AtomicSettingsManager, AuthCandidateValidator, AutostartControl, CredentialVault,
+    InterfaceLocalePreference, PublicError, QuotaPolicyDraft, SecretUpdate, SettingsDraft,
+    SmtpCredentialStatus, SmtpRecipientDraft, SmtpSettingsDraft, SmtpTlsMode,
+    ValidatedAccountCandidate,
 };
 use secrecy::{ExposeSecret as _, SecretString};
 use tempfile::tempdir;
@@ -200,6 +201,8 @@ fn draft(revision: u32, autostart_enabled: bool) -> SettingsDraft {
         },
         alert_preferences,
         autostart_enabled,
+        interface_locale: InterfaceLocalePreference::System,
+        format_locale: "en-US".to_owned(),
         smtp: SmtpSettingsDraft {
             enabled: false,
             host: String::new(),
@@ -252,6 +255,8 @@ async fn defaults_expose_every_non_secret_setting_and_channel_preference() {
     assert_eq!(settings.settings_revision, 0);
     assert!(!settings.configured);
     assert!(!settings.autostart_enabled);
+    assert_eq!(settings.interface_locale, InterfaceLocalePreference::System);
+    assert_eq!(settings.format_locale, "en");
     assert_eq!(settings.alert_preferences.len(), 14);
     assert!(
         settings.alert_preferences.iter().all(|preference| {
@@ -277,6 +282,8 @@ async fn one_save_commits_account_policy_preferences_and_confirmed_autostart() {
     assert_eq!(settings.settings_revision, 1);
     assert!(settings.configured);
     assert!(settings.autostart_enabled);
+    assert_eq!(settings.interface_locale, InterfaceLocalePreference::System);
+    assert_eq!(settings.format_locale, "en-US");
     assert!(autostart.enabled.load(Ordering::SeqCst));
     assert_eq!(autostart.changes.load(Ordering::SeqCst), 1);
     assert!(settings.alert_preferences.iter().any(|preference| {

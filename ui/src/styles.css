@@ -34,6 +34,12 @@
   color-scheme: dark;
 }
 
+:root[data-font-scale="2"] #root {
+  width: 210px;
+  height: 340px;
+  zoom: 2;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -48,7 +54,7 @@ body,
 }
 
 body {
-  min-width: 320px;
+  min-width: 0;
   min-height: 540px;
   color: var(--ink);
   background: transparent;
@@ -57,7 +63,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   color: inherit;
   font: inherit;
 }
@@ -88,7 +95,8 @@ button:disabled {
 
 button:focus-visible,
 a:focus-visible,
-input:focus-visible {
+input:focus-visible,
+select:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--accent) 48%, transparent);
   outline-offset: 2px;
 }
@@ -99,6 +107,7 @@ input:focus-visible {
   display: grid;
   width: 100%;
   height: 100%;
+  container-type: inline-size;
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
   border: 1px solid var(--line-strong);
@@ -688,7 +697,7 @@ progress::-moz-progress-bar {
 }
 
 .settings-tabs button {
-  min-height: 36px;
+  min-height: 44px;
   border-radius: 10px;
   color: var(--muted);
   font-size: 11px;
@@ -724,10 +733,11 @@ progress::-moz-progress-bar {
 .settings-content input[type="email"],
 .settings-content input[type="password"],
 .settings-content .smtp-settings input[type="number"],
-.settings-content .smtp-settings select {
+.settings-content .smtp-settings select,
+.settings-row select {
   width: 100%;
-  height: 42px;
-  padding: 0 11px;
+  min-height: 44px;
+  padding: 10px 11px;
   border: 1px solid var(--line-strong);
   border-radius: 10px;
   background: var(--glass-strong);
@@ -834,8 +844,8 @@ progress::-moz-progress-bar {
 
 .quota-input input {
   width: 100%;
-  height: 38px;
-  padding: 0 22px 0 8px;
+  min-height: 44px;
+  padding: 10px 22px 10px 8px;
   border: 1px solid var(--line);
   border-radius: 11px;
   outline: none;
@@ -1026,7 +1036,7 @@ progress::-moz-progress-bar {
 
 .notification-status button {
   min-width: auto;
-  min-height: 28px;
+  min-height: 44px;
   padding: 0 9px;
   border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
   border-radius: 9px;
@@ -1129,7 +1139,7 @@ progress::-moz-progress-bar {
 .smtp-recipient button,
 .smtp-actions button {
   min-width: auto;
-  min-height: 30px;
+  min-height: 44px;
   padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -1419,6 +1429,14 @@ progress::-moz-progress-bar {
   -webkit-backdrop-filter: blur(18px);
 }
 
+.settings-view p,
+.settings-view small,
+.settings-view label,
+.weekly-ledger p,
+.weekly-ledger small {
+  overflow-wrap: anywhere;
+}
+
 :root[data-platform-fallback="true"] body::before {
   position: fixed;
   z-index: 20;
@@ -1430,7 +1448,7 @@ progress::-moz-progress-bar {
   border-radius: 10px;
   background: var(--solid);
   color: var(--muted);
-  content: "系统毛玻璃不可用，已切换为不透明模式";
+  content: attr(data-platform-fallback-message);
   font-size: 10px;
   text-align: center;
 }
@@ -1446,6 +1464,135 @@ progress::-moz-progress-bar {
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     color-scheme: dark;
+  }
+}
+
+@container (max-width: 280px) {
+  .ledger-header,
+  .settings-header {
+    min-height: 68px;
+    padding: 10px 8px 9px 10px;
+  }
+
+  .ledger-header > div:first-child,
+  .settings-header > div {
+    min-width: 0;
+  }
+
+  .ledger-header h1,
+  .settings-header h1 {
+    overflow: hidden;
+    font-size: 18px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ledger-header p,
+  .settings-header p {
+    overflow: hidden;
+    font-size: 9px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ledger-content,
+  .settings-content {
+    padding: 8px;
+  }
+
+  .ledger-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .ledger-summary > div {
+    min-height: 68px;
+    padding: 9px 11px;
+  }
+
+  .ledger-summary > div + div {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .ledger-window {
+    overflow-x: auto;
+  }
+
+  .ledger-window table {
+    min-width: 260px;
+  }
+
+  .radar-card__header,
+  .radar-card__body {
+    align-items: start;
+    grid-template-columns: 1fr;
+  }
+
+  .radar-card__header {
+    display: grid;
+  }
+
+  .radar-card__body p {
+    grid-column: auto;
+  }
+
+  .ledger-footer {
+    padding-inline: 5px;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .ledger-footer button {
+    min-width: 0;
+    padding-inline: 6px;
+  }
+
+  .ledger-footer > span {
+    display: none;
+  }
+
+  .settings-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-content section {
+    padding: 10px;
+  }
+
+  .quota-day-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-row:has(select) {
+    align-items: stretch;
+    flex-direction: column;
+    padding-block: 8px;
+  }
+
+  .settings-footer {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-footer > span {
+    display: none;
+  }
+
+  .settings-footer .settings-save {
+    width: 100%;
+  }
+
+  .smtp-grid,
+  .smtp-grid--sender,
+  .smtp-recipient,
+  .alert-row {
+    grid-template-columns: 1fr;
+  }
+
+  .smtp-recipient button {
+    width: 100%;
+  }
+
+  .alert-row input[type="checkbox"] {
+    justify-self: start;
   }
 }
 

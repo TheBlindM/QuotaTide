@@ -7,7 +7,7 @@ use secrecy::SecretString;
 use crate::account_settings::{
     AccountSettingsStore, ClaimedEmailDelivery, CredentialVault, SettingsStoreError,
 };
-use crate::{AlertEventKind, DeliverySweep, SmtpTlsMode};
+use crate::{AlertEventKind, DeliverySweep, InterfaceLocalePreference, SmtpTlsMode};
 
 /// Stable, secret-free result categories for the explicit SMTP test action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -203,12 +203,22 @@ impl<V: CredentialVault, M: MailTransport> EmailDeliveryWorker<V, M> {
             .map_err(|_| TestEmailError::CredentialUnavailable)?
             .ok_or(TestEmailError::CredentialMissing)?;
         let mut sent = 0_u32;
+        let (subject, body) = match configuration.interface_locale {
+            InterfaceLocalePreference::ZhCn => (
+                "QuotaTide：测试邮件",
+                "这是一封 QuotaTide 测试邮件。SMTP 与收件地址配置可用。",
+            ),
+            InterfaceLocalePreference::En | InterfaceLocalePreference::System => (
+                "QuotaTide: Test email",
+                "This is a QuotaTide test email. Your SMTP and recipient settings work.",
+            ),
+        };
         for (index, recipient) in configuration.recipients.into_iter().enumerate() {
             let mail = SafeMail {
                 delivery_key: format!("smtp-test-{}-{index}", unix_time_ms()),
                 recipient,
-                subject: "QuotaTide：测试邮件".to_owned(),
-                body: "这是一封 QuotaTide 测试邮件。SMTP 与收件地址配置可用。".to_owned(),
+                subject: subject.to_owned(),
+                body: body.to_owned(),
             };
             self.transport
                 .send(configuration.connection.clone(), password.clone(), mail)
@@ -221,34 +231,68 @@ impl<V: CredentialVault, M: MailTransport> EmailDeliveryWorker<V, M> {
 }
 
 fn render_mail(delivery: &ClaimedEmailDelivery) -> SafeMail {
-    let (subject, body) = match delivery.event_kind {
-        AlertEventKind::Daily80 => (
-            "QuotaTide：今日额度接近上限",
-            "今日额度已达到动态上限的 80%。请打开 QuotaTide 查看当前七日窗口。",
-        ),
-        AlertEventKind::Daily100 => (
-            "QuotaTide：今日额度已用完",
-            "今日额度已达到动态上限。请打开 QuotaTide 查看完整记录。",
-        ),
-        AlertEventKind::WeeklyRemaining20 => (
-            "QuotaTide：本周额度仅剩 20%",
-            "当前七日窗口剩余额度已进入注意区间。",
-        ),
-        AlertEventKind::WeeklyRemaining10 => {
-            ("QuotaTide：本周额度仅剩 10%", "当前七日窗口已接近耗尽。")
+    let (subject, body) = match delivery.interface_locale {
+        InterfaceLocalePreference::ZhCn => match delivery.event_kind {
+            AlertEventKind::Daily80 => (
+                "QuotaTide：今日额度接近上限",
+                "今日额度已达到动态上限的 80%。请打开 QuotaTide 查看当前七日窗口。",
+            ),
+            AlertEventKind::Daily100 => (
+                "QuotaTide：今日额度已用完",
+                "今日额度已达到动态上限。请打开 QuotaTide 查看完整记录。",
+            ),
+            AlertEventKind::WeeklyRemaining20 => (
+                "QuotaTide：本周额度仅剩 20%",
+                "当前七日窗口剩余额度已进入注意区间。",
+            ),
+            AlertEventKind::WeeklyRemaining10 => {
+                ("QuotaTide：本周额度仅剩 10%", "当前七日窗口已接近耗尽。")
+            }
+            AlertEventKind::RadarChance70 => (
+                "QuotaTide：Reset Radar 预测提醒",
+                "第三方 Reset Radar 的 24 小时重置机会已达到 70% 档位；这不是 OpenAI 承诺。",
+            ),
+            AlertEventKind::QuotaResetConfirmed => (
+                "QuotaTide：额度重置已确认",
+                "本机连续观测已确认当前账号进入新的额度窗口。",
+            ),
+            AlertEventKind::SourceFailures3 => (
+                "QuotaTide：额度来源连续失败",
+                "额度或 Reset Radar 来源已连续采集失败 3 次，请打开 QuotaTide 查看安全状态。",
+            ),
+        },
+        InterfaceLocalePreference::En | InterfaceLocalePreference::System => {
+            match delivery.event_kind {
+                AlertEventKind::Daily80 => (
+                    "QuotaTide: Today's quota is close to its limit",
+                    "Today's usage has reached 80% of its adjusted limit. Open QuotaTide to view the current seven-day window.",
+                ),
+                AlertEventKind::Daily100 => (
+                    "QuotaTide: Today's quota is exhausted",
+                    "Today's usage has reached its adjusted limit. Open QuotaTide to view the full record.",
+                ),
+                AlertEventKind::WeeklyRemaining20 => (
+                    "QuotaTide: 20% weekly quota remaining",
+                    "The current seven-day window has entered the caution range.",
+                ),
+                AlertEventKind::WeeklyRemaining10 => (
+                    "QuotaTide: 10% weekly quota remaining",
+                    "The current seven-day window is nearly exhausted.",
+                ),
+                AlertEventKind::RadarChance70 => (
+                    "QuotaTide: Reset Radar prediction",
+                    "The third-party Reset Radar's 24-hour reset chance has reached the 70% tier; this is not an OpenAI commitment.",
+                ),
+                AlertEventKind::QuotaResetConfirmed => (
+                    "QuotaTide: Quota reset confirmed",
+                    "Consecutive local observations confirm that this account entered a new quota window.",
+                ),
+                AlertEventKind::SourceFailures3 => (
+                    "QuotaTide: Quota source keeps failing",
+                    "A quota or Reset Radar source has failed three consecutive refreshes. Open QuotaTide to review its safe status.",
+                ),
+            }
         }
-        AlertEventKind::RadarChance70 => (
-            "QuotaTide：Reset Radar 预测提醒",
-            "第三方 Reset Radar 的 24 小时重置机会已达到 70% 档位；这不是 OpenAI 承诺。",
-        ),
-        AlertEventKind::QuotaResetConfirmed => (
-            "QuotaTide：额度重置已确认",
-            "本机连续观测已确认当前账号进入新的额度窗口。",
-        ),
-        AlertEventKind::SourceFailures3 => (
-            "QuotaTide：额度来源连续失败",
-            "额度或 Reset Radar 来源已连续采集失败 3 次，请打开 QuotaTide 查看安全状态。",
-        ),
     };
     SafeMail {
         delivery_key: delivery.delivery_key.clone(),

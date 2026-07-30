@@ -8,6 +8,10 @@ export async function requestManualRefresh(): Promise<number> {
   return await invoke<number>("request_manual_refresh");
 }
 
+export async function setAccessibleSurface(opaque: boolean): Promise<boolean> {
+  return await invoke<boolean>("set_accessible_surface", { opaque });
+}
+
 export async function beginModalActivity(): Promise<void> {
   await invoke("begin_modal_activity");
 }

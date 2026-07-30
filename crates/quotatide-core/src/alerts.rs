@@ -4,7 +4,7 @@ use std::future::Future;
 use serde::Serialize;
 use ts_rs::TS;
 
-use crate::{AccountSettingsStore, AlertEventKind, SettingsStoreError};
+use crate::{AccountSettingsStore, AlertEventKind, InterfaceLocalePreference, SettingsStoreError};
 
 /// Current operating-system notification authorization state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -246,21 +246,45 @@ pub(crate) struct ClaimedSystemDelivery {
     pub delivery_key: String,
     pub event_kind: AlertEventKind,
     pub target: AlertTarget,
+    pub interface_locale: InterfaceLocalePreference,
 }
 
 fn render_notification(delivery: &ClaimedSystemDelivery) -> SafeNotification {
-    let body = match delivery.event_kind {
-        AlertEventKind::Daily80 => "今日使用已达到实际额度的 80%。",
-        AlertEventKind::Daily100 => "今日使用已达到实际额度。",
-        AlertEventKind::WeeklyRemaining20 => "本周额度剩余已降至 20%。",
-        AlertEventKind::WeeklyRemaining10 => "本周额度剩余已降至 10%。",
-        AlertEventKind::RadarChance70 => "Reset Radar 的 24 小时重置概率已达到 70% 档位。",
-        AlertEventKind::QuotaResetConfirmed => "Codex 当前七日额度窗口已确认重置。",
-        AlertEventKind::SourceFailures3 => "额度来源已连续采集失败 3 次。",
+    let (title, body) = match delivery.interface_locale {
+        InterfaceLocalePreference::ZhCn => (
+            "QuotaTide 提醒",
+            match delivery.event_kind {
+                AlertEventKind::Daily80 => "今日使用已达到实际额度的 80%。",
+                AlertEventKind::Daily100 => "今日使用已达到实际额度。",
+                AlertEventKind::WeeklyRemaining20 => "本周额度剩余已降至 20%。",
+                AlertEventKind::WeeklyRemaining10 => "本周额度剩余已降至 10%。",
+                AlertEventKind::RadarChance70 => "Reset Radar 的 24 小时重置概率已达到 70% 档位。",
+                AlertEventKind::QuotaResetConfirmed => "Codex 当前七日额度窗口已确认重置。",
+                AlertEventKind::SourceFailures3 => "额度来源已连续采集失败 3 次。",
+            },
+        ),
+        InterfaceLocalePreference::En | InterfaceLocalePreference::System => (
+            "QuotaTide Alert",
+            match delivery.event_kind {
+                AlertEventKind::Daily80 => "Today's usage has reached 80% of its adjusted limit.",
+                AlertEventKind::Daily100 => "Today's usage has reached its adjusted limit.",
+                AlertEventKind::WeeklyRemaining20 => "Weekly quota remaining has fallen to 20%.",
+                AlertEventKind::WeeklyRemaining10 => "Weekly quota remaining has fallen to 10%.",
+                AlertEventKind::RadarChance70 => {
+                    "Reset Radar's 24-hour reset chance has reached the 70% tier."
+                }
+                AlertEventKind::QuotaResetConfirmed => {
+                    "The current Codex seven-day quota window has reset."
+                }
+                AlertEventKind::SourceFailures3 => {
+                    "A quota source has failed three consecutive refreshes."
+                }
+            },
+        ),
     };
     SafeNotification {
         delivery_key: delivery.delivery_key.clone(),
-        title: "QuotaTide 提醒".to_owned(),
+        title: title.to_owned(),
         body: body.to_owned(),
         target: delivery.target,
     }

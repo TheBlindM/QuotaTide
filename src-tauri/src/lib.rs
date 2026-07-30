@@ -22,11 +22,11 @@ use privacy::{SafeLogFields, SafeLogLevel, safe_log};
 use quotatide_core::{
     AccountApplication, AccountSettingsStore, AlertChannel, AlertTarget, Application,
     AtomicSettingsManager, AutostartControl, BuildInfo, Clock, DashboardChanged, DeliveryWorker,
-    EmailDeliveryWorker, NotificationPermissionStatus, PhysicalRect as CoreRect,
-    PhysicalSize as CoreSize, PublicAlertInbox, PublicError, PublicErrorCode, PublicLiveQuotaState,
-    PublicSettings, RefreshCoordinator, RefreshTrigger, SafeNotification, SettingsChanged,
-    SettingsDraft, SettingsManager, SettingsStoreError, ShellEffect, ShellEvent, SystemNotifier,
-    TestEmailError, TrayShell, place_tray_window,
+    EmailDeliveryWorker, InterfaceLocalePreference, NotificationPermissionStatus,
+    PhysicalRect as CoreRect, PhysicalSize as CoreSize, PublicAlertInbox, PublicError,
+    PublicErrorCode, PublicLiveQuotaState, PublicSettings, RefreshCoordinator, RefreshTrigger,
+    SafeNotification, SettingsChanged, SettingsDraft, SettingsManager, SettingsStoreError,
+    ShellEffect, ShellEvent, SystemNotifier, TestEmailError, TrayShell, place_tray_window,
 };
 use reset_radar::ResetRadarClient;
 use smtp::LettreMailTransport;
@@ -767,6 +767,7 @@ async fn save_settings(
             revision: saved.settings_revision,
         },
     );
+    let _ = setup_tray(&app, saved.interface_locale, &saved.format_locale);
     delivery_worker.wake();
     if refresh_selected_account {
         let application = application.inner().clone();
@@ -979,20 +980,40 @@ fn core_rect(rect: &Rect, scale_factor: f64) -> CoreRect {
     CoreRect::new(position.x, position.y, size.width, size.height)
 }
 
-fn setup_tray(app: &mut App) -> tauri::Result<()> {
+fn setup_tray(
+    app: &AppHandle,
+    preference: InterfaceLocalePreference,
+    format_locale: &str,
+) -> tauri::Result<()> {
     let tray = app
         .tray_by_id(MAIN_TRAY_ID)
         .ok_or_else(|| tauri::Error::AssetNotFound("main tray icon".to_owned()))?;
-    let open = MenuItem::with_id(app, "open", "打开 QuotaTide", true, None::<&str>)?;
-    let refresh = MenuItem::with_id(app, "refresh", "立即刷新", true, None::<&str>)?;
-    let exit = MenuItem::with_id(app, "exit", "退出", true, None::<&str>)?;
+    let chinese = match preference {
+        InterfaceLocalePreference::ZhCn => true,
+        InterfaceLocalePreference::En => false,
+        InterfaceLocalePreference::System => {
+            let locale = format_locale.replace('_', "-").to_ascii_lowercase();
+            locale == "zh"
+                || locale.starts_with("zh-cn")
+                || locale.starts_with("zh-sg")
+                || locale.starts_with("zh-hans")
+        }
+    };
+    let (open_label, refresh_label, exit_label) = if chinese {
+        ("打开 QuotaTide", "立即刷新", "退出")
+    } else {
+        ("Open QuotaTide", "Refresh now", "Quit")
+    };
+    let open = MenuItem::with_id(app, "open", open_label, true, None::<&str>)?;
+    let refresh = MenuItem::with_id(app, "refresh", refresh_label, true, None::<&str>)?;
+    let exit = MenuItem::with_id(app, "exit", exit_label, true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &refresh, &exit])?;
 
     tray.set_menu(Some(menu))?;
     tray.set_show_menu_on_left_click(false)
 }
 
-fn apply_platform_material(window: &WebviewWindow) {
+fn apply_platform_material(window: &WebviewWindow) -> bool {
     #[cfg(target_os = "macos")]
     let effects = [WindowEffect::Popover, WindowEffect::HudWindow];
     #[cfg(target_os = "windows")]
@@ -1008,7 +1029,7 @@ fn apply_platform_material(window: &WebviewWindow) {
             })
             .is_ok()
         {
-            return;
+            return true;
         }
     }
 
@@ -1022,6 +1043,29 @@ fn apply_platform_material(window: &WebviewWindow) {
         "document.documentElement.dataset.surface='opaque';\
          document.documentElement.dataset.platformFallback='true';",
     );
+    false
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
+fn set_accessible_surface(app: AppHandle, opaque: bool) -> bool {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return false;
+    };
+    if opaque {
+        if window.set_effects(None::<WindowEffectsConfig>).is_err() {
+            safe_log(
+                SafeLogLevel::Warning,
+                "window",
+                "clear_accessibility_effects",
+                SafeLogFields::default(),
+            );
+            return false;
+        }
+        true
+    } else {
+        apply_platform_material(&window)
+    }
 }
 
 fn platform_error(error: impl std::fmt::Display) -> String {
@@ -1076,7 +1120,15 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-    setup_tray(app)?;
+    let system_locale = std::env::var("LC_ALL")
+        .or_else(|_| std::env::var("LC_MESSAGES"))
+        .or_else(|_| std::env::var("LANG"))
+        .unwrap_or_else(|_| "en".to_owned());
+    setup_tray(
+        app.handle(),
+        InterfaceLocalePreference::System,
+        &system_locale,
+    )?;
     let app_data = app.path().app_data_dir()?;
     if std::fs::create_dir_all(&app_data).is_err() || secure_app_data_directory(&app_data).is_err()
     {
@@ -1128,6 +1180,11 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     else {
         return enter_recovery_mode(app, app_data, PublicStartupState::recovery_required());
     };
+    setup_tray(
+        app.handle(),
+        persisted_settings.interface_locale,
+        &persisted_settings.format_locale,
+    )?;
     let notification_permission =
         SharedNotificationPermission::new(persisted_settings.notification_permission_status);
     let atomic_settings = AtomicSettingsManager::new(
@@ -1380,6 +1437,7 @@ pub fn run() {
             clear_all_local_data,
             hide_main_window,
             request_manual_refresh,
+            set_accessible_surface,
             begin_modal_activity,
             end_modal_activity,
             get_settings,

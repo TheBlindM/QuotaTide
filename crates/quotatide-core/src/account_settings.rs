@@ -34,7 +34,7 @@ use crate::{
     radar_bucket_label,
 };
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 const SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-settings-v1-account-path-stream";
 const LIVE_QUOTA_SCHEMA_CHECKSUM: &str = "quotatide-v2-live-quota-health";
 const QUOTA_LEDGER_SCHEMA_CHECKSUM: &str = "quotatide-v3-current-seven-day-ledger";
@@ -45,6 +45,8 @@ const ATOMIC_RADAR_SCHEMA_CHECKSUM: &str = "quotatide-v7-atomic-radar-refresh";
 const ATOMIC_SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-v8-atomic-settings-journal";
 const DURABLE_ALERTS_SCHEMA_CHECKSUM: &str = "quotatide-v9-durable-alert-outbox";
 const SMTP_SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-v10-smtp-settings-recipients";
+const INTERFACE_LOCALE_SCHEMA_CHECKSUM: &str =
+    "quotatide-v11-interface-and-format-locale-preferences";
 const FRESH_FOR_MS: i64 = 90 * 60 * 1000;
 const SMTP_SLOT_A: &str = "slot-a";
 const SMTP_SLOT_B: &str = "slot-b";
@@ -276,6 +278,39 @@ pub struct SmtpSettingsDraft {
     pub recipients: Vec<SmtpRecipientDraft>,
 }
 
+/// User-selected interface language. Formatting locale and policy timezone are
+/// deliberately resolved independently by the presentation layer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub enum InterfaceLocalePreference {
+    #[default]
+    System,
+    #[serde(rename = "zh-CN")]
+    #[ts(rename = "zh-CN")]
+    ZhCn,
+    En,
+}
+
+impl InterfaceLocalePreference {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::ZhCn => "zh-CN",
+            Self::En => "en",
+        }
+    }
+
+    fn parse(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "system" => Ok(Self::System),
+            "zh-CN" => Ok(Self::ZhCn),
+            "en" => Ok(Self::En),
+            _ => Err(rusqlite::Error::InvalidQuery),
+        }
+    }
+}
+
 /// Explicit SMTP password mutation. An empty string never means delete.
 #[derive(Clone, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -299,6 +334,8 @@ pub struct PublicSettings {
     pub quota_policy: PublicQuotaPolicy,
     pub alert_preferences: Vec<AlertPreference>,
     pub autostart_enabled: bool,
+    pub interface_locale: InterfaceLocalePreference,
+    pub format_locale: String,
     pub smtp: PublicSmtpSettings,
 }
 
@@ -312,6 +349,10 @@ pub struct SettingsDraft {
     pub quota_policy: QuotaPolicyDraft,
     pub alert_preferences: Vec<AlertPreferenceDraft>,
     pub autostart_enabled: bool,
+    #[serde(default)]
+    pub interface_locale: InterfaceLocalePreference,
+    #[serde(default = "default_format_locale")]
+    pub format_locale: String,
     pub smtp: SmtpSettingsDraft,
     pub smtp_password: SecretUpdate,
 }
@@ -446,6 +487,8 @@ impl<V: AuthCandidateValidator, A: AutostartControl, C: CredentialVault>
             quota_policy,
             alert_preferences,
             autostart_enabled,
+            interface_locale,
+            format_locale,
             smtp,
             smtp_password,
         } = draft;
@@ -462,6 +505,7 @@ impl<V: AuthCandidateValidator, A: AutostartControl, C: CredentialVault>
             .map_err(|error| AtomicSettingsError::Storage(error.into()))?;
         validate_alert_preferences(&alert_preferences).map_err(AtomicSettingsError::Storage)?;
         let smtp = validate_smtp_settings(smtp).map_err(AtomicSettingsError::Storage)?;
+        let format_locale = validate_format_locale(&format_locale);
         if matches!(&smtp_password, SecretUpdate::Set(secret) if secret.is_empty() || secret.len() > 4096)
         {
             return Err(AtomicSettingsError::Storage(
@@ -566,6 +610,8 @@ impl<V: AuthCandidateValidator, A: AutostartControl, C: CredentialVault>
                 policy,
                 alert_preferences,
                 confirmed_autostart,
+                interface_locale,
+                format_locale,
                 smtp,
                 new_credential_ref,
             )
@@ -713,12 +759,14 @@ pub(crate) struct SmtpDeliveryConfiguration {
     pub credential_slot: &'static str,
     pub connection: SmtpConnection,
     pub recipients: Vec<String>,
+    pub interface_locale: InterfaceLocalePreference,
 }
 
 pub(crate) struct ClaimedEmailDelivery {
     pub id: i64,
     pub delivery_key: String,
     pub event_kind: AlertEventKind,
+    pub interface_locale: InterfaceLocalePreference,
     pub recipient: String,
 }
 
@@ -1187,6 +1235,11 @@ fn initialize_database(
         migrate_smtp_settings_v10(database, now)?;
     } else {
         validate_migration(database, 10, SMTP_SETTINGS_SCHEMA_CHECKSUM)?;
+    }
+    if current_version <= 10 {
+        migrate_interface_locale_v11(database, now)?;
+    } else {
+        validate_migration(database, 11, INTERFACE_LOCALE_SCHEMA_CHECKSUM)?;
     }
     validate_database_health(database)?;
     Ok(())
@@ -1948,6 +2001,34 @@ fn migrate_smtp_settings_v10(
     transaction.commit()
 }
 
+fn migrate_interface_locale_v11(
+    database: &mut rusqlite::Connection,
+    now: i64,
+) -> rusqlite::Result<()> {
+    let transaction =
+        database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE app_settings
+           ADD COLUMN interface_locale TEXT NOT NULL DEFAULT 'system'
+             CHECK (interface_locale IN ('system', 'zh-CN', 'en'));
+         ALTER TABLE app_settings
+           ADD COLUMN format_locale TEXT NOT NULL DEFAULT 'en'
+             CHECK (length(format_locale) BETWEEN 1 AND 64);",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations
+         (version, applied_at_ms, app_version, checksum)
+         VALUES (11, ?1, ?2, ?3)",
+        rusqlite::params![
+            now,
+            env!("CARGO_PKG_VERSION"),
+            INTERFACE_LOCALE_SCHEMA_CHECKSUM
+        ],
+    )?;
+    transaction.pragma_update(None, "user_version", 11)?;
+    transaction.commit()
+}
+
 fn insert_default_policy_revision(
     transaction: &rusqlite::Transaction<'_>,
     now: i64,
@@ -2194,11 +2275,17 @@ fn load_public_atomic_settings(
     database: &rusqlite::Connection,
 ) -> rusqlite::Result<PublicSettings> {
     let account = load_public_account_settings(database)?;
-    let (autostart_enabled, notification_permission_status): (i64, String) = database.query_row(
-        "SELECT autostart_enabled, notification_permission_status
+    let (autostart_enabled, notification_permission_status, interface_locale, format_locale): (
+        i64,
+        String,
+        String,
+        String,
+    ) = database.query_row(
+        "SELECT autostart_enabled, notification_permission_status,
+                interface_locale, format_locale
          FROM app_settings WHERE singleton_id = 1",
         [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     let mut statement = database.prepare(
         "SELECT event_kind, channel, enabled
@@ -2280,6 +2367,8 @@ fn load_public_atomic_settings(
         quota_policy: account.quota_policy,
         alert_preferences,
         autostart_enabled: autostart_enabled != 0,
+        interface_locale: InterfaceLocalePreference::parse(&interface_locale)?,
+        format_locale,
         smtp: PublicSmtpSettings {
             enabled: smtp_enabled != 0,
             host: smtp_host,
@@ -2308,6 +2397,23 @@ fn validate_quota_policy_draft(draft: QuotaPolicyDraft) -> Result<QuotaPolicy, P
         draft.carry_workdays_enabled,
         &draft.policy_timezone,
     )
+}
+
+fn default_format_locale() -> String {
+    "en".to_owned()
+}
+
+fn validate_format_locale(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return default_format_locale();
+    }
+    value.replace('_', "-")
 }
 
 fn validate_alert_preferences(
@@ -2579,6 +2685,8 @@ impl AccountSettingsStore {
         policy: QuotaPolicy,
         alert_preferences: Vec<AlertPreferenceDraft>,
         autostart_enabled: bool,
+        interface_locale: InterfaceLocalePreference,
+        format_locale: String,
         smtp: SmtpSettingsDraft,
         credential_ref: Option<&'static str>,
     ) -> Result<PublicSettings, SettingsStoreError> {
@@ -2663,7 +2771,8 @@ impl AccountSettingsStore {
                         "UPDATE app_settings
                          SET auth_path = ?1, configured_account_stream_id = ?2,
                              active_policy_revision_id = ?3, policy_timezone = ?4,
-                             autostart_enabled = ?5, updated_at_ms = ?6
+                             autostart_enabled = ?5, interface_locale = ?6,
+                             format_locale = ?7, updated_at_ms = ?8
                          WHERE singleton_id = 1",
                         rusqlite::params![
                             path,
@@ -2671,6 +2780,8 @@ impl AccountSettingsStore {
                             policy_revision_id,
                             policy_timezone,
                             i64::from(autostart_enabled),
+                            interface_locale.as_str(),
+                            format_locale,
                             now
                         ],
                     )?;
@@ -2678,12 +2789,15 @@ impl AccountSettingsStore {
                     transaction.execute(
                         "UPDATE app_settings
                          SET active_policy_revision_id = ?1, policy_timezone = ?2,
-                             autostart_enabled = ?3, updated_at_ms = ?4
+                             autostart_enabled = ?3, interface_locale = ?4,
+                             format_locale = ?5, updated_at_ms = ?6
                          WHERE singleton_id = 1",
                         rusqlite::params![
                             policy_revision_id,
                             policy_timezone,
                             i64::from(autostart_enabled),
+                            interface_locale.as_str(),
+                            format_locale,
                             now
                         ],
                     )?;
@@ -3599,6 +3713,12 @@ impl AccountSettingsStore {
                 let recipients = recipients_statement
                     .query_map([], |row| row.get(0))?
                     .collect::<rusqlite::Result<Vec<String>>>()?;
+                let (preference, format_locale): (String, String) = database.query_row(
+                    "SELECT interface_locale, format_locale
+                     FROM app_settings WHERE singleton_id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
                 Ok(Some(SmtpDeliveryConfiguration {
                     credential_slot,
                     connection: SmtpConnection {
@@ -3610,6 +3730,10 @@ impl AccountSettingsStore {
                         from_name,
                     },
                     recipients,
+                    interface_locale: resolve_interface_locale_snapshot(
+                        &preference,
+                        &format_locale,
+                    )?,
                 }))
             })
             .await
@@ -3676,7 +3800,8 @@ impl AccountSettingsStore {
                 let deliveries = {
                     let mut statement = transaction.prepare(
                         "SELECT delivery.id, delivery.delivery_key,
-                                event.event_kind, recipient.address
+                                event.event_kind, recipient.address,
+                                event.interface_locale_snapshot
                          FROM alert_deliveries delivery
                          JOIN alert_events event
                            ON event.id = delivery.alert_event_id
@@ -3707,6 +3832,9 @@ impl AccountSettingsStore {
                                     delivery_key: row.get(1)?,
                                     event_kind: AlertEventKind::parse(&event_kind)?,
                                     recipient: row.get(3)?,
+                                    interface_locale: InterfaceLocalePreference::parse(
+                                        &row.get::<_, String>(4)?,
+                                    )?,
                                 })
                             },
                         )?
@@ -3789,7 +3917,8 @@ impl AccountSettingsStore {
                     database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                 let deliveries = {
                     let mut statement = transaction.prepare(
-                        "SELECT d.id, d.delivery_key, e.event_kind, e.target
+                        "SELECT d.id, d.delivery_key, e.event_kind, e.target,
+                                e.interface_locale_snapshot
                          FROM alert_deliveries d
                          JOIN alert_events e ON e.id = d.alert_event_id
                          WHERE d.channel = 'system' AND (
@@ -3811,6 +3940,9 @@ impl AccountSettingsStore {
                                     event_kind: AlertEventKind::parse(&event_kind)?,
                                     target: AlertTarget::parse(&target)
                                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                                    interface_locale: InterfaceLocalePreference::parse(
+                                        &row.get::<_, String>(4)?,
+                                    )?,
                                 })
                             },
                         )?
@@ -4750,14 +4882,22 @@ fn persist_alert_event(
     transaction: &rusqlite::Transaction<'_>,
     event: &NewAlertEvent,
 ) -> rusqlite::Result<bool> {
+    let (interface_preference, format_locale): (String, String) = transaction.query_row(
+        "SELECT interface_locale, format_locale
+         FROM app_settings WHERE singleton_id = 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let interface_locale =
+        resolve_interface_locale_snapshot(&interface_preference, &format_locale)?;
     let inserted = transaction.execute(
         "INSERT INTO alert_events
          (event_key, event_kind, account_stream_id, quota_epoch_id,
           local_date, watch_key, source, threshold_micropoints,
-          message_key, structured_args_json, interface_locale_snapshot,
+         message_key, structured_args_json, interface_locale_snapshot,
           format_locale_snapshot, policy_timezone_snapshot, target, created_at_ms)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                 'zh-CN', 'zh-CN', ?11, ?12, ?13)
+                 ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(event_key) DO NOTHING",
         rusqlite::params![
             event.event_key,
@@ -4770,6 +4910,8 @@ fn persist_alert_event(
             event.threshold_micropoints,
             event.message_key,
             event.structured_args_json,
+            interface_locale.as_str(),
+            format_locale,
             event.policy_timezone,
             event.target,
             event.created_at_ms,
@@ -4779,6 +4921,15 @@ fn persist_alert_event(
         return Ok(false);
     }
     let alert_event_id = transaction.last_insert_rowid();
+    persist_alert_deliveries(transaction, event, alert_event_id)?;
+    Ok(true)
+}
+
+fn persist_alert_deliveries(
+    transaction: &rusqlite::Transaction<'_>,
+    event: &NewAlertEvent,
+    alert_event_id: i64,
+) -> rusqlite::Result<()> {
     let preferences = {
         let mut statement = transaction.prepare(
             "SELECT channel FROM alert_preferences
@@ -4849,7 +5000,29 @@ fn persist_alert_event(
             )?;
         }
     }
-    Ok(true)
+    Ok(())
+}
+
+fn resolve_interface_locale_snapshot(
+    preference: &str,
+    format_locale: &str,
+) -> rusqlite::Result<InterfaceLocalePreference> {
+    match InterfaceLocalePreference::parse(preference)? {
+        InterfaceLocalePreference::ZhCn => Ok(InterfaceLocalePreference::ZhCn),
+        InterfaceLocalePreference::En => Ok(InterfaceLocalePreference::En),
+        InterfaceLocalePreference::System => {
+            let normalized = format_locale.replace('_', "-").to_ascii_lowercase();
+            if normalized == "zh"
+                || normalized.starts_with("zh-cn")
+                || normalized.starts_with("zh-sg")
+                || normalized.starts_with("zh-hans")
+            {
+                Ok(InterfaceLocalePreference::ZhCn)
+            } else {
+                Ok(InterfaceLocalePreference::En)
+            }
+        }
+    }
 }
 
 fn insert_alert_delivery(

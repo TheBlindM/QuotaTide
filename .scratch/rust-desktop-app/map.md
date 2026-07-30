@@ -26,6 +26,10 @@ Type: wayfinder:map
 
 ## Decisions so far
 
+- [Ticket 25](./issues/25-complete-localization-and-accessibility.md)：完成
+  `zh-CN`/English、locale snapshot、键盘/axe、200% 布局与辅助显示材质桥接；
+  VoiceOver/Narrator 的最终候选包人工证据统一由 Ticket 27 执行。
+
 - [选择 Rust 跨平台桌面技术栈](./issues/01-choose-rust-desktop-stack.md) — 采用 Tauri 2 作为桌面壳，业务与系统能力归 Rust 核心，本地 WebView 只承载 UI；Slint 1.17 保留为 fallback。
 - [验证 macOS 与 Windows 平台集成](./issues/02-verify-platform-integrations.md) — 托盘与系统能力走 Rust-side Tauri adapters；两端均有不透明视觉降级，macOS 完整毛玻璃使用 private API，不能默认承诺 App Store 兼容。
 - [审核 Codex 与重置雷达数据契约](./issues/03-audit-upstream-data-contracts.md) — `auth.json` 每轮只读重开；严格识别当前账号的 604800 秒窗口；账号 stream、quota epoch 与第三方雷达相互隔离；失败保留最后成功值，雷达预测不能确认账号重置。

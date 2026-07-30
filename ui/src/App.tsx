@@ -23,7 +23,11 @@ import {
 } from "./api/alerts";
 import { loadBuildInfo } from "./api/build-info";
 import { getLiveQuota, onDashboardChanged } from "./api/live-quota";
-import { hideMainWindow, requestManualRefresh } from "./api/tray-shell";
+import {
+  hideMainWindow,
+  requestManualRefresh,
+  setAccessibleSurface,
+} from "./api/tray-shell";
 import {
   getStartupState,
   clearAllLocalData,
@@ -37,6 +41,13 @@ import {
   ledgerFixtures,
   type LedgerTone,
 } from "./WeeklyLedger";
+import { I18nProvider, useI18n } from "./i18n-context";
+import {
+  formatPercent,
+  formatResetTime,
+  resolveInterfaceLocale,
+  type InterfaceLocale,
+} from "./i18n";
 
 type ViewState =
   | { kind: "loading" }
@@ -65,6 +76,7 @@ const previewAlertKinds: AlertEventKind[] = [
 ];
 
 export function App() {
+  const { text } = useI18n();
   const isPreview = new URLSearchParams(window.location.search).has("preview");
   const previewRecovery = new URLSearchParams(window.location.search).get(
     "recovery",
@@ -116,6 +128,11 @@ export function App() {
               { eventKind, channel: "email", enabled: false },
             ]),
             autostartEnabled: false,
+            interfaceLocale:
+              new URLSearchParams(window.location.search).get("lang") === "en"
+                ? "en"
+                : "zh-CN",
+            formatLocale: "zh-CN",
             smtp: {
               enabled: false,
               host: "",
@@ -278,6 +295,7 @@ export function App() {
     const params = new URLSearchParams(window.location.search);
     const theme = params.get("theme");
     const surface = params.get("surface");
+    const fontScale = params.get("fontScale");
 
     if (theme === "light" || theme === "dark") {
       document.documentElement.dataset.theme = theme;
@@ -292,16 +310,75 @@ export function App() {
     ) {
       document.documentElement.dataset.surface = "glass";
     }
+    if (fontScale === "2") {
+      document.documentElement.dataset.fontScale = "2";
+    } else {
+      delete document.documentElement.dataset.fontScale;
+    }
   }, []);
 
+  useEffect(() => {
+    document.body.dataset.platformFallbackMessage = text(
+      "系统毛玻璃不可用，已切换为不透明模式",
+      "System glass is unavailable; opaque mode is active",
+    );
+  }, [text]);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") {
+      return;
+    }
+    const preferences = [
+      window.matchMedia("(prefers-reduced-transparency: reduce)"),
+      window.matchMedia("(prefers-contrast: more)"),
+      window.matchMedia("(forced-colors: active)"),
+    ];
+    const apply = () => {
+      const opaque = preferences.some((preference) => preference.matches);
+      if (opaque) {
+        document.documentElement.dataset.surface = "opaque";
+      } else if (
+        document.documentElement.dataset.platformFallback !== "true"
+      ) {
+        document.documentElement.dataset.surface = "glass";
+      }
+      if (!isPreview) {
+        void setAccessibleSurface(opaque).then((supported) => {
+          if (!supported) {
+            document.documentElement.dataset.surface = "opaque";
+            document.documentElement.dataset.platformFallback = "true";
+          }
+        }).catch(() => undefined);
+      }
+    };
+    apply();
+    for (const preference of preferences) {
+      preference.addEventListener("change", apply);
+    }
+    return () => {
+      for (const preference of preferences) {
+        preference.removeEventListener("change", apply);
+      }
+    };
+  }, [isPreview]);
+
   if (state.kind === "loading") {
-    return <main class="boot-state" aria-busy="true">正在连接 Rust 核心…</main>;
+    return (
+      <main class="boot-state" aria-busy="true" role="status">
+        {text("正在连接 Rust 核心…", "Connecting to the Rust core…")}
+      </main>
+    );
   }
 
   if (state.kind === "error") {
     return (
       <main>
-        <p role="alert">桌面外壳不可用，请从托盘菜单重试。</p>
+        <p role="alert">
+          {text(
+            "桌面外壳不可用，请从托盘菜单重试。",
+            "The desktop shell is unavailable. Try again from the tray menu.",
+          )}
+        </p>
       </main>
     );
   }
@@ -338,10 +415,16 @@ export function App() {
         state.liveQuota,
         Date.now(),
         state.radar,
+        resolveInterfaceLocale(
+          state.settings.interfaceLocale,
+          navigator.languages[0] || navigator.language || "en",
+        ),
+        navigator.languages[0] || navigator.language || "en",
       );
 
   return (
-    <TrayApp
+    <I18nProvider preference={state.settings.interfaceLocale}>
+      <TrayApp
       fixture={fixture}
       settings={state.settings}
       alerts={state.alerts}
@@ -388,7 +471,8 @@ export function App() {
         );
         return settings;
       }}
-    />
+      />
+    </I18nProvider>
   );
 }
 
@@ -407,28 +491,44 @@ function RecoveryView({
   onExportDiagnostics: () => Promise<boolean>;
   onClearLocalData: () => Promise<void>;
 }) {
+  const { text } = useI18n();
   const [busy, setBusy] = useState(false);
   const [actionFailed, setActionFailed] = useState(false);
   const content =
     startup.mode === "unsupported_schema"
       ? {
-          eyebrow: "版本保护",
-          title: "本地数据来自更新版本",
-          detail:
-            "QuotaTide 已保持只读，没有降级或覆盖数据。请安装兼容版本后重试。",
+            eyebrow: text("版本保护", "Version protection"),
+            title: text(
+              "本地数据来自更新版本",
+              "Local data belongs to a newer version",
+            ),
+            detail: text(
+              "QuotaTide 已保持只读，没有降级或覆盖数据。请安装兼容版本后重试。",
+              "QuotaTide kept the data read-only and did not downgrade or overwrite it. Install a compatible version and try again.",
+            ),
         }
       : startup.mode === "storage_permission_denied"
         ? {
-            eyebrow: "隐私保护",
-            title: "无法保护本地数据目录",
-            detail:
+            eyebrow: text("隐私保护", "Privacy protection"),
+            title: text(
+              "无法保护本地数据目录",
+              "The local data directory cannot be secured",
+            ),
+            detail: text(
               "应用已停止数据库写入。请检查目录所有者与权限，修复后再重试。",
+              "Database writes have stopped. Check directory ownership and permissions, then try again.",
+            ),
           }
         : {
-            eyebrow: "恢复模式",
-            title: "本地账本需要处理",
-            detail:
+            eyebrow: text("恢复模式", "Recovery mode"),
+            title: text(
+              "本地账本需要处理",
+              "The local ledger needs attention",
+            ),
+            detail: text(
               "有效备份已自动尝试。当前没有可安全使用的数据副本，因此没有创建空账本。",
+              "Valid backups were tried automatically. No safe copy is currently available, so an empty ledger was not created.",
+            ),
           };
 
   const run = async (action: () => Promise<void>) => {
@@ -455,7 +555,7 @@ function RecoveryView({
           <button
             type="button"
             class="icon-button"
-            aria-label="隐藏窗口"
+            aria-label={text("隐藏窗口", "Hide window")}
             onClick={() => void run(onHide)}
           >
             ×
@@ -463,8 +563,18 @@ function RecoveryView({
         </header>
         <p class="recovery-detail">{content.detail}</p>
         <div class="recovery-note">
-          <strong>你的 auth.json 不在处理范围内</strong>
-          <span>恢复与清除操作只会作用于 QuotaTide 自己的应用数据。</span>
+          <strong>
+            {text(
+              "你的 auth.json 不在处理范围内",
+              "Your auth.json is outside this operation",
+            )}
+          </strong>
+          <span>
+            {text(
+              "恢复与清除操作只会作用于 QuotaTide 自己的应用数据。",
+              "Recovery and deletion affect only QuotaTide's own app data.",
+            )}
+          </span>
         </div>
         <div class="recovery-privacy-tools">
           <PrivacyPanel
@@ -474,7 +584,10 @@ function RecoveryView({
         </div>
         {actionFailed ? (
           <p class="settings-error" role="alert">
-            操作未完成，请检查系统权限后重试。
+            {text(
+              "操作未完成，请检查系统权限后重试。",
+              "The operation did not finish. Check system permissions and try again.",
+            )}
           </p>
         ) : null}
         <footer class="recovery-actions">
@@ -483,7 +596,7 @@ function RecoveryView({
             disabled={busy}
             onClick={() => void run(onOpenData)}
           >
-            打开数据目录
+            {text("打开数据目录", "Open data directory")}
           </button>
           <button
             type="button"
@@ -491,7 +604,9 @@ function RecoveryView({
             disabled={busy}
             onClick={() => void run(onRetry)}
           >
-            {busy ? "处理中…" : "重试恢复"}
+            {busy
+              ? text("处理中…", "Working…")
+              : text("重试恢复", "Retry recovery")}
           </button>
         </footer>
       </article>
@@ -507,11 +622,13 @@ export function projectLiveFixture(
   live: PublicLiveQuota | null,
   now = Date.now(),
   radar: PublicResetRadar = emptyRadarState,
+  interfaceLocale: InterfaceLocale = "zh-CN",
+  formatLocale = "zh-CN",
 ): (typeof ledgerFixtures)[LedgerTone] {
   if (!account.configured) {
     return {
       ...ledgerFixtures.unconfigured,
-      radar: projectRadarFixture(radar),
+      radar: projectRadarFixture(radar, interfaceLocale, formatLocale),
     };
   }
   const base = ledgerFixtures.fresh;
@@ -521,31 +638,48 @@ export function projectLiveFixture(
       tone: "stale",
       weeklyUsed: "",
       weeklyRemaining: "",
-      sourceHealth: "Codex 额度 · 等待首次同步",
+      sourceHealth: copy(
+        interfaceLocale,
+        "Codex 额度 · 等待首次同步",
+        "Codex quota · Waiting for first sync",
+      ),
       windowLabel: "",
-      lastSuccess: "尚未成功同步",
+      lastSuccess: copy(
+        interfaceLocale,
+        "尚未成功同步",
+        "No successful sync yet",
+      ),
       resetAbsolute: "",
       resetRelative: "",
       todayLimit: "",
-      radar: projectRadarFixture(radar),
+      radar: projectRadarFixture(radar, interfaceLocale, formatLocale),
       days: [],
     };
   }
 
   const resetMs =
     live.resetsAtUnixS === null ? null : live.resetsAtUnixS * 1000;
-  const used = formatMicropoints(live.usedMicropoints);
-  const remaining = formatMicropoints(live.remainingMicropoints);
-  const sourceHealth = sourceHealthLabel(live);
-  const days = live.ledgerDays.map(projectLedgerDay);
+  const used = formatMicropoints(live.usedMicropoints, formatLocale);
+  const remaining = formatMicropoints(live.remainingMicropoints, formatLocale);
+  const sourceHealth = sourceHealthLabel(live, interfaceLocale);
+  const days = live.ledgerDays.map((day) =>
+    projectLedgerDay(day, interfaceLocale, formatLocale),
+  );
   const today = live.ledgerDays.find((day) => day.isToday);
-  const todayAvailable = formatMicropoints(live.todayAvailableMicropoints);
+  const todayAvailable = formatMicropoints(
+    live.todayAvailableMicropoints,
+    formatLocale,
+  );
   const todayLimit =
     live.todayLimitMicropoints === null ||
     live.todayBaseMicropoints === null ||
     live.todayCarryMicropoints === null
       ? ""
-      : `基础 ${formatMicropoints(live.todayBaseMicropoints)} + 结转 ${formatMicropoints(live.todayCarryMicropoints)} = 实际 ${formatMicropoints(live.todayLimitMicropoints)}`;
+      : copy(
+          interfaceLocale,
+          `基础 ${formatMicropoints(live.todayBaseMicropoints, formatLocale)} + 结转 ${formatMicropoints(live.todayCarryMicropoints, formatLocale)} = 实际 ${formatMicropoints(live.todayLimitMicropoints, formatLocale)}`,
+          `Base ${formatMicropoints(live.todayBaseMicropoints, formatLocale)} + carry ${formatMicropoints(live.todayCarryMicropoints, formatLocale)} = adjusted ${formatMicropoints(live.todayLimitMicropoints, formatLocale)}`,
+        );
   const tone =
     live.sourceStatus !== "fresh"
       ? "stale"
@@ -564,17 +698,35 @@ export function projectLiveFixture(
       days.length === 0
         ? live.windowStartsAtUnixS === null || live.windowEndsAtUnixS === null
           ? ""
-          : `${formatDate(live.windowStartsAtUnixS * 1000)} 至 ${formatDate(live.windowEndsAtUnixS * 1000)}`
-        : `${days[0].date} 至 ${days.at(-1)?.date ?? ""}`,
+          : `${formatDate(live.windowStartsAtUnixS * 1000, formatLocale)} ${copy(interfaceLocale, "至", "to")} ${formatDate(live.windowEndsAtUnixS * 1000, formatLocale)}`
+        : `${days[0].date} ${copy(interfaceLocale, "至", "to")} ${days.at(-1)?.date ?? ""}`,
     lastSuccess:
       live.lastSuccessAtUnixMs === null
-        ? "尚未成功同步"
-        : `上次成功 ${formatDateTime(live.lastSuccessAtUnixMs)}`,
-    resetAbsolute: resetMs === null ? "" : formatDateTime(resetMs),
-    resetRelative: resetMs === null ? "" : formatRelative(resetMs - now),
+        ? copy(interfaceLocale, "尚未成功同步", "No successful sync yet")
+        : `${copy(interfaceLocale, "上次成功", "Last successful sync")} ${formatDateTime(live.lastSuccessAtUnixMs, formatLocale)}`,
+    resetAbsolute:
+      resetMs === null
+        ? ""
+        : (formatResetTime(
+            resetMs,
+            now,
+            interfaceLocale,
+            formatLocale,
+            account.quotaPolicy.policyTimezone,
+          )?.absolute ?? ""),
+    resetRelative:
+      resetMs === null
+        ? ""
+        : (formatResetTime(
+            resetMs,
+            now,
+            interfaceLocale,
+            formatLocale,
+            account.quotaPolicy.policyTimezone,
+          )?.relative ?? ""),
     todayAvailable,
     todayLimit,
-    radar: projectRadarFixture(radar),
+    radar: projectRadarFixture(radar, interfaceLocale, formatLocale),
     days,
   };
 }
@@ -589,7 +741,11 @@ export const emptyRadarState: PublicResetRadar = {
   latestAnnouncement: null,
 };
 
-export function projectRadarFixture(radar: PublicResetRadar) {
+export function projectRadarFixture(
+  radar: PublicResetRadar,
+  interfaceLocale: InterfaceLocale = "zh-CN",
+  formatLocale = "zh-CN",
+) {
   const announcement =
     radar.latestAnnouncement === null
       ? null
@@ -598,32 +754,49 @@ export function projectRadarFixture(radar: PublicResetRadar) {
           sourceUrl: radar.latestAnnouncement.sourceUrl,
           announcedAt: formatDateTime(
             radar.latestAnnouncement.announcedAtUnixMs,
+            formatLocale,
           ),
         };
   const prediction = radar.prediction;
   if (prediction !== null) {
     const health =
       radar.sourceStatus === "fresh"
-        ? "数据源正常"
+        ? copy(interfaceLocale, "数据源正常", "Source healthy")
         : radar.sourceStatus === "stale_after_failure"
-          ? `数据源暂不可用，显示有效快照`
-          : "显示仍有效的最后快照";
+          ? copy(
+              interfaceLocale,
+              "数据源暂不可用，显示有效快照",
+              "Source unavailable; showing a valid snapshot",
+            )
+          : copy(
+              interfaceLocale,
+              "显示仍有效的最后快照",
+              "Showing the last valid snapshot",
+            );
     return {
       kind: "active" as const,
       chance: prediction.displayChance,
       explanation: prediction.explanation,
       sourceUrl: prediction.sourceUrl,
-      timing: `有效至 ${formatDateTime(prediction.expiresAtUnixMs)}`,
+      timing: `${copy(interfaceLocale, "有效至", "Valid until")} ${formatDateTime(prediction.expiresAtUnixMs, formatLocale)}`,
       health,
       announcement,
     };
   }
   const message =
-    radar.sourceStatus === "fresh"
-      ? "当前无有效预测"
+      radar.sourceStatus === "fresh"
+      ? copy(interfaceLocale, "当前无有效预测", "No active prediction")
       : radar.lastAttemptAtUnixMs === null
-        ? "等待首次雷达同步"
-        : "预测数据暂不可用";
+        ? copy(
+            interfaceLocale,
+            "等待首次雷达同步",
+            "Waiting for the first radar sync",
+          )
+        : copy(
+            interfaceLocale,
+            "预测数据暂不可用",
+            "Prediction data is unavailable",
+          );
   return {
     kind: "empty" as const,
     message,
@@ -631,7 +804,11 @@ export function projectRadarFixture(radar: PublicResetRadar) {
   };
 }
 
-function projectLedgerDay(day: PublicLedgerDay) {
+function projectLedgerDay(
+  day: PublicLedgerDay,
+  interfaceLocale: InterfaceLocale,
+  formatLocale: string,
+) {
   const [year, month, date] = day.localDate
     .split("-")
     .map((part) => Number.parseInt(part, 10));
@@ -641,87 +818,117 @@ function projectLedgerDay(day: PublicLedgerDay) {
   const limit = day.limitMicropoints / 1_000_000;
   return {
     label: day.isToday
-      ? "今天"
-      : new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(
+      ? copy(interfaceLocale, "今天", "Today")
+      : new Intl.DateTimeFormat(formatLocale, { weekday: "short" }).format(
           naturalDate,
         ),
-    date: `${month.toString().padStart(2, "0")}/${date.toString().padStart(2, "0")}`,
+    date: new Intl.DateTimeFormat(formatLocale, {
+      month: "2-digit",
+      day: "2-digit",
+    }).format(naturalDate),
     used,
     limit,
     today: day.isToday,
-    status: ledgerStatusLabel(day.status),
+    status: ledgerStatusLabel(day.status, interfaceLocale),
   };
 }
 
-function ledgerStatusLabel(status: PublicLedgerDay["status"]): string {
+function ledgerStatusLabel(
+  status: PublicLedgerDay["status"],
+  locale: InterfaceLocale,
+): string {
   switch (status) {
     case "unknown":
-      return "尚无记录";
+      return copy(locale, "尚无记录", "No record yet");
     case "normal":
-      return "进行中";
+      return copy(locale, "进行中", "In progress");
     case "warning":
-      return "接近上限";
+      return copy(locale, "接近上限", "Approaching limit");
     case "exceeded":
-      return "已达上限";
+      return copy(locale, "已达上限", "Limit reached");
     case "finalized":
-      return "已封存";
+      return copy(locale, "已封存", "Finalized");
   }
 }
 
-function sourceHealthLabel(live: PublicLiveQuota): string {
+function sourceHealthLabel(
+  live: PublicLiveQuota,
+  locale: InterfaceLocale,
+): string {
   switch (live.sourceStatus) {
     case "fresh":
-      return "Codex 额度 · 正常";
+      return copy(locale, "Codex 额度 · 正常", "Codex quota · Healthy");
     case "stale_after_failure":
-      return `Codex 额度 · 连续 ${live.consecutiveFailures.toString()} 次失败（${usageErrorLabel(live.publicError)}）`;
+      return copy(
+        locale,
+        `Codex 额度 · 连续 ${live.consecutiveFailures.toString()} 次失败（${usageErrorLabel(live.publicError, locale)}）`,
+        `Codex quota · ${live.consecutiveFailures.toString()} consecutive failures (${usageErrorLabel(live.publicError, locale)})`,
+      );
     case "stale_by_age":
-      return "Codex 额度 · 数据超过 90 分钟";
+      return copy(
+        locale,
+        "Codex 额度 · 数据超过 90 分钟",
+        "Codex quota · Over 90 minutes old",
+      );
     case "unavailable":
       return live.consecutiveFailures > 0
-        ? `Codex 额度 · 首次同步失败（${usageErrorLabel(live.publicError)}）`
-        : "Codex 额度 · 等待首次同步";
+        ? copy(
+            locale,
+            `Codex 额度 · 首次同步失败（${usageErrorLabel(live.publicError, locale)}）`,
+            `Codex quota · First sync failed (${usageErrorLabel(live.publicError, locale)})`,
+          )
+        : copy(
+            locale,
+            "Codex 额度 · 等待首次同步",
+            "Codex quota · Waiting for first sync",
+          );
   }
 }
 
-function usageErrorLabel(error: UsageSourceErrorCode | null): string {
+function usageErrorLabel(
+  error: UsageSourceErrorCode | null,
+  locale: InterfaceLocale,
+): string {
   switch (error) {
     case "auth_path_unavailable":
-      return "账号文件不可用";
+      return copy(locale, "账号文件不可用", "Account file unavailable");
     case "authentication_stale":
-      return "登录已失效";
+      return copy(locale, "登录已失效", "Sign-in expired");
     case "permission_denied":
-      return "访问被拒绝";
+      return copy(locale, "访问被拒绝", "Access denied");
     case "rate_limited":
-      return "请求过于频繁";
+      return copy(locale, "请求过于频繁", "Rate limited");
     case "timeout":
-      return "请求超时";
+      return copy(locale, "请求超时", "Request timed out");
     case "upstream_unavailable":
-      return "Codex 服务暂不可用";
+      return copy(locale, "Codex 服务暂不可用", "Codex service unavailable");
     case "response_too_large":
     case "invalid_json":
     case "contract_violation":
     case "weekly_window_unavailable":
-      return "额度响应暂不可识别";
+      return copy(
+        locale,
+        "额度响应暂不可识别",
+        "Quota response not recognized",
+      );
     case null:
-      return "未知原因";
+      return copy(locale, "未知原因", "Unknown reason");
   }
 }
 
-function formatMicropoints(value: number | null): string {
-  return value === null
-    ? ""
-    : `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value / 1_000_000)}%`;
+function formatMicropoints(value: number | null, formatLocale: string): string {
+  return formatPercent(value, formatLocale);
 }
 
-function formatDate(value: number): string {
-  return new Intl.DateTimeFormat(undefined, {
+function formatDate(value: number, formatLocale: string): string {
+  return new Intl.DateTimeFormat(formatLocale, {
     month: "2-digit",
     day: "2-digit",
   }).format(value);
 }
 
-function formatDateTime(value: number): string {
-  return new Intl.DateTimeFormat(undefined, {
+function formatDateTime(value: number, formatLocale: string): string {
+  return new Intl.DateTimeFormat(formatLocale, {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -729,17 +936,10 @@ function formatDateTime(value: number): string {
   }).format(value);
 }
 
-function formatRelative(deltaMs: number): string {
-  const minutes = Math.round(deltaMs / 60_000);
-  if (Math.abs(minutes) < 60) {
-    return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(
-      minutes,
-      "minute",
-    );
-  }
-  const hours = Math.round(minutes / 60);
-  return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(
-    hours,
-    "hour",
-  );
+function copy(
+  locale: InterfaceLocale,
+  zhCn: string,
+  english: string,
+): string {
+  return locale === "zh-CN" ? zhCn : english;
 }

@@ -194,7 +194,6 @@ async fn daily_crossings_create_one_event_and_system_delivery_in_the_refresh_tra
         .configure_account(0, "/chosen/auth.json", "account-one")
         .await
         .expect("configure account");
-
     for (captured, used) in [
         ("2026-07-30T01:00:00Z", 0),
         ("2026-07-30T02:00:00Z", 13_000_000),
@@ -824,4 +823,60 @@ async fn a_delivery_due_during_sleep_runs_once_on_the_resume_sweep() {
         0
     );
     assert_eq!(sent.lock().expect("resumed notification").len(), 1);
+}
+
+#[tokio::test]
+async fn a_retry_keeps_the_interface_locale_snapshot_from_event_creation() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let policy_timezone = store
+        .public_settings()
+        .await
+        .expect("public settings")
+        .quota_policy
+        .policy_timezone;
+    seed_daily_warning(&store).await;
+
+    let snapshot: (String, String, String) = tokio_rusqlite::rusqlite::Connection::open(&database)
+        .expect("inspect event snapshot")
+        .query_row(
+            "SELECT interface_locale_snapshot, format_locale_snapshot,
+                        policy_timezone_snapshot
+                 FROM alert_events ORDER BY id DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("locale snapshots");
+    assert_eq!(
+        snapshot,
+        ("en".to_owned(), "en".to_owned(), policy_timezone,)
+    );
+
+    tokio_rusqlite::rusqlite::Connection::open(&database)
+        .expect("change current language")
+        .execute(
+            "UPDATE app_settings
+             SET interface_locale = 'zh-CN', format_locale = 'zh-CN'
+             WHERE singleton_id = 1",
+            [],
+        )
+        .expect("change current language");
+
+    let notifier = RecordingNotifier::granted();
+    let sent = Arc::clone(&notifier.sent);
+    DeliveryWorker::new(store, notifier, "snapshot-worker")
+        .deliver_pending(timestamp_ms("2026-07-30T02:01:00Z"))
+        .await
+        .expect("deliver snapshot");
+    let notifications = sent.lock().expect("notification snapshot");
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].title, "QuotaTide Alert");
+    assert!(notifications[0].body.starts_with("Today's usage"));
 }

@@ -15,11 +15,11 @@ mod tray_shell;
 pub use account_settings::{
     AccountApplication, AccountConfigError, AccountSettingsStore, AlertChannel, AlertEventKind,
     AlertPreference, AlertPreferenceDraft, AtomicSettingsError, AtomicSettingsManager,
-    AuthCandidateValidator, AutostartControl, CredentialVault, PublicAccountSettings, PublicError,
-    PublicErrorCode, PublicQuotaPolicy, PublicSettings, PublicSmtpRecipient, PublicSmtpSettings,
-    QuotaPolicyDraft, SafeErrorContext, SecretUpdate, SettingsDraft, SettingsManager,
-    SettingsStoreError, SmtpCredentialStatus, SmtpRecipientDraft, SmtpSettingsDraft, SmtpTlsMode,
-    UsageCommitDisposition, ValidatedAccountCandidate,
+    AuthCandidateValidator, AutostartControl, CredentialVault, InterfaceLocalePreference,
+    PublicAccountSettings, PublicError, PublicErrorCode, PublicQuotaPolicy, PublicSettings,
+    PublicSmtpRecipient, PublicSmtpSettings, QuotaPolicyDraft, SafeErrorContext, SecretUpdate,
+    SettingsDraft, SettingsManager, SettingsStoreError, SmtpCredentialStatus, SmtpRecipientDraft,
+    SmtpSettingsDraft, SmtpTlsMode, UsageCommitDisposition, ValidatedAccountCandidate,
 };
 pub use alerts::{
     AlertTarget, DeliverySweep, DeliveryWorker, NotificationPermissionStatus, PublicAlertEvent,
