@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -444,6 +444,7 @@ impl AppQuery {
 
 struct SchedulerControl {
     cancellation: CancellationToken,
+    started: AtomicBool,
     resume_sequence: AtomicU64,
     resume_sender: watch::Sender<u64>,
 }
@@ -464,6 +465,7 @@ where
             query,
             scheduler: Arc::new(SchedulerControl {
                 cancellation: CancellationToken::new(),
+                started: AtomicBool::new(false),
                 resume_sequence: AtomicU64::new(0),
                 resume_sender,
             }),
@@ -589,6 +591,14 @@ where
     /// existing deadline intact.
     pub async fn run_hourly_scheduler(&self, refresh_on_startup: bool) {
         const HOUR_MS: i64 = 60 * 60 * 1000;
+        if self
+            .scheduler
+            .started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
         let cancellation = self.scheduler.cancellation.clone();
         let mut resumes = self.scheduler.resume_sender.subscribe();
         let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));

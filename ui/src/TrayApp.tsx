@@ -126,7 +126,7 @@ function SettingsView({
       settings.alertPreferences.map((preference) => ({ ...preference })),
     );
     setAutostartEnabled(settings.autostartEnabled);
-  }, [settings]);
+  }, [settings.settingsRevision]);
 
   const total = dailyLimits.reduce((sum, value) => sum + value, 0);
   const policyValid =

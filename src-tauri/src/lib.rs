@@ -1,12 +1,15 @@
 //! `QuotaTide` desktop shell.
 
 pub mod auth_file;
+pub mod background_lifecycle;
 pub mod codex_usage;
 pub mod reset_radar;
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use auth_file::AuthFileReader;
+use background_lifecycle::{AUTOSTART_ARGUMENT, LaunchMode, notify_secondary, start_primary};
 use codex_usage::{CodexUsageClient, ConfiguredCodexUsageSource};
 use quotatide_core::{
     AccountApplication, AccountSettingsStore, Application, AtomicSettingsManager, AutostartControl,
@@ -24,13 +27,13 @@ use tauri::{
     App, AppHandle, Emitter, Manager, PhysicalPosition, Rect, RunEvent, WebviewWindow, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
+use tokio::sync::Notify;
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const MAIN_TRAY_ID: &str = "main";
 const WINDOW_GAP: f64 = 8.0;
 const DASHBOARD_CHANGED_EVENT: &str = "quotatide://dashboard-changed";
 const SETTINGS_CHANGED_EVENT: &str = "quotatide://settings-changed";
-const AUTOSTART_ARGUMENT: &str = "--quotatide-autostart";
 
 #[derive(Debug, Default)]
 struct DesktopShell {
@@ -56,26 +59,48 @@ impl Clock for SystemClock {
 type LiveApplication = Application<AuthFileReader, ConfiguredCodexUsageSource, SystemClock>;
 type LiveAtomicSettings = AtomicSettingsManager<AuthFileReader, SystemAutostart>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LaunchMode {
-    User,
-    Autostart,
+#[derive(Clone, Default)]
+struct DeliveryWorkerLifecycle {
+    state: Arc<DeliveryWorkerState>,
 }
 
-impl LaunchMode {
-    fn from_args(args: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
-        if args
-            .into_iter()
-            .any(|argument| argument.as_ref() == AUTOSTART_ARGUMENT)
+#[derive(Default)]
+struct DeliveryWorkerState {
+    started: AtomicBool,
+    cancelled: AtomicBool,
+    wake: Notify,
+}
+
+impl DeliveryWorkerLifecycle {
+    fn start(&self) -> bool {
+        if self
+            .state
+            .started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
         {
-            Self::Autostart
-        } else {
-            Self::User
+            return false;
+        }
+        let worker = self.clone();
+        tauri::async_runtime::spawn(async move {
+            worker.run().await;
+        });
+        true
+    }
+
+    async fn run(self) {
+        while !self.state.cancelled.load(Ordering::Acquire) {
+            self.state.wake.notified().await;
         }
     }
 
-    const fn shows_initial_window(self) -> bool {
-        matches!(self, Self::User)
+    fn wake(&self) {
+        self.state.wake.notify_one();
+    }
+
+    fn cancel(&self) {
+        self.state.cancelled.store(true, Ordering::Release);
+        self.state.wake.notify_one();
     }
 }
 
@@ -173,21 +198,10 @@ async fn save_settings(
         .save_settings(draft)
         .await
         .map_err(|error| error.public::<AuthFileReader>())?;
-    let dashboard_revision = application
-        .live_quota(SystemClock.now_unix_ms())
-        .await
-        .map_err(|error| error.public::<AuthFileReader>())?
-        .dashboard_revision;
     let _ = app.emit(
         SETTINGS_CHANGED_EVENT,
         SettingsChanged {
             revision: settings.settings_revision,
-        },
-    );
-    let _ = app.emit(
-        DASHBOARD_CHANGED_EVENT,
-        DashboardChanged {
-            revision: dashboard_revision,
         },
     );
     if refresh_selected_account {
@@ -446,15 +460,23 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let application = Application::new(AccountApplication::new(settings), refresh);
     app.manage(application.clone());
     spawn_dashboard_event_bridge(app.handle().clone(), application.clone());
-    spawn_refresh_scheduler(application, true);
+    let delivery_worker = DeliveryWorkerLifecycle::default();
+    app.manage(delivery_worker.clone());
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         apply_platform_material(&window);
     }
     let launch_mode = LaunchMode::from_args(std::env::args());
-    if launch_mode.shows_initial_window() {
-        dispatch_shell_event(app.handle(), ShellEvent::OpenRequested, None)
-            .map_err(|_| "failed to show the initial tray window")?;
-    }
+    start_primary(
+        launch_mode,
+        || spawn_refresh_scheduler(application, true),
+        || {
+            let _ = delivery_worker.start();
+        },
+        || {
+            dispatch_shell_event(app.handle(), ShellEvent::OpenRequested, None)
+                .map_err(|_| "failed to show the initial tray window")
+        },
+    )?;
     Ok(())
 }
 
@@ -465,9 +487,11 @@ fn handle_run_event(app: &AppHandle, event: &RunEvent) {
                 eprintln!("QuotaTide: {error}");
             }
             app.state::<LiveApplication>().notify_resume();
+            app.state::<DeliveryWorkerLifecycle>().wake();
         }
         RunEvent::Exit | RunEvent::ExitRequested { .. } => {
             app.state::<LiveApplication>().cancel_scheduler();
+            app.state::<DeliveryWorkerLifecycle>().cancel();
         }
         _ => {}
     }
@@ -480,12 +504,22 @@ fn handle_run_event(app: &AppHandle, event: &RunEvent) {
 /// Panics when the desktop runtime cannot be initialized or its event loop fails.
 pub fn run() {
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Err(error) = dispatch_shell_event(app, ShellEvent::OpenRequested, None) {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if let Err(error) = notify_secondary(
+                LaunchMode::from_args(&args),
+                || dispatch_shell_event(app, ShellEvent::OpenRequested, None),
+                || {
+                    if let Some(application) = app.try_state::<LiveApplication>() {
+                        application.notify_resume();
+                    }
+                },
+                || {
+                    if let Some(worker) = app.try_state::<DeliveryWorkerLifecycle>() {
+                        worker.wake();
+                    }
+                },
+            ) {
                 eprintln!("QuotaTide: {error}");
-            }
-            if let Some(application) = app.try_state::<LiveApplication>() {
-                application.notify_resume();
             }
         }))
         .plugin(tauri_plugin_autostart::init(
@@ -736,9 +770,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        AUTOSTART_ARGUMENT, AuthFileReader, LaunchMode, configure_selected_auth, get_build_info,
+        AuthFileReader, DeliveryWorkerLifecycle, configure_selected_auth, get_build_info,
         menu_event_for_id,
     };
+    use crate::background_lifecycle::{AUTOSTART_ARGUMENT, LaunchMode};
 
     #[test]
     fn command_returns_the_public_core_contract() {
@@ -766,9 +801,23 @@ mod tests {
             LaunchMode::from_args(["quotatide", AUTOSTART_ARGUMENT]),
             LaunchMode::Autostart
         );
-        assert!(!LaunchMode::Autostart.shows_initial_window());
+        assert!(!LaunchMode::Autostart.shows_window());
         assert_eq!(LaunchMode::from_args(["quotatide"]), LaunchMode::User);
-        assert!(LaunchMode::User.shows_initial_window());
+        assert!(LaunchMode::User.shows_window());
+        assert!(!LaunchMode::from_args(["quotatide", AUTOSTART_ARGUMENT]).shows_window());
+    }
+
+    #[tokio::test]
+    async fn delivery_worker_lifecycle_starts_once_and_resume_only_wakes_it() {
+        let worker = DeliveryWorkerLifecycle::default();
+
+        assert!(worker.start());
+        assert!(!worker.start());
+        worker.wake();
+        assert!(!worker.start());
+
+        worker.cancel();
+        tokio::task::yield_now().await;
     }
 
     #[test]

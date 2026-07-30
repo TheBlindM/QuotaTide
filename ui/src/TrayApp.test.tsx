@@ -165,6 +165,34 @@ describe("tray-window navigation", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("设置未保存");
   });
 
+  it("preserves unsaved edits when background refresh keeps the same revision", () => {
+    const { rerender } = render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        settings={atomicSettings}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "额度" }));
+    fireEvent.input(screen.getByLabelText("周一额度"), {
+      target: { value: "15" },
+    });
+
+    rerender(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        settings={{ ...atomicSettings }}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("周一额度")).toHaveValue(15);
+  });
+
   it("supports platform keyboard shortcuts without opening another window", () => {
     const onHide = vi.fn();
     const onRefresh = vi.fn();

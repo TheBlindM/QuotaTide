@@ -832,6 +832,32 @@ async fn early_resume_keeps_the_existing_hourly_deadline() {
     scheduler.await.expect("scheduler shutdown");
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_second_scheduler_start_does_not_create_another_worker() {
+    let (_directory, store) = configured_store().await;
+    let source = FakeSource::successful(1_785_000_000_000);
+    let calls = Arc::clone(&source.calls);
+    let coordinator =
+        RefreshCoordinator::new(store.clone(), source, FakeClock::new(1_785_000_000_000));
+    let application = Application::new(
+        AccountApplication::new(SettingsManager::new(store, UnusedValidator)),
+        coordinator,
+    );
+    let primary = {
+        let application = application.clone();
+        tokio::spawn(async move {
+            application.run_hourly_scheduler(true).await;
+        })
+    };
+
+    wait_for_count(&calls, 1).await;
+    application.run_hourly_scheduler(true).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    application.cancel_scheduler();
+    primary.await.expect("scheduler shutdown");
+}
+
 async fn wait_for_count(counter: &AtomicUsize, expected: usize) {
     while counter.load(Ordering::SeqCst) < expected {
         tokio::task::yield_now().await;
