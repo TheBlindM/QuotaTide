@@ -39,3 +39,11 @@
 27，避免 Ticket 25 → 26 → 27 的依赖链形成循环；这部分尚未标为发布 PASS。
 实施证据见
 [`docs/research/localization-accessibility-evidence.md`](../../../docs/research/localization-accessibility-evidence.md)。
+
+2026-07-30：420 × 680 浏览器渲染复检发现英文预览仍混用了非结构化的
+重置/Radar fixture，且 200% 字体下设置页副标题被窄容器规则裁切。修复后
+preview 使用与生产一致的结构化投影，毛玻璃降级提示跟随界面语言，普通
+weekday 保持格式区域输出；200% 字体下标题完整换行、核心页面可滚动到达且
+无横向溢出。61 项单元/集成测试及 1 项真实 Chrome 门禁通过；浏览器门禁要求
+overview、两条 Radar 链接、四个设置分类与底部操作完整可见且可聚焦。
+VoiceOver/Narrator 与原生材质仍由 Ticket 27 的最终候选真机门禁负责。

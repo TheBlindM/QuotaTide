@@ -45,7 +45,7 @@ exact final candidate、七类 artifact、
 BLOCKED、缺失记录与无批准理由 N/A 均拒绝发布。
 
 本机预检已验证 universal slices、macOS 15.0、固定尺寸 DMG 挂载、updater
-archive/signature 与篡改拒绝、31,685-byte UI gzip、secret canary、完整
+archive/signature 与篡改拒绝、32,491-byte UI gzip、secret canary、完整
 Rust/UI/依赖门禁和五分钟后台资源趋势。证据见
 [`docs/qa/0.1.0-local-preflight.md`](../../../docs/qa/0.1.0-local-preflight.md)。
 
@@ -65,3 +65,9 @@ Ticket 仍不能关闭：GitHub 仓库、最终 updater key/恢复演练和同�
 秒内取得严格当前七日窗口，`auth.json` 前后哈希一致；修复后的 universal app
 与 DMG 已重新构建并验证。该结果仅补充本机预检，不改变上述真机矩阵的
 `BLOCKED` 状态。
+
+同日 420 × 680 浏览器渲染复检覆盖中英文、light/dark、opaque fallback、
+200% 字体、两条 Radar 链接、四个设置分类和额度总和校验，修复非结构化
+preview 混排、格式区域 weekday 被界面语言覆盖及大字体标题裁切。commit
+`0a693f3` 的 universal app/DMG 已重新生成，hash 与范围记录在本机预检报告；
+锁屏下仍不把浏览器渲染视为原生材质、VoiceOver 或通知 PASS。
