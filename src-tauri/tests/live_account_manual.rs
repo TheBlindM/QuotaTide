@@ -55,6 +55,10 @@ async fn fetches_one_strict_current_seven_day_observation() {
         .refresh(RefreshTrigger::Startup)
         .await
         .expect("fetch current weekly usage");
+    let completed_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+        .expect("system clock after epoch");
     assert_eq!(
         receipt.outcome,
         RefreshOutcome::Updated,
@@ -66,13 +70,24 @@ async fn fetches_one_strict_current_seven_day_observation() {
         .expect("read current weekly usage")
         .expect("successful live observation");
 
-    assert_eq!(observation.captured_at_unix_ms, Some(captured_at_unix_ms));
+    assert!(
+        observation.captured_at_unix_ms.is_some_and(|captured| {
+            (captured_at_unix_ms..=completed_at_unix_ms).contains(&captured)
+        }),
+        "observation capture time must fall between request start and completion",
+    );
     assert_eq!(
         observation
-            .window_ends_at_unix_s
+            .resets_at_unix_s
             .zip(observation.window_starts_at_unix_s)
-            .map(|(end, start)| end - start),
+            .map(|(reset, start)| reset - start),
         Some(604_800)
+    );
+    assert_eq!(
+        observation.window_ends_at_unix_s,
+        observation
+            .resets_at_unix_s
+            .map(|reset| reset.saturating_sub(1)),
     );
     assert!(observation.resets_at_unix_s.is_some_and(|reset| reset > 0));
     assert!(

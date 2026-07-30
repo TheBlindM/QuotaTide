@@ -392,6 +392,8 @@ trait ResetRadarSource {
 ## 对现有原型的修正
 
 - 保留：一小时轮询、15 秒 Codex 超时、只读 auth、单账号、按当前上游窗口展示七天。
+- Windows/macOS 原生 HTTP client 必须继承操作系统代理；Finder、登录启动项或
+  Windows shell 启动的桌面应用不能假设存在 shell `HTTPS_PROXY` 环境变量。
 - 收紧：周窗口从“任意至少一天”改为恰好 604800 秒；未知结构显式报错。
 - 修正：JWT account fallback 必须读取 `https://api.openai.com/auth` 对象内的 `chatgpt_account_id`，不是带点号的扁平 key。
 - 修正：`reset_at` 在边界前跳动但用量未下降时不应创建新 epoch。

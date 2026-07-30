@@ -49,3 +49,10 @@
   remained unchanged.
 - Review: all Standards and Spec findings across four targeted review rounds
   were fixed; both final re-reviews passed.
+- 2026-07-30 live regression: the desktop manifest had disabled reqwest default
+  features without restoring `system-proxy`, so a Mac using the operating
+  system proxy timed out while Radar remained reachable. Enabling the explicit
+  `system-proxy` feature adds the native macOS SystemConfiguration and Windows
+  registry backends. The same ignored real-account test then fetched the strict
+  604800-second window in 2.89 seconds, and a before/after SHA-256 comparison
+  proved the Codex-managed `auth.json` was unchanged.

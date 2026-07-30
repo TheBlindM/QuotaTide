@@ -32,7 +32,12 @@ lettre = { version = "=0.11.22", default-features = false, features = [
 ] }
 quotatide-core = { path = "../crates/quotatide-core", version = "=0.1.0" }
 quotatide-native-notifications = { path = "../crates/quotatide-native-notifications", version = "=0.1.0" }
-reqwest = { version = "=0.13.4", default-features = false, features = ["json", "native-tls", "stream"] }
+reqwest = { version = "=0.13.4", default-features = false, features = [
+  "json",
+  "native-tls",
+  "stream",
+  "system-proxy",
+] }
 rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"] }
 rusqlite = { version = "=0.37.0", features = ["bundled"] }
 secrecy = "=0.10.3"

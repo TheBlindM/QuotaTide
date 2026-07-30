@@ -415,7 +415,7 @@ SMTP 密码输入保存成功后立即清空，重新打开设置只显示“已
 |---|---|
 | 后台网络 | 正常情况下每小时各一次 Codex 与 Radar；更新检查另按发布策略 |
 | 手动刷新 | 30 秒冷却，且与定时刷新 single-flight |
-| HTTP | 复用两个固定 origin client；Codex 15 秒、Radar 10 秒超时 |
+| HTTP | 复用两个固定 origin client；Codex 15 秒、Radar 10 秒超时；Windows/macOS 原生构建继承用户的系统代理 |
 | async/thread | 一个 Tauri Tokio runtime、一个 SQLite 连接线程；无每轮新线程 |
 | UI bundle | gzip 后不超过 100 KiB（不含系统 WebView 与 Tauri runtime） |
 | 空闲 CPU | 窗口隐藏并稳定 5 分钟后，应用平均低于 0.5% |
