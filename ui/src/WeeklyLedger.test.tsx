@@ -4,11 +4,45 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, within } from "@testing-library/preact";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { PublicAlertInbox } from "./bindings/PublicAlertInbox";
 import { WeeklyLedger, ledgerFixtures } from "./WeeklyLedger";
 
 afterEach(cleanup);
 
 describe("Weekly Ledger overview", () => {
+  it("keeps durable in-app reminders visible when system notification permission is denied", () => {
+    const alerts: PublicAlertInbox = {
+      notificationPermissionStatus: "denied",
+      events: [
+        {
+          eventId: 41,
+          eventKind: "daily_80",
+          localDate: "2026-07-30",
+          source: null,
+          target: "today",
+          systemDeliveryState: "paused_permission",
+          createdAtUnixMs: 1_785_347_200_000,
+        },
+      ],
+    };
+
+    render(
+      <WeeklyLedger
+        fixture={ledgerFixtures.fresh}
+        alerts={alerts}
+        focusTarget="today"
+        onOpenSettings={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("region", { name: "最近提醒" })).toHaveTextContent(
+      "今日额度已达到 80%",
+    );
+    expect(screen.getByText(/系统通知未授权/)).toBeInTheDocument();
+    expect(document.activeElement).toHaveAttribute("id", "quota-target-today");
+  });
+
   it("shows the current account's complete seven-day window", () => {
     render(
       <WeeklyLedger

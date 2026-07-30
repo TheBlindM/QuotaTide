@@ -3,6 +3,9 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { AlertChannel } from "./bindings/AlertChannel";
 import type { AlertEventKind } from "./bindings/AlertEventKind";
 import type { AlertPreferenceDraft } from "./bindings/AlertPreferenceDraft";
+import type { AlertTarget } from "./bindings/AlertTarget";
+import type { NotificationPermissionStatus } from "./bindings/NotificationPermissionStatus";
+import type { PublicAlertInbox } from "./bindings/PublicAlertInbox";
 import type { PublicSettings } from "./bindings/PublicSettings";
 import type { SettingsDraft } from "./bindings/SettingsDraft";
 import { WeeklyLedger, type LedgerFixture } from "./WeeklyLedger";
@@ -61,6 +64,7 @@ const unconfiguredSettings: PublicSettings = {
   configured: false,
   pathSummary: null,
   accountLabel: null,
+  notificationPermissionStatus: "unknown",
   quotaPolicy: {
     policyRevision: 1,
     policyTimezone: "Asia/Shanghai",
@@ -77,9 +81,12 @@ const unconfiguredSettings: PublicSettings = {
 type TrayAppProps = {
   fixture: LedgerFixture;
   settings?: PublicSettings;
+  alerts?: PublicAlertInbox | null;
+  focusTarget?: AlertTarget | null;
   externalRefreshing?: boolean;
   onHide: () => void;
   onRefresh: () => unknown;
+  onRequestNotificationPermission?: () => Promise<NotificationPermissionStatus>;
   onSaveSettings?: (draft: SettingsDraft) => Promise<PublicSettings>;
   onReloadSettings?: () => Promise<PublicSettings>;
 };
@@ -87,10 +94,12 @@ type TrayAppProps = {
 function SettingsView({
   settings,
   onBack,
+  onRequestNotificationPermission,
   onSave,
 }: {
   settings: PublicSettings;
   onBack: () => void;
+  onRequestNotificationPermission?: () => Promise<void>;
   onSave: (draft: SettingsDraft) => Promise<void>;
 }) {
   const [activeTab, setActiveTab] = useState<"account" | "quota" | "alerts">(
@@ -349,6 +358,32 @@ function SettingsView({
                 <span>邮件</span>
               </div>
             </div>
+            <div
+              class={`notification-status notification-status--${settings.notificationPermissionStatus}`}
+              role="status"
+            >
+              <span>系统通知</span>
+              {settings.notificationPermissionStatus === "unknown" &&
+              onRequestNotificationPermission ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void onRequestNotificationPermission().catch(() => undefined);
+                  }}
+                >
+                  启用系统通知
+                </button>
+              ) : (
+                <strong>
+                  {{
+                    unknown: "配置账号后可启用",
+                    granted: "已授权",
+                    denied: "已拒绝 · 应用内提醒保留",
+                    error: "状态不可用 · 应用内提醒保留",
+                  }[settings.notificationPermissionStatus]}
+                </strong>
+              )}
+            </div>
             <div class="alert-matrix">
               {alertEvents.map((event) => (
                 <div class="alert-row" key={event.kind}>
@@ -416,9 +451,12 @@ function SettingsView({
 export function TrayApp({
   fixture,
   settings = unconfiguredSettings,
+  alerts = null,
+  focusTarget = null,
   externalRefreshing = false,
   onHide,
   onRefresh,
+  onRequestNotificationPermission,
   onSaveSettings,
   onReloadSettings,
 }: TrayAppProps) {
@@ -514,6 +552,17 @@ export function TrayApp({
         onBack={() => {
           setView("ledger");
         }}
+        onRequestNotificationPermission={
+          onRequestNotificationPermission
+            ? async () => {
+                const status = await onRequestNotificationPermission();
+                setCurrentSettings((current) => ({
+                  ...current,
+                  notificationPermissionStatus: status,
+                }));
+              }
+            : undefined
+        }
         onSave={async (draft) => {
           if (!onSaveSettings) {
             return;
@@ -534,6 +583,8 @@ export function TrayApp({
   return (
     <WeeklyLedger
       fixture={fixture}
+      alerts={alerts}
+      focusTarget={focusTarget}
       onOpenSettings={() => {
         setView("settings");
       }}

@@ -4,6 +4,7 @@ use serde::Serialize;
 use ts_rs::TS;
 
 mod account_settings;
+mod alerts;
 mod live_quota;
 mod quota_ledger;
 mod reset_radar;
@@ -15,6 +16,10 @@ pub use account_settings::{
     AuthCandidateValidator, AutostartControl, PublicAccountSettings, PublicError, PublicErrorCode,
     PublicQuotaPolicy, PublicSettings, QuotaPolicyDraft, SafeErrorContext, SettingsDraft,
     SettingsManager, SettingsStoreError, UsageCommitDisposition, ValidatedAccountCandidate,
+};
+pub use alerts::{
+    AlertTarget, DeliverySweep, DeliveryWorker, NotificationPermissionStatus, PublicAlertEvent,
+    PublicAlertInbox, PublicDeliveryState, SafeNotification, SystemNotifier,
 };
 pub use live_quota::{
     Application, Clock, CurrentUsageAuth, DashboardChanged, LedgerDayStatus, PublicLedgerDay,

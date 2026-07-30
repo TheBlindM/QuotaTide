@@ -76,12 +76,22 @@ vi.mock("./api/account-settings", () => ({
     configured: true,
     pathSummary: "…/auth.json",
     accountLabel: "账号 • 21B8",
+    notificationPermissionStatus: "granted",
     quotaPolicy,
     alertPreferences: appAlertPreferences,
     autostartEnabled: false,
   }),
   onSettingsChanged: vi.fn().mockResolvedValue(vi.fn()),
   saveSettings: vi.fn(),
+}));
+
+vi.mock("./api/alerts", () => ({
+  getAlerts: vi.fn().mockResolvedValue({
+    notificationPermissionStatus: "granted",
+    events: [],
+  }),
+  onNotificationOpened: vi.fn().mockResolvedValue(vi.fn()),
+  requestSystemNotificationPermission: vi.fn().mockResolvedValue("granted"),
 }));
 
 vi.mock("./api/live-quota", () => ({
@@ -156,6 +166,7 @@ describe("QuotaTide tray app", () => {
       configured: true,
       pathSummary: "…/new-auth.json",
       accountLabel: "账号 • 991A",
+      notificationPermissionStatus: "granted",
       quotaPolicy,
       alertPreferences: appAlertPreferences,
       autostartEnabled: false,

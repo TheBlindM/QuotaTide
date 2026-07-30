@@ -221,6 +221,81 @@ input:focus-visible {
   white-space: nowrap;
 }
 
+.alert-inbox {
+  overflow: hidden;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, var(--amber-soft), transparent 72%),
+    var(--card);
+}
+
+.alert-inbox__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.alert-inbox__heading span {
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.alert-inbox__heading small {
+  color: var(--faint);
+  font-size: 9px;
+}
+
+.alert-inbox__permission {
+  margin: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--amber);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.alert-inbox__events {
+  display: grid;
+}
+
+.alert-inbox__event {
+  display: grid;
+  min-height: 39px;
+  align-items: center;
+  column-gap: 8px;
+  padding: 7px 12px;
+  grid-template-columns: 6px minmax(0, 1fr) auto;
+}
+
+.alert-inbox__event + .alert-inbox__event {
+  border-top: 1px solid var(--line);
+}
+
+.alert-inbox__event > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 0 4px var(--amber-soft);
+}
+
+.alert-inbox__event strong {
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alert-inbox__event small {
+  color: var(--faint);
+  font-size: 9px;
+}
+
 .ledger-summary {
   display: grid;
   margin-bottom: 10px;
@@ -919,6 +994,41 @@ progress::-moz-progress-bar {
 
 .alert-channel-headings span {
   font-size: 9px;
+}
+
+.notification-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 9px;
+}
+
+.notification-status strong {
+  font-weight: 680;
+}
+
+.notification-status button {
+  min-width: auto;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 9px;
+  background: var(--glass-strong);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 720;
+}
+
+.notification-status--denied,
+.notification-status--error {
+  background: var(--amber-soft);
+  color: var(--amber);
 }
 
 .alert-matrix {

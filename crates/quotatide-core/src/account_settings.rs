@@ -11,6 +11,10 @@ use tokio_rusqlite::{Connection, rusqlite};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::alerts::{
+    AlertTarget, ClaimedSystemDelivery, NotificationPermissionStatus, PublicAlertEvent,
+    PublicAlertInbox, PublicDeliveryState,
+};
 use crate::live_quota::CombinedRefreshDisposition;
 use crate::quota_ledger::{
     DailyLimitSnapshot, DailyPolicyStatus, PersistedLedgerEpoch, PolicyDayProjection, PolicyError,
@@ -24,7 +28,7 @@ use crate::{
     radar_bucket_label,
 };
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 const SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-settings-v1-account-path-stream";
 const LIVE_QUOTA_SCHEMA_CHECKSUM: &str = "quotatide-v2-live-quota-health";
 const QUOTA_LEDGER_SCHEMA_CHECKSUM: &str = "quotatide-v3-current-seven-day-ledger";
@@ -33,6 +37,7 @@ const DAILY_POLICY_SCHEMA_CHECKSUM: &str = "quotatide-v5-versioned-daily-policy"
 const RESET_RADAR_SCHEMA_CHECKSUM: &str = "quotatide-v6-independent-reset-radar";
 const ATOMIC_RADAR_SCHEMA_CHECKSUM: &str = "quotatide-v7-atomic-radar-refresh";
 const ATOMIC_SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-v8-atomic-settings-journal";
+const DURABLE_ALERTS_SCHEMA_CHECKSUM: &str = "quotatide-v9-durable-alert-outbox";
 const FRESH_FOR_MS: i64 = 90 * 60 * 1000;
 
 /// A stable, secret-free account configuration projection for the UI.
@@ -101,7 +106,7 @@ impl AlertEventKind {
         Self::SourceFailures3,
     ];
 
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Daily80 => "daily_80",
             Self::Daily100 => "daily_100",
@@ -113,7 +118,7 @@ impl AlertEventKind {
         }
     }
 
-    fn parse(value: &str) -> rusqlite::Result<Self> {
+    pub(crate) fn parse(value: &str) -> rusqlite::Result<Self> {
         match value {
             "daily_80" => Ok(Self::Daily80),
             "daily_100" => Ok(Self::Daily100),
@@ -184,6 +189,7 @@ pub struct PublicSettings {
     pub configured: bool,
     pub path_summary: Option<String>,
     pub account_label: Option<String>,
+    pub notification_permission_status: NotificationPermissionStatus,
     pub quota_policy: PublicQuotaPolicy,
     pub alert_preferences: Vec<AlertPreference>,
     pub autostart_enabled: bool,
@@ -450,7 +456,9 @@ where
                 PublicErrorCode::InvalidAlertPreferences,
                 "settings.invalid_alert_preferences",
             ),
-            Self::Storage(SettingsStoreError::Database(_)) => PublicError::new(
+            Self::Storage(
+                SettingsStoreError::Database(_) | SettingsStoreError::InvalidNotificationState,
+            ) => PublicError::new(
                 PublicErrorCode::StorageUnavailable,
                 "settings.storage_unavailable",
             ),
@@ -576,7 +584,9 @@ impl<E: Error + Send + Sync + 'static> AccountConfigError<E> {
                 PublicErrorCode::InvalidAlertPreferences,
                 "settings.invalid_alert_preferences",
             ),
-            Self::Storage(SettingsStoreError::Database(_)) => PublicError::new(
+            Self::Storage(
+                SettingsStoreError::Database(_) | SettingsStoreError::InvalidNotificationState,
+            ) => PublicError::new(
                 PublicErrorCode::StorageUnavailable,
                 "settings.storage_unavailable",
             ),
@@ -739,6 +749,8 @@ pub enum SettingsStoreError {
     InvalidPolicy(#[from] PolicyError),
     #[error("alert preferences must replace every supported event and channel exactly once")]
     InvalidAlertPreferences,
+    #[error("persisted notification state is invalid")]
+    InvalidNotificationState,
     #[error("account settings store unavailable")]
     Database(#[source] Box<dyn Error + Send + Sync>),
 }
@@ -822,6 +834,11 @@ fn initialize_database(
         migrate_atomic_settings_v8(database, now)?;
     } else {
         validate_migration(database, 8, ATOMIC_SETTINGS_SCHEMA_CHECKSUM)?;
+    }
+    if current_version <= 8 {
+        migrate_durable_alerts_v9(database, now)?;
+    } else {
+        validate_migration(database, 9, DURABLE_ALERTS_SCHEMA_CHECKSUM)?;
     }
     Ok(())
 }
@@ -1363,6 +1380,105 @@ fn migrate_atomic_settings_v8(
     transaction.commit()
 }
 
+fn migrate_durable_alerts_v9(
+    database: &mut rusqlite::Connection,
+    now: i64,
+) -> rusqlite::Result<()> {
+    let transaction =
+        database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE app_settings
+           ADD COLUMN notification_permission_status TEXT NOT NULL DEFAULT 'unknown'
+             CHECK (notification_permission_status IN (
+               'unknown', 'granted', 'denied', 'error'
+             ));
+         CREATE TABLE alert_events (
+           id INTEGER PRIMARY KEY,
+           event_key TEXT NOT NULL UNIQUE,
+           event_kind TEXT NOT NULL CHECK (event_kind IN (
+             'daily_80', 'daily_100', 'weekly_remaining_20',
+             'weekly_remaining_10', 'radar_chance_70',
+             'quota_reset_confirmed', 'source_failures_3'
+           )),
+           account_stream_id INTEGER REFERENCES account_streams(id),
+           quota_epoch_id INTEGER REFERENCES quota_epochs(id),
+           local_date TEXT,
+           watch_key TEXT,
+           source TEXT CHECK (source IS NULL OR source IN ('codex', 'radar')),
+           threshold_micropoints INTEGER CHECK (
+             threshold_micropoints IS NULL OR threshold_micropoints >= 0
+           ),
+           message_key TEXT NOT NULL,
+           structured_args_json TEXT NOT NULL,
+           interface_locale_snapshot TEXT NOT NULL,
+           format_locale_snapshot TEXT NOT NULL,
+           policy_timezone_snapshot TEXT NOT NULL,
+           target TEXT NOT NULL CHECK (target IN ('today', 'radar', 'source')),
+           created_at_ms INTEGER NOT NULL
+         );
+         CREATE TABLE alert_deliveries (
+           id INTEGER PRIMARY KEY,
+           delivery_key TEXT NOT NULL UNIQUE,
+           alert_event_id INTEGER NOT NULL REFERENCES alert_events(id),
+           channel TEXT NOT NULL CHECK (channel IN ('system', 'email')),
+           recipient_key BLOB,
+           state TEXT NOT NULL CHECK (state IN (
+             'pending', 'leased', 'delivered', 'retry_wait',
+             'paused_permission', 'paused_config', 'cancelled_by_config',
+             'permanent_failure'
+           )),
+           attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+           next_attempt_at_ms INTEGER,
+           lease_owner TEXT,
+           lease_until_ms INTEGER,
+           public_error_code TEXT,
+           created_at_ms INTEGER NOT NULL,
+           updated_at_ms INTEGER NOT NULL
+         );
+         CREATE INDEX alert_deliveries_due
+           ON alert_deliveries(state, next_attempt_at_ms, lease_until_ms);
+         CREATE TABLE delivery_attempts (
+           id INTEGER PRIMARY KEY,
+           delivery_id INTEGER NOT NULL REFERENCES alert_deliveries(id),
+           attempted_at_ms INTEGER NOT NULL,
+           outcome TEXT NOT NULL CHECK (outcome IN (
+             'delivered', 'transient_failure', 'permanent_failure',
+             'permission_denied'
+           )),
+           public_error_code TEXT,
+           duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0)
+         );
+         CREATE TRIGGER alert_events_are_immutable_update
+           BEFORE UPDATE ON alert_events BEGIN
+             SELECT RAISE(ABORT, 'alert events are immutable');
+           END;
+         CREATE TRIGGER alert_events_are_immutable_delete
+           BEFORE DELETE ON alert_events BEGIN
+             SELECT RAISE(ABORT, 'alert events are immutable');
+           END;
+         CREATE TRIGGER delivery_attempts_are_immutable_update
+           BEFORE UPDATE ON delivery_attempts BEGIN
+             SELECT RAISE(ABORT, 'delivery attempts are immutable');
+           END;
+         CREATE TRIGGER delivery_attempts_are_immutable_delete
+           BEFORE DELETE ON delivery_attempts BEGIN
+             SELECT RAISE(ABORT, 'delivery attempts are immutable');
+           END;",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations
+         (version, applied_at_ms, app_version, checksum)
+         VALUES (9, ?1, ?2, ?3)",
+        rusqlite::params![
+            now,
+            env!("CARGO_PKG_VERSION"),
+            DURABLE_ALERTS_SCHEMA_CHECKSUM
+        ],
+    )?;
+    transaction.pragma_update(None, "user_version", 9)?;
+    transaction.commit()
+}
+
 fn insert_default_policy_revision(
     transaction: &rusqlite::Transaction<'_>,
     now: i64,
@@ -1608,10 +1724,11 @@ fn load_public_atomic_settings(
     database: &rusqlite::Connection,
 ) -> rusqlite::Result<PublicSettings> {
     let account = load_public_account_settings(database)?;
-    let autostart_enabled: i64 = database.query_row(
-        "SELECT autostart_enabled FROM app_settings WHERE singleton_id = 1",
+    let (autostart_enabled, notification_permission_status): (i64, String) = database.query_row(
+        "SELECT autostart_enabled, notification_permission_status
+         FROM app_settings WHERE singleton_id = 1",
         [],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let mut statement = database.prepare(
         "SELECT event_kind, channel, enabled
@@ -1638,6 +1755,10 @@ fn load_public_atomic_settings(
         configured: account.configured,
         path_summary: account.path_summary,
         account_label: account.account_label,
+        notification_permission_status: NotificationPermissionStatus::parse(
+            &notification_permission_status,
+        )
+        .map_err(|_| rusqlite::Error::InvalidQuery)?,
         quota_policy: account.quota_policy,
         alert_preferences,
         autostart_enabled: autostart_enabled != 0,
@@ -2383,67 +2504,16 @@ impl AccountSettingsStore {
             .call(move |database| {
                 let transaction =
                     database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                let (salt, revision, configured_path, configured_stream_id): (
-                    Vec<u8>,
-                    i64,
-                    Option<String>,
-                    Option<i64>,
-                ) = transaction.query_row(
-                    "SELECT m.local_hash_salt, m.settings_revision, s.auth_path,
-                            s.configured_account_stream_id
-                     FROM app_meta m
-                     JOIN app_settings s ON s.singleton_id = m.singleton_id
-                     WHERE m.singleton_id = 1",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                let (disposition, settings_increment) = apply_usage_failure(
+                    &transaction,
+                    &binding,
+                    attempted_at_unix_ms,
+                    public_error,
                 )?;
-                if revision != i64::from(binding.settings_revision)
-                    || configured_path.as_deref() != binding.canonical_path.to_str()
-                {
-                    return Ok(UsageCommitDisposition::Superseded);
+                if disposition == UsageCommitDisposition::Committed {
+                    update_dashboard_meta(&transaction, settings_increment, attempted_at_unix_ms)?;
                 }
-                let stream_id = if let Some(account_id) = binding.canonical_account_id.as_deref() {
-                    upsert_account_stream(&transaction, &salt, account_id, attempted_at_unix_ms)?.0
-                } else {
-                    configured_stream_id.ok_or(rusqlite::Error::QueryReturnedNoRows)?
-                };
-                transaction.execute(
-                    "INSERT INTO usage_source_health
-                     (account_stream_id, last_attempt_at_ms, last_success_at_ms,
-                      consecutive_failures, public_error)
-                     VALUES (?1, ?2, NULL, 1, ?3)
-                     ON CONFLICT(account_stream_id) DO UPDATE SET
-                       last_attempt_at_ms = excluded.last_attempt_at_ms,
-                       consecutive_failures = consecutive_failures + 1,
-                       public_error = excluded.public_error",
-                    rusqlite::params![
-                        stream_id,
-                        attempted_at_unix_ms,
-                        public_error.as_storage_key()
-                    ],
-                )?;
-                if configured_stream_id != Some(stream_id) {
-                    transaction.execute(
-                        "UPDATE app_settings
-                         SET configured_account_stream_id = ?1,
-                             active_account_stream_id = NULL,
-                             updated_at_ms = ?2
-                         WHERE singleton_id = 1",
-                        rusqlite::params![stream_id, attempted_at_unix_ms],
-                    )?;
-                }
-                let settings_increment = i64::from(configured_stream_id != Some(stream_id));
-                transaction.execute(
-                    "UPDATE app_meta
-                     SET settings_revision = settings_revision + ?1,
-                         dashboard_revision = dashboard_revision + 1,
-                         updated_at_ms = ?2
-                     WHERE singleton_id = 1",
-                    rusqlite::params![settings_increment, attempted_at_unix_ms],
-                )?;
-                transaction
-                    .commit()
-                    .map(|()| UsageCommitDisposition::Committed)
+                transaction.commit().map(|()| disposition)
             })
             .await
             .map_err(SettingsStoreError::database)
@@ -2465,81 +2535,11 @@ impl AccountSettingsStore {
             .call(move |database| {
                 let transaction =
                     database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                let current_observation_id = if let Some(observation) = snapshot.observation() {
-                    transaction.execute(
-                        "INSERT INTO radar_observations
-                         (source_id, observed_at_ms, expires_at_ms, chance_basis_points,
-                          explanation, source_url, captured_at_ms)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                         ON CONFLICT(source_id, observed_at_ms, expires_at_ms,
-                                     chance_basis_points, explanation, source_url) DO NOTHING",
-                        rusqlite::params![
-                            observation.source_id(),
-                            observation.observed_at_unix_ms(),
-                            observation.expires_at_unix_ms(),
-                            observation.chance().basis_points(),
-                            observation.explanation(),
-                            observation.source_url(),
-                            attempted_at_unix_ms,
-                        ],
-                    )?;
-                    Some(transaction.query_row(
-                        "SELECT id FROM radar_observations
-                         WHERE source_id = ?1 AND observed_at_ms = ?2
-                           AND expires_at_ms = ?3 AND chance_basis_points = ?4
-                           AND explanation = ?5 AND source_url = ?6",
-                        rusqlite::params![
-                            observation.source_id(),
-                            observation.observed_at_unix_ms(),
-                            observation.expires_at_unix_ms(),
-                            observation.chance().basis_points(),
-                            observation.explanation(),
-                            observation.source_url()
-                        ],
-                        |row| row.get::<_, i64>(0),
-                    )?)
-                } else {
-                    None
-                };
-                let new_announcement = if let Some(announcement) = snapshot.latest_announcement() {
-                    transaction.execute(
-                        "INSERT INTO radar_announcements
-                             (source_id, announced_at_ms, text, source_url, captured_at_ms)
-                             VALUES (?1, ?2, ?3, ?4, ?5)
-                             ON CONFLICT(source_id) DO NOTHING",
-                        rusqlite::params![
-                            announcement.source_id(),
-                            announcement.announced_at_unix_ms(),
-                            announcement.text(),
-                            announcement.source_url(),
-                            attempted_at_unix_ms,
-                        ],
-                    )? == 1
-                } else {
-                    false
-                };
-                transaction.execute(
-                    "INSERT INTO radar_source_health
-                     (singleton_id, last_attempt_at_ms, last_success_at_ms,
-                      consecutive_failures, public_error, current_observation_id)
-                     VALUES (1, ?1, ?1, 0, NULL, ?2)
-                     ON CONFLICT(singleton_id) DO UPDATE SET
-                       last_attempt_at_ms = excluded.last_attempt_at_ms,
-                       last_success_at_ms = excluded.last_success_at_ms,
-                       consecutive_failures = 0,
-                       public_error = NULL,
-                       current_observation_id = excluded.current_observation_id",
-                    rusqlite::params![attempted_at_unix_ms, current_observation_id],
-                )?;
-                transaction.execute(
-                    "UPDATE app_meta
-                     SET dashboard_revision = dashboard_revision + 1,
-                         updated_at_ms = ?1
-                     WHERE singleton_id = 1",
-                    [attempted_at_unix_ms],
-                )?;
+                let disposition =
+                    apply_radar_success(&transaction, attempted_at_unix_ms, &snapshot)?;
+                update_dashboard_meta(&transaction, 0, attempted_at_unix_ms)?;
                 transaction.commit()?;
-                Ok::<_, rusqlite::Error>(RadarCommitDisposition { new_announcement })
+                Ok::<_, rusqlite::Error>(disposition)
             })
             .await
             .map_err(SettingsStoreError::database)
@@ -2559,24 +2559,8 @@ impl AccountSettingsStore {
             .call(move |database| {
                 let transaction =
                     database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                transaction.execute(
-                    "INSERT INTO radar_source_health
-                     (singleton_id, last_attempt_at_ms, last_success_at_ms,
-                      consecutive_failures, public_error, current_observation_id)
-                     VALUES (1, ?1, NULL, 1, ?2, NULL)
-                     ON CONFLICT(singleton_id) DO UPDATE SET
-                       last_attempt_at_ms = excluded.last_attempt_at_ms,
-                       consecutive_failures = consecutive_failures + 1,
-                       public_error = excluded.public_error",
-                    rusqlite::params![attempted_at_unix_ms, public_error.as_storage_key()],
-                )?;
-                transaction.execute(
-                    "UPDATE app_meta
-                     SET dashboard_revision = dashboard_revision + 1,
-                         updated_at_ms = ?1
-                     WHERE singleton_id = 1",
-                    [attempted_at_unix_ms],
-                )?;
+                apply_radar_failure(&transaction, attempted_at_unix_ms, public_error)?;
+                update_dashboard_meta(&transaction, 0, attempted_at_unix_ms)?;
                 transaction.commit()
             })
             .await
@@ -2686,6 +2670,344 @@ impl AccountSettingsStore {
             .map_err(SettingsStoreError::database)
     }
 
+    /// Returns the newest persisted in-app reminders and system delivery states.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when persisted alert state is unavailable.
+    pub async fn public_alerts(&self, limit: u32) -> Result<PublicAlertInbox, SettingsStoreError> {
+        self.connection
+            .call(move |database| {
+                let permission: String = database.query_row(
+                    "SELECT notification_permission_status
+                     FROM app_settings WHERE singleton_id = 1",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let mut statement = database.prepare(
+                    "SELECT e.id, e.event_kind, e.local_date, e.source, e.target,
+                            d.state, e.created_at_ms
+                     FROM alert_events e
+                     LEFT JOIN alert_deliveries d
+                       ON d.alert_event_id = e.id AND d.channel = 'system'
+                     ORDER BY e.created_at_ms DESC, e.id DESC LIMIT ?1",
+                )?;
+                let events = statement
+                    .query_map([i64::from(limit.min(100))], |row| {
+                        let id: i64 = row.get(0)?;
+                        let event_kind: String = row.get(1)?;
+                        let target: String = row.get(4)?;
+                        let delivery_state: Option<String> = row.get(5)?;
+                        Ok(PublicAlertEvent {
+                            event_id: u64::try_from(id)
+                                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                            event_kind: AlertEventKind::parse(&event_kind)?,
+                            local_date: row.get(2)?,
+                            source: row.get(3)?,
+                            target: AlertTarget::parse(&target)
+                                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                            system_delivery_state: delivery_state
+                                .map(|state| {
+                                    PublicDeliveryState::parse(&state)
+                                        .map_err(|_| rusqlite::Error::InvalidQuery)
+                                })
+                                .transpose()?,
+                            created_at_unix_ms: row.get(6)?,
+                        })
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok::<_, rusqlite::Error>((permission, events))
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+            .and_then(|(permission, events)| {
+                Ok(PublicAlertInbox {
+                    notification_permission_status: NotificationPermissionStatus::parse(
+                        &permission,
+                    )?,
+                    events,
+                })
+            })
+    }
+
+    /// Persists a platform-reported notification permission state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the state cannot be committed.
+    pub async fn set_notification_permission_status(
+        &self,
+        status: NotificationPermissionStatus,
+        now_unix_ms: i64,
+    ) -> Result<(), SettingsStoreError> {
+        let status = status.as_str();
+        self.connection
+            .call(move |database| {
+                let transaction =
+                    database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let changed = transaction.execute(
+                    "UPDATE app_settings
+                     SET notification_permission_status = ?1, updated_at_ms = ?2
+                     WHERE singleton_id = 1
+                       AND notification_permission_status <> ?1",
+                    rusqlite::params![status, now_unix_ms],
+                )?;
+                if changed == 1 {
+                    transaction.execute(
+                        "UPDATE app_meta
+                         SET dashboard_revision = dashboard_revision + 1,
+                             updated_at_ms = ?1
+                         WHERE singleton_id = 1",
+                        [now_unix_ms],
+                    )?;
+                }
+                transaction.commit()
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
+    pub(crate) async fn pause_system_deliveries(
+        &self,
+        permission: NotificationPermissionStatus,
+        now_unix_ms: i64,
+    ) -> Result<u32, SettingsStoreError> {
+        let public_error = match permission {
+            NotificationPermissionStatus::Denied => "notification_permission_denied",
+            NotificationPermissionStatus::Error => "notification_permission_error",
+            NotificationPermissionStatus::Unknown => "notification_permission_unknown",
+            NotificationPermissionStatus::Granted => return Ok(0),
+        };
+        self.connection
+            .call(move |database| {
+                let transaction =
+                    database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                if permission == NotificationPermissionStatus::Denied {
+                    transaction.execute(
+                        "INSERT INTO delivery_attempts
+                         (delivery_id, attempted_at_ms, outcome, public_error_code, duration_ms)
+                         SELECT id, ?1, 'permission_denied', ?2, 0
+                         FROM alert_deliveries
+                         WHERE channel = 'system' AND state IN ('pending', 'retry_wait')",
+                        rusqlite::params![now_unix_ms, public_error],
+                    )?;
+                }
+                let changed = transaction.execute(
+                    "UPDATE alert_deliveries
+                     SET state = 'paused_permission', next_attempt_at_ms = NULL,
+                         lease_owner = NULL, lease_until_ms = NULL,
+                         public_error_code = ?1, updated_at_ms = ?2
+                     WHERE channel = 'system'
+                       AND state IN ('pending', 'retry_wait')",
+                    rusqlite::params![public_error, now_unix_ms],
+                )?;
+                transaction.commit()?;
+                Ok::<_, rusqlite::Error>(changed)
+            })
+            .await
+            .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
+            .map_err(SettingsStoreError::database)
+    }
+
+    pub(crate) async fn resume_permission_deliveries(
+        &self,
+        now_unix_ms: i64,
+    ) -> Result<(), SettingsStoreError> {
+        self.connection
+            .call(move |database| {
+                database.execute(
+                    "UPDATE alert_deliveries
+                     SET state = 'pending', next_attempt_at_ms = ?1,
+                         public_error_code = NULL, updated_at_ms = ?1
+                     WHERE channel = 'system' AND state = 'paused_permission'",
+                    [now_unix_ms],
+                )?;
+                Ok::<_, rusqlite::Error>(())
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
+    pub(crate) async fn claim_system_deliveries(
+        &self,
+        worker_id: &str,
+        now_unix_ms: i64,
+        lease_ms: i64,
+        limit: u32,
+    ) -> Result<Vec<ClaimedSystemDelivery>, SettingsStoreError> {
+        let worker_id = worker_id.to_owned();
+        let lease_until_ms = now_unix_ms.saturating_add(lease_ms);
+        self.connection
+            .call(move |database| {
+                let transaction =
+                    database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let deliveries = {
+                    let mut statement = transaction.prepare(
+                        "SELECT d.id, d.delivery_key, e.event_kind, e.target
+                         FROM alert_deliveries d
+                         JOIN alert_events e ON e.id = d.alert_event_id
+                         WHERE d.channel = 'system' AND (
+                           d.state = 'pending'
+                           OR (d.state = 'retry_wait' AND d.next_attempt_at_ms <= ?1)
+                           OR (d.state = 'leased' AND d.lease_until_ms <= ?1)
+                         )
+                         ORDER BY d.created_at_ms, d.id LIMIT ?2",
+                    )?;
+                    statement
+                        .query_map(
+                            rusqlite::params![now_unix_ms, i64::from(limit.min(100))],
+                            |row| {
+                                let event_kind: String = row.get(2)?;
+                                let target: String = row.get(3)?;
+                                Ok(ClaimedSystemDelivery {
+                                    id: row.get(0)?,
+                                    delivery_key: row.get(1)?,
+                                    event_kind: AlertEventKind::parse(&event_kind)?,
+                                    target: AlertTarget::parse(&target)
+                                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                                })
+                            },
+                        )?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                };
+                let mut claimed = Vec::with_capacity(deliveries.len());
+                for delivery in deliveries {
+                    let changed = transaction.execute(
+                        "UPDATE alert_deliveries
+                             SET state = 'leased', lease_owner = ?1,
+                                 lease_until_ms = ?2, updated_at_ms = ?3
+                             WHERE id = ?4 AND (
+                               state = 'pending'
+                               OR (state = 'retry_wait' AND next_attempt_at_ms <= ?3)
+                               OR (state = 'leased' AND lease_until_ms <= ?3)
+                             )",
+                        rusqlite::params![worker_id, lease_until_ms, now_unix_ms, delivery.id],
+                    )?;
+                    if changed == 1 {
+                        claimed.push(delivery);
+                    }
+                }
+                transaction.commit()?;
+                Ok::<_, rusqlite::Error>(claimed)
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
+    pub(crate) async fn complete_system_delivery(
+        &self,
+        delivery_id: i64,
+        worker_id: &str,
+        attempted_at_ms: i64,
+        duration_ms: i64,
+    ) -> Result<(), SettingsStoreError> {
+        self.finish_system_delivery(
+            delivery_id,
+            worker_id,
+            attempted_at_ms,
+            duration_ms,
+            true,
+            false,
+        )
+        .await
+    }
+
+    pub(crate) async fn fail_system_delivery(
+        &self,
+        delivery_id: i64,
+        worker_id: &str,
+        attempted_at_ms: i64,
+        duration_ms: i64,
+        transient: bool,
+    ) -> Result<(), SettingsStoreError> {
+        self.finish_system_delivery(
+            delivery_id,
+            worker_id,
+            attempted_at_ms,
+            duration_ms,
+            false,
+            transient,
+        )
+        .await
+    }
+
+    async fn finish_system_delivery(
+        &self,
+        delivery_id: i64,
+        worker_id: &str,
+        attempted_at_ms: i64,
+        duration_ms: i64,
+        delivered: bool,
+        transient: bool,
+    ) -> Result<(), SettingsStoreError> {
+        let worker_id = worker_id.to_owned();
+        self.connection
+            .call(move |database| {
+                let transaction =
+                    database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let attempt_count: i64 = transaction.query_row(
+                    "SELECT attempt_count FROM alert_deliveries
+                     WHERE id = ?1 AND state = 'leased' AND lease_owner = ?2",
+                    rusqlite::params![delivery_id, worker_id],
+                    |row| row.get(0),
+                )?;
+                let next_count = attempt_count.saturating_add(1);
+                let (state, outcome, public_error, next_attempt_at) = if delivered {
+                    ("delivered", "delivered", None, None)
+                } else if transient {
+                    let exponent = u32::try_from(attempt_count.min(6)).unwrap_or(6);
+                    let backoff = 60_000_i64.saturating_mul(2_i64.saturating_pow(exponent));
+                    (
+                        "retry_wait",
+                        "transient_failure",
+                        Some("notification_send_failed"),
+                        Some(attempted_at_ms.saturating_add(backoff.min(3_600_000))),
+                    )
+                } else {
+                    (
+                        "permanent_failure",
+                        "permanent_failure",
+                        Some("notification_send_failed"),
+                        None,
+                    )
+                };
+                transaction.execute(
+                    "INSERT INTO delivery_attempts
+                     (delivery_id, attempted_at_ms, outcome, public_error_code, duration_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![
+                        delivery_id,
+                        attempted_at_ms,
+                        outcome,
+                        public_error,
+                        duration_ms
+                    ],
+                )?;
+                let changed = transaction.execute(
+                    "UPDATE alert_deliveries
+                     SET state = ?1, attempt_count = ?2, next_attempt_at_ms = ?3,
+                         lease_owner = NULL, lease_until_ms = NULL,
+                         public_error_code = ?4, updated_at_ms = ?5
+                     WHERE id = ?6 AND state = 'leased' AND lease_owner = ?7",
+                    rusqlite::params![
+                        state,
+                        next_count,
+                        next_attempt_at,
+                        public_error,
+                        attempted_at_ms,
+                        delivery_id,
+                        worker_id
+                    ],
+                )?;
+                if changed != 1 {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+                transaction.commit()
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
     /// Counts isolated streams for contract tests.
     ///
     /// # Errors
@@ -2718,16 +3040,21 @@ fn apply_usage_success(
         .ok_or(rusqlite::Error::InvalidQuery)?;
     let now = observation.captured_at_unix_ms;
     let (stream_id, _) = upsert_account_stream(transaction, &context.salt, account_id, now)?;
-    let transition = QuotaLedger::apply(
-        load_ledger_state(transaction, stream_id, context.policy_timezone)?,
-        observation,
-        context.policy_timezone,
-    )
-    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let previous_state = load_ledger_state(transaction, stream_id, context.policy_timezone)?;
+    let previous_epoch = QuotaLedger::persisted_epoch(&previous_state);
+    let transition = QuotaLedger::apply(previous_state, observation, context.policy_timezone)
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
     if transition.kind == LedgerApplyKind::DroppedOutOfOrder {
         return Ok((UsageCommitDisposition::Committed, 0, false));
     }
     persist_success_observation(transaction, stream_id, observation, &transition)?;
+    persist_usage_transition_alerts(
+        transaction,
+        stream_id,
+        previous_epoch.as_ref(),
+        &transition,
+        observation.captured_at_unix_ms,
+    )?;
     persist_daily_policy_snapshots(transaction, stream_id, observation.captured_at_unix_ms)?;
     transaction.execute(
         "INSERT INTO usage_source_health
@@ -2785,6 +3112,17 @@ fn apply_usage_failure(
     } else {
         configured_stream_id.ok_or(rusqlite::Error::QueryReturnedNoRows)?
     };
+    let previous_health: Option<(Option<i64>, i64)> = {
+        use rusqlite::OptionalExtension as _;
+        transaction
+            .query_row(
+                "SELECT last_success_at_ms, consecutive_failures
+                 FROM usage_source_health WHERE account_stream_id = ?1",
+                [stream_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+    };
     transaction.execute(
         "INSERT INTO usage_source_health
          (account_stream_id, last_attempt_at_ms, last_success_at_ms,
@@ -2800,6 +3138,15 @@ fn apply_usage_failure(
             public_error.as_storage_key()
         ],
     )?;
+    if previous_health.as_ref().is_some_and(|health| health.1 == 2) {
+        persist_source_failure_alert(
+            transaction,
+            "codex",
+            Some(stream_id),
+            previous_health.and_then(|health| health.0),
+            attempted_at_unix_ms,
+        )?;
+    }
     if configured_stream_id != Some(stream_id) {
         transaction.execute(
             "UPDATE app_settings
@@ -2821,41 +3168,30 @@ fn apply_radar_success(
     attempted_at_unix_ms: i64,
     snapshot: &RadarSnapshot,
 ) -> rusqlite::Result<RadarCommitDisposition> {
-    let current_observation_id = if let Some(observation) = snapshot.observation() {
-        transaction.execute(
-            "INSERT INTO radar_observations
-             (source_id, observed_at_ms, expires_at_ms, chance_basis_points,
-              explanation, source_url, captured_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(source_id, observed_at_ms, expires_at_ms,
-                         chance_basis_points, explanation, source_url) DO NOTHING",
-            rusqlite::params![
-                observation.source_id(),
-                observation.observed_at_unix_ms(),
-                observation.expires_at_unix_ms(),
-                observation.chance().basis_points(),
-                observation.explanation(),
-                observation.source_url(),
-                attempted_at_unix_ms,
-            ],
-        )?;
-        Some(transaction.query_row(
-            "SELECT id FROM radar_observations
-             WHERE source_id = ?1 AND observed_at_ms = ?2 AND expires_at_ms = ?3
-               AND chance_basis_points = ?4 AND explanation = ?5 AND source_url = ?6",
-            rusqlite::params![
-                observation.source_id(),
-                observation.observed_at_unix_ms(),
-                observation.expires_at_unix_ms(),
-                observation.chance().basis_points(),
-                observation.explanation(),
-                observation.source_url(),
-            ],
-            |row| row.get::<_, i64>(0),
-        )?)
-    } else {
-        None
+    let previous_watch: Option<(String, i64, i64, i64)> = {
+        use rusqlite::OptionalExtension as _;
+        transaction
+            .query_row(
+                "SELECT o.source_id, o.observed_at_ms, o.expires_at_ms,
+                        o.chance_basis_points
+                 FROM radar_source_health h
+                 JOIN radar_observations o ON o.id = h.current_observation_id
+                 WHERE h.singleton_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?
     };
+    let current_observation_id =
+        upsert_radar_observation(transaction, snapshot.observation(), attempted_at_unix_ms)?;
+    if let Some(observation) = snapshot.observation() {
+        persist_radar_threshold_alert(
+            transaction,
+            previous_watch.as_ref(),
+            observation,
+            attempted_at_unix_ms,
+        )?;
+    }
     let new_announcement = if let Some(announcement) = snapshot.latest_announcement() {
         transaction.execute(
             "INSERT INTO radar_announcements
@@ -2890,11 +3226,119 @@ fn apply_radar_success(
     Ok(RadarCommitDisposition { new_announcement })
 }
 
+fn upsert_radar_observation(
+    transaction: &rusqlite::Transaction<'_>,
+    observation: Option<&crate::RadarObservation>,
+    attempted_at_unix_ms: i64,
+) -> rusqlite::Result<Option<i64>> {
+    let Some(observation) = observation else {
+        return Ok(None);
+    };
+    transaction.execute(
+        "INSERT INTO radar_observations
+         (source_id, observed_at_ms, expires_at_ms, chance_basis_points,
+          explanation, source_url, captured_at_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(source_id, observed_at_ms, expires_at_ms,
+                     chance_basis_points, explanation, source_url) DO NOTHING",
+        rusqlite::params![
+            observation.source_id(),
+            observation.observed_at_unix_ms(),
+            observation.expires_at_unix_ms(),
+            observation.chance().basis_points(),
+            observation.explanation(),
+            observation.source_url(),
+            attempted_at_unix_ms,
+        ],
+    )?;
+    transaction
+        .query_row(
+            "SELECT id FROM radar_observations
+             WHERE source_id = ?1 AND observed_at_ms = ?2 AND expires_at_ms = ?3
+               AND chance_basis_points = ?4 AND explanation = ?5 AND source_url = ?6",
+            rusqlite::params![
+                observation.source_id(),
+                observation.observed_at_unix_ms(),
+                observation.expires_at_unix_ms(),
+                observation.chance().basis_points(),
+                observation.explanation(),
+                observation.source_url(),
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(Some)
+}
+
+fn persist_radar_threshold_alert(
+    transaction: &rusqlite::Transaction<'_>,
+    previous_watch: Option<&(String, i64, i64, i64)>,
+    observation: &crate::RadarObservation,
+    attempted_at_unix_ms: i64,
+) -> rusqlite::Result<()> {
+    let watch_key = format!(
+        "{}:{}:{}",
+        observation.source_id(),
+        observation.observed_at_unix_ms(),
+        observation.expires_at_unix_ms()
+    );
+    let previous_above_same_watch =
+        previous_watch.is_some_and(|(source_id, observed_at, expires_at, chance)| {
+            source_id == observation.source_id()
+                && *observed_at == observation.observed_at_unix_ms()
+                && *expires_at == observation.expires_at_unix_ms()
+                && *chance >= 7_000
+        });
+    if observation.chance().basis_points() < 7_000 || previous_above_same_watch {
+        return Ok(());
+    }
+    let policy_timezone: String = transaction.query_row(
+        "SELECT policy_timezone FROM app_settings WHERE singleton_id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    persist_alert_event(
+        transaction,
+        &NewAlertEvent {
+            event_key: format!(
+                "radar:{watch_key}:{}",
+                AlertEventKind::RadarChance70.as_str()
+            ),
+            event_kind: AlertEventKind::RadarChance70,
+            account_stream_id: None,
+            quota_epoch_id: None,
+            local_date: None,
+            watch_key: Some(watch_key),
+            source: None,
+            threshold_micropoints: Some(7_000),
+            message_key: "alerts.radar_chance_70",
+            structured_args_json: serde_json::json!({
+                "chanceBasisPoints": observation.chance().basis_points(),
+            })
+            .to_string(),
+            policy_timezone,
+            target: "radar",
+            created_at_ms: attempted_at_unix_ms,
+        },
+    )?;
+    Ok(())
+}
+
 fn apply_radar_failure(
     transaction: &rusqlite::Transaction<'_>,
     attempted_at_unix_ms: i64,
     public_error: RadarSourceErrorCode,
 ) -> rusqlite::Result<()> {
+    let previous_health: Option<(Option<i64>, i64)> = {
+        use rusqlite::OptionalExtension as _;
+        transaction
+            .query_row(
+                "SELECT last_success_at_ms, consecutive_failures
+                 FROM radar_source_health WHERE singleton_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+    };
     transaction.execute(
         "INSERT INTO radar_source_health
          (singleton_id, last_attempt_at_ms, last_success_at_ms,
@@ -2907,6 +3351,15 @@ fn apply_radar_failure(
            public_error = excluded.public_error",
         rusqlite::params![attempted_at_unix_ms, public_error.as_storage_key()],
     )?;
+    if previous_health.as_ref().is_some_and(|health| health.1 == 2) {
+        persist_source_failure_alert(
+            transaction,
+            "radar",
+            None,
+            previous_health.and_then(|health| health.0),
+            attempted_at_unix_ms,
+        )?;
+    }
     Ok(())
 }
 
@@ -2942,17 +3395,22 @@ fn record_usage_success_transaction(
         .ok_or(rusqlite::Error::InvalidQuery)?;
     let now = observation.captured_at_unix_ms;
     let (stream_id, _) = upsert_account_stream(&transaction, &context.salt, account_id, now)?;
-    let transition = QuotaLedger::apply(
-        load_ledger_state(&transaction, stream_id, context.policy_timezone)?,
-        observation,
-        context.policy_timezone,
-    )
-    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let previous_state = load_ledger_state(&transaction, stream_id, context.policy_timezone)?;
+    let previous_epoch = QuotaLedger::persisted_epoch(&previous_state);
+    let transition = QuotaLedger::apply(previous_state, observation, context.policy_timezone)
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
     if transition.kind == LedgerApplyKind::DroppedOutOfOrder {
         transaction.commit()?;
         return Ok(UsageCommitDisposition::Committed);
     }
     persist_success_observation(&transaction, stream_id, observation, &transition)?;
+    persist_usage_transition_alerts(
+        &transaction,
+        stream_id,
+        previous_epoch.as_ref(),
+        &transition,
+        observation.captured_at_unix_ms,
+    )?;
     persist_daily_policy_snapshots(&transaction, stream_id, observation.captured_at_unix_ms)?;
     persist_success_projection(
         &transaction,
@@ -3117,6 +3575,228 @@ fn query_radar_prediction(
     Ok(prediction)
 }
 
+struct NewAlertEvent {
+    event_key: String,
+    event_kind: AlertEventKind,
+    account_stream_id: Option<i64>,
+    quota_epoch_id: Option<i64>,
+    local_date: Option<String>,
+    watch_key: Option<String>,
+    source: Option<&'static str>,
+    threshold_micropoints: Option<i64>,
+    message_key: &'static str,
+    structured_args_json: String,
+    policy_timezone: String,
+    target: &'static str,
+    created_at_ms: i64,
+}
+
+fn persist_alert_event(
+    transaction: &rusqlite::Transaction<'_>,
+    event: &NewAlertEvent,
+) -> rusqlite::Result<bool> {
+    let inserted = transaction.execute(
+        "INSERT INTO alert_events
+         (event_key, event_kind, account_stream_id, quota_epoch_id,
+          local_date, watch_key, source, threshold_micropoints,
+          message_key, structured_args_json, interface_locale_snapshot,
+          format_locale_snapshot, policy_timezone_snapshot, target, created_at_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                 'zh-CN', 'zh-CN', ?11, ?12, ?13)
+         ON CONFLICT(event_key) DO NOTHING",
+        rusqlite::params![
+            event.event_key,
+            event.event_kind.as_str(),
+            event.account_stream_id,
+            event.quota_epoch_id,
+            event.local_date,
+            event.watch_key,
+            event.source,
+            event.threshold_micropoints,
+            event.message_key,
+            event.structured_args_json,
+            event.policy_timezone,
+            event.target,
+            event.created_at_ms,
+        ],
+    )?;
+    if inserted == 0 {
+        return Ok(false);
+    }
+    let alert_event_id = transaction.last_insert_rowid();
+    let preferences = {
+        let mut statement = transaction.prepare(
+            "SELECT channel FROM alert_preferences
+             WHERE event_kind = ?1 AND enabled = 1 ORDER BY channel",
+        )?;
+        statement
+            .query_map([event.event_kind.as_str()], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for channel in preferences {
+        let state = if channel == AlertChannel::System.as_str() {
+            "pending"
+        } else {
+            "paused_config"
+        };
+        transaction.execute(
+            "INSERT INTO alert_deliveries
+             (delivery_key, alert_event_id, channel, recipient_key, state,
+              attempt_count, next_attempt_at_ms, lease_owner, lease_until_ms,
+              public_error_code, created_at_ms, updated_at_ms)
+             VALUES (?1, ?2, ?3, NULL, ?4, 0, ?5, NULL, NULL, NULL, ?5, ?5)",
+            rusqlite::params![
+                format!("{}:{channel}", event.event_key),
+                alert_event_id,
+                channel,
+                state,
+                event.created_at_ms,
+            ],
+        )?;
+    }
+    Ok(true)
+}
+
+fn persist_source_failure_alert(
+    transaction: &rusqlite::Transaction<'_>,
+    source: &'static str,
+    account_stream_id: Option<i64>,
+    last_success_at_ms: Option<i64>,
+    created_at_ms: i64,
+) -> rusqlite::Result<()> {
+    let policy_timezone: String = transaction.query_row(
+        "SELECT policy_timezone FROM app_settings WHERE singleton_id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let generation = last_success_at_ms.unwrap_or(0);
+    persist_alert_event(
+        transaction,
+        &NewAlertEvent {
+            event_key: format!(
+                "source:{source}:stream:{}:generation:{generation}:{}",
+                account_stream_id.unwrap_or(0),
+                AlertEventKind::SourceFailures3.as_str()
+            ),
+            event_kind: AlertEventKind::SourceFailures3,
+            account_stream_id,
+            quota_epoch_id: None,
+            local_date: None,
+            watch_key: None,
+            source: Some(source),
+            threshold_micropoints: Some(3),
+            message_key: "alerts.source_failures_3",
+            structured_args_json: serde_json::json!({
+                "source": source,
+                "consecutiveFailures": 3,
+            })
+            .to_string(),
+            policy_timezone,
+            target: "source",
+            created_at_ms,
+        },
+    )?;
+    Ok(())
+}
+
+fn persist_usage_transition_alerts(
+    transaction: &rusqlite::Transaction<'_>,
+    stream_id: i64,
+    previous_epoch: Option<&PersistedLedgerEpoch>,
+    transition: &crate::LedgerTransition,
+    created_at_ms: i64,
+) -> rusqlite::Result<()> {
+    let current_epoch =
+        QuotaLedger::persisted_epoch(&transition.state).ok_or(rusqlite::Error::InvalidQuery)?;
+    let quota_epoch_id: i64 = transaction.query_row(
+        "SELECT id FROM quota_epochs
+         WHERE account_stream_id = ?1 AND closed_at_ms IS NULL",
+        [stream_id],
+        |row| row.get(0),
+    )?;
+    let policy_timezone: String = transaction.query_row(
+        "SELECT policy_timezone FROM app_settings WHERE singleton_id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if let Some(previous) =
+        previous_epoch.filter(|previous| previous.sequence == current_epoch.sequence)
+    {
+        for (used_boundary, remaining_threshold, event_kind, message_key) in [
+            (
+                80_000_000,
+                20_000_000,
+                AlertEventKind::WeeklyRemaining20,
+                "alerts.weekly_remaining_20",
+            ),
+            (
+                90_000_000,
+                10_000_000,
+                AlertEventKind::WeeklyRemaining10,
+                "alerts.weekly_remaining_10",
+            ),
+        ] {
+            if previous.high_water_micropoints < used_boundary
+                && current_epoch.high_water_micropoints >= used_boundary
+            {
+                persist_alert_event(
+                    transaction,
+                    &NewAlertEvent {
+                        event_key: format!(
+                            "stream:{stream_id}:epoch:{quota_epoch_id}:{}",
+                            event_kind.as_str()
+                        ),
+                        event_kind,
+                        account_stream_id: Some(stream_id),
+                        quota_epoch_id: Some(quota_epoch_id),
+                        local_date: None,
+                        watch_key: None,
+                        source: None,
+                        threshold_micropoints: Some(remaining_threshold),
+                        message_key,
+                        structured_args_json: serde_json::json!({
+                            "remainingMicropoints": remaining_threshold,
+                        })
+                        .to_string(),
+                        policy_timezone: policy_timezone.clone(),
+                        target: "today",
+                        created_at_ms,
+                    },
+                )?;
+            }
+        }
+    }
+
+    if transition.kind == LedgerApplyKind::ConfirmedReset {
+        persist_alert_event(
+            transaction,
+            &NewAlertEvent {
+                event_key: format!(
+                    "stream:{stream_id}:epoch:{quota_epoch_id}:{}",
+                    AlertEventKind::QuotaResetConfirmed.as_str()
+                ),
+                event_kind: AlertEventKind::QuotaResetConfirmed,
+                account_stream_id: Some(stream_id),
+                quota_epoch_id: Some(quota_epoch_id),
+                local_date: None,
+                watch_key: None,
+                source: None,
+                threshold_micropoints: None,
+                message_key: "alerts.quota_reset_confirmed",
+                structured_args_json: serde_json::json!({
+                    "epochSequence": current_epoch.sequence,
+                })
+                .to_string(),
+                policy_timezone,
+                target: "today",
+                created_at_ms,
+            },
+        )?;
+    }
+    Ok(())
+}
+
 fn persist_daily_policy_snapshots(
     transaction: &rusqlite::Transaction<'_>,
     stream_id: i64,
@@ -3169,22 +3849,76 @@ fn persist_daily_policy_snapshots(
             ],
         )?;
         if let Some(transition) = day.threshold_transition {
-            transaction.execute(
-                "INSERT OR IGNORE INTO daily_threshold_transitions
-                 (account_stream_id, local_date, policy_revision_id,
-                  transition_kind, created_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![
-                    stream_id,
-                    day.local_date.to_string(),
-                    i64::try_from(day.policy_revision_id)
-                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    threshold_transition_key(transition),
-                    now_unix_ms,
-                ],
-            )?;
+            persist_daily_threshold_alert(transaction, stream_id, now_unix_ms, &day, transition)?;
         }
     }
+    Ok(())
+}
+
+fn persist_daily_threshold_alert(
+    transaction: &rusqlite::Transaction<'_>,
+    stream_id: i64,
+    now_unix_ms: i64,
+    day: &PolicyDayProjection,
+    transition: ThresholdTransition,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        "INSERT OR IGNORE INTO daily_threshold_transitions
+         (account_stream_id, local_date, policy_revision_id,
+          transition_kind, created_at_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            stream_id,
+            day.local_date.to_string(),
+            i64::try_from(day.policy_revision_id).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            threshold_transition_key(transition),
+            now_unix_ms,
+        ],
+    )?;
+    let quota_epoch_id: i64 = transaction.query_row(
+        "SELECT id FROM quota_epochs
+         WHERE account_stream_id = ?1 AND closed_at_ms IS NULL",
+        [stream_id],
+        |row| row.get(0),
+    )?;
+    let (event_kind, threshold_micropoints, message_key) = match transition {
+        ThresholdTransition::Warning => (
+            AlertEventKind::Daily80,
+            day.limit_micropoints.saturating_mul(4) / 5,
+            "alerts.daily_80",
+        ),
+        ThresholdTransition::Exceeded => (
+            AlertEventKind::Daily100,
+            day.limit_micropoints,
+            "alerts.daily_100",
+        ),
+    };
+    let local_date = day.local_date.to_string();
+    persist_alert_event(
+        transaction,
+        &NewAlertEvent {
+            event_key: format!(
+                "stream:{stream_id}:epoch:{quota_epoch_id}:date:{local_date}:{}",
+                event_kind.as_str()
+            ),
+            event_kind,
+            account_stream_id: Some(stream_id),
+            quota_epoch_id: Some(quota_epoch_id),
+            local_date: Some(local_date.clone()),
+            watch_key: None,
+            source: None,
+            threshold_micropoints: Some(threshold_micropoints),
+            message_key,
+            structured_args_json: serde_json::json!({
+                "localDate": local_date,
+                "thresholdMicropoints": threshold_micropoints,
+            })
+            .to_string(),
+            policy_timezone: day.policy_timezone.name().to_owned(),
+            target: "today",
+            created_at_ms: now_unix_ms,
+        },
+    )?;
     Ok(())
 }
 

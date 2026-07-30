@@ -1,3 +1,9 @@
+import { useEffect } from "preact/hooks";
+
+import type { AlertEventKind } from "./bindings/AlertEventKind";
+import type { AlertTarget } from "./bindings/AlertTarget";
+import type { PublicAlertInbox } from "./bindings/PublicAlertInbox";
+
 export type LedgerTone =
   | "fresh"
   | "warning"
@@ -145,6 +151,8 @@ export const ledgerFixtures: Record<LedgerTone, LedgerFixture> = {
 
 type WeeklyLedgerProps = {
   fixture: LedgerFixture;
+  alerts?: PublicAlertInbox | null;
+  focusTarget?: AlertTarget | null;
   onOpenSettings: () => void;
   onRefresh: () => unknown;
   refreshing?: boolean;
@@ -189,12 +197,61 @@ const tonePresentations: Record<ConfiguredTone, TonePresentation> = {
   },
 };
 
+const reminderCopy: Record<AlertEventKind, string> = {
+  daily_80: "今日额度已达到 80%",
+  daily_100: "今日额度已用完",
+  weekly_remaining_20: "本周额度仅剩 20%",
+  weekly_remaining_10: "本周额度仅剩 10%",
+  radar_chance_70: "重置机会已达到 70% 档位",
+  quota_reset_confirmed: "额度重置已确认",
+  source_failures_3: "额度来源连续采集失败",
+};
+
+function AlertInbox({ alerts }: { alerts: PublicAlertInbox | null }) {
+  if (alerts === null || alerts.events.length === 0) {
+    return null;
+  }
+  const permissionUnavailable =
+    alerts.notificationPermissionStatus === "denied" ||
+    alerts.notificationPermissionStatus === "error";
+  return (
+    <section class="alert-inbox" aria-label="最近提醒">
+      <div class="alert-inbox__heading">
+        <span>最近提醒</span>
+        <small>{alerts.events.length} 条</small>
+      </div>
+      {permissionUnavailable ? (
+        <p class="alert-inbox__permission" role="status">
+          系统通知未授权，应用内提醒仍会保留。
+        </p>
+      ) : null}
+      <div class="alert-inbox__events">
+        {alerts.events.slice(0, 3).map((event) => (
+          <div class="alert-inbox__event" key={event.eventId}>
+            <span aria-hidden="true" />
+            <strong>{reminderCopy[event.eventKind]}</strong>
+            <small>
+              {event.localDate ??
+                (event.source === "radar" ? "Reset Radar" : "当前窗口")}
+            </small>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function RadarCard({ radar }: { radar: RadarFixture | null }) {
   if (radar === null) {
     return null;
   }
   return (
-    <section class="radar-card" aria-label="重置雷达">
+    <section
+      id="quota-target-radar"
+      class="radar-card"
+      aria-label="重置雷达"
+      tabIndex={-1}
+    >
       <div class="radar-card__header">
         <div>
           <span>重置雷达 · 第三方预测</span>
@@ -234,15 +291,29 @@ function RadarCard({ radar }: { radar: RadarFixture | null }) {
 
 export function WeeklyLedger({
   fixture,
+  alerts = null,
+  focusTarget = null,
   onOpenSettings,
   onRefresh,
   refreshing = false,
   refreshDisabled = false,
 }: WeeklyLedgerProps) {
+  useEffect(() => {
+    if (focusTarget !== null) {
+      document.getElementById(`quota-target-${focusTarget}`)?.focus({
+        preventScroll: true,
+      });
+    }
+  }, [focusTarget]);
+
   if (fixture.tone === "unconfigured") {
     return (
       <article class="weekly-ledger tone-unconfigured">
-        <header class="ledger-header">
+        <header
+          id="quota-target-source"
+          class="ledger-header"
+          tabIndex={-1}
+        >
           <div>
             <h1>QuotaTide</h1>
             <p>{fixture.sourceHealth}</p>
@@ -284,7 +355,11 @@ export function WeeklyLedger({
 
   return (
     <article class={`weekly-ledger tone-${fixture.tone}`}>
-      <header class="ledger-header">
+      <header
+        id="quota-target-source"
+        class="ledger-header"
+        tabIndex={-1}
+      >
         <div>
           <h1>QuotaTide</h1>
           <p>{refreshing ? "Codex 额度 · 正在刷新" : fixture.sourceHealth}</p>
@@ -332,7 +407,14 @@ export function WeeklyLedger({
           </section>
         ) : null}
 
-        <section class="ledger-summary" aria-label="额度摘要">
+        <AlertInbox alerts={alerts} />
+
+        <section
+          id="quota-target-today"
+          class="ledger-summary"
+          aria-label="额度摘要"
+          tabIndex={-1}
+        >
           <div>
             <span>周剩余</span>
             <strong>{fixture.weeklyRemaining}</strong>

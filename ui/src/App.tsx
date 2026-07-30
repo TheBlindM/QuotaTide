@@ -1,7 +1,9 @@
 import { useEffect, useState } from "preact/hooks";
 
 import type { AlertEventKind } from "./bindings/AlertEventKind";
+import type { AlertTarget } from "./bindings/AlertTarget";
 import type { BuildInfo } from "./bindings/BuildInfo";
+import type { PublicAlertInbox } from "./bindings/PublicAlertInbox";
 import type { PublicLedgerDay } from "./bindings/PublicLedgerDay";
 import type { PublicLiveQuota } from "./bindings/PublicLiveQuota";
 import type { PublicResetRadar } from "./bindings/PublicResetRadar";
@@ -12,6 +14,11 @@ import {
   onSettingsChanged,
   saveSettings,
 } from "./api/account-settings";
+import {
+  getAlerts,
+  onNotificationOpened,
+  requestSystemNotificationPermission,
+} from "./api/alerts";
 import { loadBuildInfo } from "./api/build-info";
 import { getLiveQuota, onDashboardChanged } from "./api/live-quota";
 import { hideMainWindow, requestManualRefresh } from "./api/tray-shell";
@@ -27,6 +34,8 @@ type ViewState =
       kind: "ready";
       info: BuildInfo;
       settings: PublicSettings;
+      alerts: PublicAlertInbox;
+      focusTarget: AlertTarget | null;
       liveQuota: PublicLiveQuota | null;
       radar: PublicResetRadar;
       refreshing: boolean;
@@ -45,6 +54,8 @@ const previewAlertKinds: AlertEventKind[] = [
 
 export function App() {
   const isPreview = new URLSearchParams(window.location.search).has("preview");
+  const previewAlerts =
+    new URLSearchParams(window.location.search).get("alerts") === "denied";
   const [state, setState] = useState<ViewState>(
     isPreview
       ? {
@@ -61,6 +72,7 @@ export function App() {
             configured: false,
             pathSummary: null,
             accountLabel: null,
+            notificationPermissionStatus: previewAlerts ? "denied" : "unknown",
             quotaPolicy: {
               policyRevision: 1,
               policyTimezone: "Asia/Shanghai",
@@ -76,6 +88,23 @@ export function App() {
             ]),
             autostartEnabled: false,
           },
+          alerts: previewAlerts
+            ? {
+                notificationPermissionStatus: "denied",
+                events: [
+                  {
+                    eventId: 1,
+                    eventKind: "daily_80",
+                    localDate: "2026-07-30",
+                    source: null,
+                    target: "today",
+                    systemDeliveryState: "paused_permission",
+                    createdAtUnixMs: 1_785_347_200_000,
+                  },
+                ],
+              }
+            : { notificationPermissionStatus: "unknown", events: [] },
+          focusTarget: previewAlerts ? "today" : null,
           liveQuota: null,
           radar: emptyRadarState,
           refreshing: false,
@@ -90,13 +119,15 @@ export function App() {
 
     let active = true;
 
-    void Promise.all([loadBuildInfo(), getSettings(), getLiveQuota()])
-      .then(([info, settings, liveQuotaState]) => {
+    void Promise.all([loadBuildInfo(), getSettings(), getLiveQuota(), getAlerts()])
+      .then(([info, settings, liveQuotaState, alerts]) => {
         if (active) {
           setState({
             kind: "ready",
             info,
             settings,
+            alerts,
+            focusTarget: null,
             liveQuota: liveQuotaState.quota,
             radar: liveQuotaState.radar,
             refreshing: liveQuotaState.refreshing,
@@ -121,15 +152,17 @@ export function App() {
     let active = true;
     let unlistenDashboard: (() => void) | undefined;
     let unlistenSettings: (() => void) | undefined;
+    let unlistenNotification: (() => void) | undefined;
     const reloadDashboard = () => {
-      void Promise.all([getSettings(), getLiveQuota()])
-        .then(([settings, liveQuotaState]) => {
+      void Promise.all([getSettings(), getLiveQuota(), getAlerts()])
+        .then(([settings, liveQuotaState, alerts]) => {
           if (active) {
             setState((current) =>
               current.kind === "ready"
                 ? {
                     ...current,
                     settings,
+                    alerts,
                     liveQuota: liveQuotaState.quota,
                     radar: liveQuotaState.radar,
                     refreshing: liveQuotaState.refreshing,
@@ -143,15 +176,26 @@ export function App() {
     void Promise.all([
       onDashboardChanged(reloadDashboard),
       onSettingsChanged(reloadDashboard),
+      onNotificationOpened((target) => {
+        if (active) {
+          setState((current) =>
+            current.kind === "ready"
+              ? { ...current, focusTarget: target }
+              : current,
+          );
+        }
+      }),
     ])
-      .then(([disposeDashboard, disposeSettings]) => {
+      .then(([disposeDashboard, disposeSettings, disposeNotification]) => {
         if (active) {
           unlistenDashboard = disposeDashboard;
           unlistenSettings = disposeSettings;
+          unlistenNotification = disposeNotification;
           reloadDashboard();
         } else {
           disposeDashboard();
           disposeSettings();
+          disposeNotification();
         }
       })
       .catch(() => undefined);
@@ -159,6 +203,7 @@ export function App() {
       active = false;
       unlistenDashboard?.();
       unlistenSettings?.();
+      unlistenNotification?.();
     };
   }, [isPreview]);
 
@@ -219,6 +264,8 @@ export function App() {
     <TrayApp
       fixture={fixture}
       settings={state.settings}
+      alerts={state.alerts}
+      focusTarget={state.focusTarget}
       externalRefreshing={state.refreshing}
       onHide={() => {
         void hideMainWindow().catch(() => undefined);
@@ -239,6 +286,7 @@ export function App() {
           return cooldownMs;
         });
       }}
+      onRequestNotificationPermission={requestSystemNotificationPermission}
       onReloadSettings={getSettings}
       onSaveSettings={async (draft) => {
         const settings = await saveSettings(draft);

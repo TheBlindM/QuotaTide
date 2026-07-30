@@ -48,6 +48,7 @@ const atomicSettings: PublicSettings = {
   configured: true,
   pathSummary: "…/auth.json",
   accountLabel: "账号 • 21B8",
+  notificationPermissionStatus: "granted",
   quotaPolicy,
   alertPreferences,
   autostartEnabled: false,
@@ -133,6 +134,30 @@ describe("tray-window navigation", () => {
     expect(
       screen.getByRole("table", { name: /当前七日窗口/ }),
     ).toBeInTheDocument();
+  });
+
+  it("requests notification permission only from the explicit alerts action", () => {
+    const onRequestNotificationPermission = vi.fn().mockResolvedValue("granted");
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        settings={{
+          ...atomicSettings,
+          notificationPermissionStatus: "unknown",
+        }}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+        onRequestNotificationPermission={onRequestNotificationPermission}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "提醒" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "启用系统通知" }),
+    );
+
+    expect(onRequestNotificationPermission).toHaveBeenCalledOnce();
   });
 
   it("reloads the public revision after an atomic settings conflict", async () => {
