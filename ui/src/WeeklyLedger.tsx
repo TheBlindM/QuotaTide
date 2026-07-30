@@ -194,6 +194,11 @@ function localizeKnownValue(value: string, locale: InterfaceLocale): string {
     预测数据暂不可用: "Prediction data is unavailable",
     显示仍有效的最后快照: "Showing the last valid snapshot",
     "未来 24 小时": "Next 24 hours",
+    "约 2 天后": "in about 2 days",
+    "未来 24 小时可能出现额外重置。":
+      "An additional reset may happen in the next 24 hours.",
+    "ChatGPT Work 与 Codex 用户的用量限制已重置。":
+      "ChatGPT Work and Codex usage limits were reset.",
   };
   if (exact[value] !== undefined) {
     return exact[value];
@@ -216,7 +221,14 @@ function localizeKnownValue(value: string, locale: InterfaceLocale): string {
     .replace("数据源暂不可用，显示有效快照", "Source unavailable; showing a valid snapshot")
     .replace(/^有效至 /u, "Valid until ")
     .replace(/ 至 /gu, " to ")
-    .replace(/^上次成功 /u, "Last successful sync ");
+    .replace(/^上次成功 /u, "Last successful sync ")
+    .replace(/^周一 /u, "Mon ")
+    .replace(/^周二 /u, "Tue ")
+    .replace(/^周三 /u, "Wed ")
+    .replace(/^周四 /u, "Thu ")
+    .replace(/^周五 /u, "Fri ")
+    .replace(/^周六 /u, "Sat ")
+    .replace(/^周日 /u, "Sun ");
 }
 
 function localizeFixture(
@@ -231,6 +243,8 @@ function localizeFixture(
     sourceHealth: localizeKnownValue(fixture.sourceHealth, locale),
     windowLabel: localizeKnownValue(fixture.windowLabel, locale),
     lastSuccess: localizeKnownValue(fixture.lastSuccess, locale),
+    resetAbsolute: localizeKnownValue(fixture.resetAbsolute, locale),
+    resetRelative: localizeKnownValue(fixture.resetRelative, locale),
     todayLimit: fixture.todayLimit
       .replace("基础 ", "Base ")
       .replace(" + 结转 ", " + carry ")
@@ -241,8 +255,22 @@ function localizeFixture(
         : fixture.radar.kind === "active"
           ? {
               ...fixture.radar,
+              explanation: localizeKnownValue(
+                fixture.radar.explanation,
+                locale,
+              ),
               timing: localizeKnownValue(fixture.radar.timing, locale),
               health: localizeKnownValue(fixture.radar.health, locale),
+              announcement:
+                fixture.radar.announcement === null
+                  ? null
+                  : {
+                      ...fixture.radar.announcement,
+                      text: localizeKnownValue(
+                        fixture.radar.announcement.text,
+                        locale,
+                      ),
+                    },
             }
           : {
               ...fixture.radar,

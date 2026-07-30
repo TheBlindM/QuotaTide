@@ -1559,10 +1559,11 @@ progress::-moz-progress-bar {
 
   .ledger-header p,
   .settings-header p {
-    overflow: hidden;
+    overflow: visible;
     font-size: 9px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.25;
+    text-overflow: clip;
+    white-space: normal;
   }
 
   .ledger-content,

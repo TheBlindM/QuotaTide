@@ -188,6 +188,12 @@ export function App() {
           }
       : { kind: "loading" },
   );
+  const systemLocale =
+    navigator.languages[0] || navigator.language || "en";
+  const platformFallbackLocale = resolveInterfaceLocale(
+    state.kind === "ready" ? state.settings.interfaceLocale : "system",
+    systemLocale,
+  );
 
   useEffect(() => {
     if (isPreview) {
@@ -350,11 +356,12 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    document.body.dataset.platformFallbackMessage = text(
+    document.body.dataset.platformFallbackMessage = copy(
+      platformFallbackLocale,
       "系统毛玻璃不可用，已切换为不透明模式",
       "System glass is unavailable; opaque mode is active",
     );
-  }, [text]);
+  }, [platformFallbackLocale]);
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") {

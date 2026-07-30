@@ -333,6 +333,30 @@ describe("QuotaTide tray app", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("接近今日额度");
   });
 
+  it("renders the complete English preview without Chinese fixture copy", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/?preview&state=warning&radar=active&lang=en",
+    );
+
+    render(<App />);
+
+    expect(screen.getByText(/Used 42% · Thu 10:01 reset/)).toBeInTheDocument();
+    expect(screen.getByText("in about 2 days")).toBeInTheDocument();
+    expect(
+      screen.getByText("An additional reset may happen in the next 24 hours."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("ChatGPT Work and Codex usage limits were reset."),
+    ).toBeInTheDocument();
+    expect(document.body).toHaveAttribute(
+      "data-platform-fallback-message",
+      "System glass is unavailable; opaque mode is active",
+    );
+    expect(document.body).not.toHaveTextContent(/[\u3400-\u9fff]/u);
+  });
+
   it("does not overwrite a native opaque fallback during startup", () => {
     document.documentElement.dataset.surface = "opaque";
     document.documentElement.dataset.platformFallback = "true";
