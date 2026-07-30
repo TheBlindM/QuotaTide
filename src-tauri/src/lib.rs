@@ -5,7 +5,7 @@ pub mod background_lifecycle;
 pub mod codex_usage;
 pub mod reset_radar;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use auth_file::AuthFileReader;
@@ -66,6 +66,38 @@ type LiveDeliveryWorker = DeliveryWorker<DesktopSystemNotifier>;
 #[derive(Default)]
 struct NotificationFocus {
     target: Mutex<Option<AlertTarget>>,
+}
+
+#[derive(Clone, Default)]
+struct SharedNotificationPermission {
+    status: Arc<AtomicU8>,
+}
+
+impl SharedNotificationPermission {
+    fn new(status: NotificationPermissionStatus) -> Self {
+        let permission = Self::default();
+        permission.set(status);
+        permission
+    }
+
+    fn get(&self) -> NotificationPermissionStatus {
+        match self.status.load(Ordering::Acquire) {
+            1 => NotificationPermissionStatus::Granted,
+            2 => NotificationPermissionStatus::Denied,
+            3 => NotificationPermissionStatus::Error,
+            _ => NotificationPermissionStatus::Unknown,
+        }
+    }
+
+    fn set(&self, status: NotificationPermissionStatus) {
+        let value = match status {
+            NotificationPermissionStatus::Unknown => 0,
+            NotificationPermissionStatus::Granted => 1,
+            NotificationPermissionStatus::Denied => 2,
+            NotificationPermissionStatus::Error => 3,
+        };
+        self.status.store(value, Ordering::Release);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -138,11 +170,12 @@ impl DeliveryWorkerLifecycle {
 #[derive(Clone)]
 struct DesktopSystemNotifier {
     app: AppHandle,
+    permission: SharedNotificationPermission,
 }
 
 impl DesktopSystemNotifier {
-    const fn new(app: AppHandle) -> Self {
-        Self { app }
+    const fn new(app: AppHandle, permission: SharedNotificationPermission) -> Self {
+        Self { app, permission }
     }
 }
 
@@ -150,10 +183,15 @@ impl SystemNotifier for DesktopSystemNotifier {
     type Error = tauri_plugin_notification::Error;
 
     async fn permission_state(&self) -> Result<NotificationPermissionStatus, Self::Error> {
-        self.app
-            .notification()
-            .permission_state()
-            .map(notification_permission_status)
+        let persisted = self.permission.get();
+        if persisted != NotificationPermissionStatus::Granted {
+            return Ok(persisted);
+        }
+        self.app.notification().permission_state().map(|state| {
+            let status = notification_permission_status(state);
+            self.permission.set(status);
+            status
+        })
     }
 
     async fn notify(&self, notification: SafeNotification) -> Result<(), Self::Error> {
@@ -309,6 +347,7 @@ async fn get_alerts(
 async fn request_system_notification_permission(
     app: AppHandle,
     store: tauri::State<'_, AccountSettingsStore>,
+    permission: tauri::State<'_, SharedNotificationPermission>,
     delivery_worker: tauri::State<'_, DeliveryWorkerLifecycle>,
 ) -> Result<NotificationPermissionStatus, PublicError> {
     let status = request_notification_permission_with_modal(&app);
@@ -316,6 +355,7 @@ async fn request_system_notification_permission(
         .set_notification_permission_status(status, SystemClock.now_unix_ms())
         .await
         .map_err(|_| storage_public_error())?;
+    permission.set(status);
     if let Ok(settings) = store.public_atomic_settings().await {
         let _ = app.emit(
             SETTINGS_CHANGED_EVENT,
@@ -334,6 +374,7 @@ async fn save_settings(
     settings: tauri::State<'_, LiveAtomicSettings>,
     application: tauri::State<'_, LiveApplication>,
     store: tauri::State<'_, AccountSettingsStore>,
+    permission: tauri::State<'_, SharedNotificationPermission>,
     delivery_worker: tauri::State<'_, DeliveryWorkerLifecycle>,
     draft: SettingsDraft,
 ) -> Result<PublicSettings, PublicError> {
@@ -367,8 +408,11 @@ async fn save_settings(
             .await
         {
             eprintln!("QuotaTide: failed to persist notification permission: {error}");
-        } else if let Ok(reloaded) = settings.public_settings().await {
-            saved = reloaded;
+        } else {
+            permission.set(status);
+            if let Ok(reloaded) = settings.public_settings().await {
+                saved = reloaded;
+            }
         }
     }
     let _ = app.emit(
@@ -623,7 +667,12 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let store = tauri::async_runtime::block_on(AccountSettingsStore::open(&database_path))
         .map_err(|_| "failed to open the account settings store")?;
     secure_database_files(&database_path)?;
+    let persisted_settings = tauri::async_runtime::block_on(store.public_atomic_settings())
+        .map_err(|_| "failed to load notification permission state")?;
+    let notification_permission =
+        SharedNotificationPermission::new(persisted_settings.notification_permission_status);
     app.manage(store.clone());
+    app.manage(notification_permission.clone());
     let atomic_settings = AtomicSettingsManager::new(
         store.clone(),
         AuthFileReader,
@@ -646,7 +695,7 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let application = Application::new(AccountApplication::new(settings), refresh);
     app.manage(application.clone());
     let delivery_worker = DeliveryWorkerLifecycle::default();
-    let notifier = DesktopSystemNotifier::new(app.handle().clone());
+    let notifier = DesktopSystemNotifier::new(app.handle().clone(), notification_permission);
     let live_delivery_worker = DeliveryWorker::new(
         store.clone(),
         notifier,
@@ -982,8 +1031,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        AuthFileReader, DeliveryWorkerLifecycle, configure_selected_auth, get_build_info,
-        menu_event_for_id, should_request_notification_permission,
+        AuthFileReader, DeliveryWorkerLifecycle, SharedNotificationPermission,
+        configure_selected_auth, get_build_info, menu_event_for_id,
+        should_request_notification_permission,
     };
     use crate::background_lifecycle::{AUTOSTART_ARGUMENT, LaunchMode};
 
@@ -1045,6 +1095,15 @@ mod tests {
             false,
             true,
         ));
+    }
+
+    #[test]
+    fn notification_worker_keeps_unknown_permission_until_a_user_action_persists_it() {
+        let permission = SharedNotificationPermission::new(NotificationPermissionStatus::Unknown);
+        assert_eq!(permission.get(), NotificationPermissionStatus::Unknown);
+
+        permission.set(NotificationPermissionStatus::Granted);
+        assert_eq!(permission.get(), NotificationPermissionStatus::Granted);
     }
 
     #[tokio::test]
