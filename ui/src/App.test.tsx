@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { App, projectLiveFixture } from "./App";
+import { App, projectLiveFixture, projectRadarFixture } from "./App";
 import { selectAuthFile } from "./api/account-settings";
 import { getLiveQuota } from "./api/live-quota";
 
@@ -71,6 +71,15 @@ vi.mock("./api/live-quota", () => ({
   getLiveQuota: vi.fn().mockResolvedValue({
     dashboardRevision: 1,
     refreshing: false,
+    radar: {
+      lastAttemptAtUnixMs: 1_785_000_000_000,
+      lastSuccessAtUnixMs: 1_785_000_000_000,
+      consecutiveFailures: 0,
+      sourceStatus: "fresh",
+      publicError: null,
+      prediction: null,
+      latestAnnouncement: null,
+    },
     quota: {
       usedMicropoints: 42_000_000,
       remainingMicropoints: 58_000_000,
@@ -138,6 +147,15 @@ describe("QuotaTide tray app", () => {
       dashboardRevision: 2,
       refreshing: true,
       quota: null,
+      radar: {
+        lastAttemptAtUnixMs: null,
+        lastSuccessAtUnixMs: null,
+        consecutiveFailures: 0,
+        sourceStatus: "unavailable",
+        publicError: null,
+        prediction: null,
+        latestAnnouncement: null,
+      },
     });
 
     fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
@@ -274,5 +292,53 @@ describe("QuotaTide tray app", () => {
     expect(fixture.todayLimit).toBe(
       "基础 16% + 结转 0.8% = 实际 16.8%",
     );
+  });
+
+  it("projects valid, expired, and failed Radar states without inventing a probability", () => {
+    const active = {
+      lastAttemptAtUnixMs: 1_785_000_000_000,
+      lastSuccessAtUnixMs: 1_785_000_000_000,
+      consecutiveFailures: 0,
+      sourceStatus: "fresh" as const,
+      publicError: null,
+      prediction: {
+        chanceBasisPoints: 7_500,
+        displayChance: ">70%",
+        observedAtUnixMs: 1_784_999_000_000,
+        expiresAtUnixMs: 1_785_086_400_000,
+        explanation: "Possible additional reset.",
+        sourceUrl:
+          "https://x.com/thsottiaux/status/2081899343091843463",
+      },
+      latestAnnouncement: null,
+    };
+
+    expect(projectRadarFixture(active, 1_785_000_000_000)).toMatchObject({
+      kind: "active",
+      chance: ">70%",
+      sourceUrl:
+        "https://x.com/thsottiaux/status/2081899343091843463",
+    });
+    expect(
+      projectRadarFixture(active, active.prediction.expiresAtUnixMs),
+    ).toMatchObject({
+      kind: "empty",
+      message: "当前无有效预测",
+    });
+    expect(
+      projectRadarFixture(
+        {
+          ...active,
+          sourceStatus: "stale_after_failure",
+          publicError: "timeout",
+          prediction: null,
+          consecutiveFailures: 1,
+        },
+        1_785_000_000_000,
+      ),
+    ).toMatchObject({
+      kind: "empty",
+      message: "预测数据暂不可用",
+    });
   });
 });

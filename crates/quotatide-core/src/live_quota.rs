@@ -11,7 +11,8 @@ use ts_rs::TS;
 
 use crate::{
     AccountApplication, AccountConfigError, AccountSettingsStore, AuthCandidateValidator,
-    PublicAccountSettings, SettingsStoreError,
+    PublicAccountSettings, PublicResetRadar, RadarCommitDisposition, RadarSnapshot,
+    RadarSourceError, ResetRadarSource, SettingsStoreError,
 };
 
 /// Millionths of one percentage point. `100% == 100_000_000`.
@@ -253,6 +254,7 @@ pub struct PublicLiveQuotaState {
     pub dashboard_revision: u64,
     pub refreshing: bool,
     pub quota: Option<PublicLiveQuota>,
+    pub radar: PublicResetRadar,
 }
 
 /// Small native event that tells the UI to re-query the dashboard projection.
@@ -402,6 +404,7 @@ struct RefreshState {
 #[derive(Clone)]
 pub struct RefreshCoordinator<S, C> {
     source: S,
+    radar_source: Option<Arc<dyn ResetRadarSource>>,
     clock: C,
     store: AccountSettingsStore,
     state: std::sync::Arc<Mutex<RefreshState>>,
@@ -492,13 +495,19 @@ where
     ) -> Result<PublicLiveQuotaState, AccountConfigError<V::Error>> {
         loop {
             let before = self.refresh.refreshing().await;
-            let (dashboard_revision, quota) = self.account.live_quota_snapshot(now_unix_ms).await?;
+            let (dashboard_revision, quota, radar) = self
+                .refresh
+                .store
+                .public_dashboard_snapshot(now_unix_ms)
+                .await
+                .map_err(AccountConfigError::Storage)?;
             let after = self.refresh.refreshing().await;
             if before == after {
                 return Ok(PublicLiveQuotaState {
                     dashboard_revision,
                     refreshing: after,
                     quota,
+                    radar,
                 });
             }
         }
@@ -646,11 +655,19 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
         let (dashboard_changes, _) = watch::channel(DashboardChanged { revision: 0 });
         Self {
             source,
+            radar_source: None,
             clock,
             store,
             state: std::sync::Arc::new(Mutex::new(RefreshState::default())),
             dashboard_changes,
         }
+    }
+
+    /// Adds the anonymous Reset Radar source to the same refresh flight.
+    #[must_use]
+    pub fn with_reset_radar_source<R: ResetRadarSource>(mut self, source: R) -> Self {
+        self.radar_source = Some(Arc::new(source));
+        self
     }
 
     async fn refreshing(&self) -> bool {
@@ -789,15 +806,50 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
         &self,
         attempted_at_unix_ms: i64,
     ) -> Result<RefreshReceipt, RefreshCoordinatorError> {
-        let attempt = collect_current_usage(&self.source, attempted_at_unix_ms).await;
+        let (attempt, radar_attempt) = if let Some(radar_source) = self.radar_source.as_ref() {
+            let (usage, radar) = tokio::join!(
+                collect_current_usage(&self.source, attempted_at_unix_ms),
+                radar_source.fetch_radar(attempted_at_unix_ms),
+            );
+            (usage, Some(radar))
+        } else {
+            (
+                collect_current_usage(&self.source, attempted_at_unix_ms).await,
+                None,
+            )
+        };
+        let (usage_commit, radar_commit) = tokio::join!(
+            self.commit_usage_attempt(attempt, attempted_at_unix_ms),
+            self.commit_radar_attempt(radar_attempt, attempted_at_unix_ms),
+        );
+        let outcome = usage_commit?;
+        let radar_disposition = radar_commit?;
+
+        if radar_disposition.is_some_and(|disposition| disposition.new_announcement) {
+            // A third-party announcement only asks the account source to
+            // re-check its own facts. It never creates or closes an epoch.
+            let recheck_at_unix_ms = attempted_at_unix_ms.saturating_add(1);
+            let recheck = collect_current_usage(&self.source, recheck_at_unix_ms).await;
+            let _ = self
+                .commit_usage_attempt(recheck, recheck_at_unix_ms)
+                .await?;
+        }
+        Ok(RefreshReceipt {
+            attempted_at_unix_ms,
+            outcome,
+            retry_after_ms: 0,
+        })
+    }
+
+    async fn commit_usage_attempt(
+        &self,
+        attempt: UsageRefreshAttempt,
+        attempted_at_unix_ms: i64,
+    ) -> Result<RefreshOutcome, RefreshCoordinatorError> {
         let outcome = match attempt.result {
             Ok(observation) => {
                 let Some(binding) = attempt.binding.as_ref() else {
-                    return Ok(RefreshReceipt {
-                        attempted_at_unix_ms,
-                        outcome: RefreshOutcome::Superseded,
-                        retry_after_ms: 0,
-                    });
+                    return Ok(RefreshOutcome::Superseded);
                 };
                 match self
                     .store
@@ -819,20 +871,37 @@ impl<S: UsageRefreshSource, C: Clock> RefreshCoordinator<S, C> {
                         .map_err(map_store)?
                         == crate::UsageCommitDisposition::Superseded
                 {
-                    return Ok(RefreshReceipt {
-                        attempted_at_unix_ms,
-                        outcome: RefreshOutcome::Superseded,
-                        retry_after_ms: 0,
-                    });
+                    return Ok(RefreshOutcome::Superseded);
                 }
                 RefreshOutcome::Failed(code)
             }
         };
-        Ok(RefreshReceipt {
-            attempted_at_unix_ms,
-            outcome,
-            retry_after_ms: 0,
-        })
+        Ok(outcome)
+    }
+
+    async fn commit_radar_attempt(
+        &self,
+        attempt: Option<Result<RadarSnapshot, RadarSourceError>>,
+        attempted_at_unix_ms: i64,
+    ) -> Result<Option<RadarCommitDisposition>, RefreshCoordinatorError> {
+        let Some(attempt) = attempt else {
+            return Ok(None);
+        };
+        match attempt {
+            Ok(snapshot) => self
+                .store
+                .record_radar_success(attempted_at_unix_ms, snapshot)
+                .await
+                .map(Some)
+                .map_err(map_store),
+            Err(error) => {
+                self.store
+                    .record_radar_failure(attempted_at_unix_ms, error.code())
+                    .await
+                    .map_err(map_store)?;
+                Ok(None)
+            }
+        }
     }
 
     async fn with_trigger_retry_after(

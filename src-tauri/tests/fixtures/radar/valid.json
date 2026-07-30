@@ -1,0 +1,19 @@
+{
+  "generated_at": "2026-07-28T01:47:11.732Z",
+  "watch": {
+    "tweet_id": "2081899343091843463",
+    "tweet_url": "https://x.com/thsottiaux/status/2081899343091843463",
+    "text": "Possible additional reset in the next 24 hours.",
+    "observed_at": "2026-07-28T00:27:37.000Z",
+    "expires_at": "2026-07-29T00:27:37.000Z",
+    "reset_chance_24h": 75
+  },
+  "events": [
+    {
+      "tweet_id": "2081423555256782904",
+      "tweet_url": "https://x.com/thsottiaux/status/2081423555256782904",
+      "text": "Usage limits have been reset.",
+      "announced_at": "2026-07-26T16:00:00.000Z"
+    }
+  ]
+}

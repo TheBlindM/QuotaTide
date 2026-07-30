@@ -14,6 +14,28 @@ export type LedgerDay = {
   status: string;
 };
 
+export type RadarAnnouncementFixture = {
+  text: string;
+  sourceUrl: string;
+  announcedAt: string;
+};
+
+export type RadarFixture =
+  | {
+      kind: "active";
+      chance: string;
+      explanation: string;
+      sourceUrl: string;
+      timing: string;
+      health: string;
+      announcement: RadarAnnouncementFixture | null;
+    }
+  | {
+      kind: "empty";
+      message: string;
+      announcement: RadarAnnouncementFixture | null;
+    };
+
 export type LedgerFixture = {
   tone: LedgerTone;
   weeklyUsed: string;
@@ -25,7 +47,7 @@ export type LedgerFixture = {
   lastSuccess: string;
   resetAbsolute: string;
   resetRelative: string;
-  radarChance: string;
+  radar: RadarFixture | null;
   days: LedgerDay[];
 };
 
@@ -57,7 +79,20 @@ const freshFixture: LedgerFixture = {
   lastSuccess: "上次成功 10:34",
   resetAbsolute: "周四 10:01",
   resetRelative: "约 2 天后",
-  radarChance: ">70%",
+  radar: {
+    kind: "active",
+    chance: ">70%",
+    explanation: "未来 24 小时可能出现额外重置。",
+    sourceUrl: "https://x.com/thsottiaux/status/2081899343091843463",
+    timing: "未来 24 小时",
+    health: "数据源正常",
+    announcement: {
+      text: "ChatGPT Work 与 Codex 用户的用量限制已重置。",
+      sourceUrl:
+        "https://x.com/thsottiaux/status/2082317452755751098",
+      announcedAt: "07/29 12:09",
+    },
+  },
   days: freshDays,
 };
 
@@ -103,7 +138,7 @@ export const ledgerFixtures: Record<LedgerTone, LedgerFixture> = {
     lastSuccess: "尚未同步",
     resetAbsolute: "",
     resetRelative: "",
-    radarChance: "",
+    radar: null,
     days: [],
   },
 };
@@ -314,14 +349,47 @@ export function WeeklyLedger({
           </table>
         </section>
 
-        {fixture.radarChance === "" ? null : (
+        {fixture.radar === null ? null : (
           <section class="radar-card" aria-label="重置雷达">
-            <div>
-              <span>重置雷达 · 第三方预测</span>
-              <strong>{fixture.radarChance}</strong>
-              <small>未来 24 小时</small>
+            <div class="radar-card__header">
+              <div>
+                <span>重置雷达 · 第三方预测</span>
+                <small>第三方 AI 估算 · 非 OpenAI 承诺</small>
+              </div>
+              {fixture.radar.kind === "active" ? (
+                <strong>{fixture.radar.chance}</strong>
+              ) : null}
             </div>
-            <a href="https://codex-resets.com/">查看来源</a>
+            {fixture.radar.kind === "active" ? (
+              <div class="radar-card__body">
+                <p>{fixture.radar.explanation}</p>
+                <small>
+                  {fixture.radar.timing} · {fixture.radar.health}
+                </small>
+                <a
+                  href={fixture.radar.sourceUrl}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  查看原始来源
+                </a>
+              </div>
+            ) : (
+              <p class="radar-card__empty">{fixture.radar.message}</p>
+            )}
+            {fixture.radar.announcement === null ? null : (
+              <div class="radar-card__announcement">
+                <span>最近一次全局额外重置公告</span>
+                <p>{fixture.radar.announcement.text}</p>
+                <a
+                  href={fixture.radar.announcement.sourceUrl}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  {fixture.radar.announcement.announcedAt} · 查看公告
+                </a>
+              </div>
+            )}
           </section>
         )}
       </main>

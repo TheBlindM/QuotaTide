@@ -2,6 +2,7 @@
 
 pub mod auth_file;
 pub mod codex_usage;
+pub mod reset_radar;
 
 use std::sync::Mutex;
 
@@ -13,6 +14,7 @@ use quotatide_core::{
     PublicErrorCode, PublicLiveQuotaState, QuotaPolicyDraft, RefreshCoordinator, RefreshTrigger,
     SettingsChanged, SettingsManager, ShellEffect, ShellEvent, TrayShell, place_tray_window,
 };
+use reset_radar::ResetRadarClient;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::utils::WindowEffect;
@@ -413,6 +415,9 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         store.clone(),
         ConfiguredCodexUsageSource::new(store.clone(), usage_client),
         SystemClock,
+    )
+    .with_reset_radar_source(
+        ResetRadarClient::new().map_err(|_| "failed to initialize Reset Radar client")?,
     );
     let settings = SettingsManager::new(store, AuthFileReader);
     let application = Application::new(AccountApplication::new(settings), refresh);

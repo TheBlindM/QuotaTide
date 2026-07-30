@@ -6,6 +6,7 @@ use ts_rs::TS;
 mod account_settings;
 mod live_quota;
 mod quota_ledger;
+mod reset_radar;
 mod tray_shell;
 
 pub use account_settings::{
@@ -24,6 +25,11 @@ pub use live_quota::{
 pub use quota_ledger::{
     DailyUsageFact, LedgerApplyKind, LedgerError, LedgerProjection, LedgerState, LedgerTransition,
     QuotaLedger,
+};
+pub use reset_radar::{
+    PublicRadarAnnouncement, PublicRadarPrediction, PublicResetRadar, RadarAnnouncement,
+    RadarChance, RadarCommitDisposition, RadarContractError, RadarObservation, RadarSnapshot,
+    RadarSourceError, RadarSourceErrorCode, ResetRadarSource, radar_bucket_label,
 };
 pub use tray_shell::{
     PhysicalPoint, PhysicalRect, PhysicalSize, ShellEffect, ShellEvent, TrayShell,

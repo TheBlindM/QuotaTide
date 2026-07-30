@@ -266,25 +266,27 @@ async fn warning_and_exceeded_threshold_candidates_are_durable_and_deduplicated(
     }
     let high_limit = store.public_settings().await.expect("settings");
     store
-        .update_quota_policy(
+        .update_quota_policy_at(
             high_limit.settings_revision,
             quotatide_core::QuotaPolicyDraft {
                 policy_timezone: "Asia/Shanghai".to_owned(),
                 carry_workdays_enabled: true,
                 base_micropoints: vec![0, 0, 100_000_000, 0, 0, 0, 0],
             },
+            timestamp_ms("2026-07-29T05:30:00Z"),
         )
         .await
         .expect("raise today's limit");
     let lower_limit = store.public_settings().await.expect("updated settings");
     store
-        .update_quota_policy(
+        .update_quota_policy_at(
             lower_limit.settings_revision,
             quotatide_core::QuotaPolicyDraft {
                 policy_timezone: "Asia/Shanghai".to_owned(),
                 carry_workdays_enabled: true,
                 base_micropoints: vec![0, 0, 20_000_000, 0, 0, 0, 0],
             },
+            timestamp_ms("2026-07-29T05:45:00Z"),
         )
         .await
         .expect("lower today's limit");

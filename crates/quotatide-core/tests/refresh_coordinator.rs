@@ -3,12 +3,14 @@ use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 use quotatide_core::{
     AccountApplication, AccountSettingsStore, Application, AuthCandidateValidator, Clock,
-    CurrentUsageAuth, PublicError, QuotaUnits, RefreshAccountBinding, RefreshCoordinator,
-    RefreshOutcome, RefreshTrigger, SettingsManager, UsageAuthReadFailure, UsageRefreshSource,
-    UsageSourceError, UsageSourceErrorCode, ValidatedAccountCandidate, WeeklyUsageObservation,
+    CurrentUsageAuth, PublicError, QuotaUnits, RadarAnnouncement, RadarObservation, RadarSnapshot,
+    RadarSourceError, RadarSourceErrorCode, RefreshAccountBinding, RefreshCoordinator,
+    RefreshOutcome, RefreshTrigger, ResetRadarSource, SettingsManager, UsageAuthReadFailure,
+    UsageRefreshSource, UsageSourceError, UsageSourceErrorCode, ValidatedAccountCandidate,
+    WeeklyUsageObservation,
 };
 use tempfile::tempdir;
-use tokio::sync::Notify;
+use tokio::sync::{Barrier, Notify};
 
 #[derive(Clone)]
 struct UnusedValidator;
@@ -56,6 +58,54 @@ struct SwitchingSource {
     revision: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
     release_first: Arc<Notify>,
+}
+
+#[derive(Clone)]
+struct BarrierUsageSource {
+    barrier: Arc<Barrier>,
+}
+
+impl UsageRefreshSource for BarrierUsageSource {
+    type AuthMaterial = ();
+
+    async fn read_current_auth(
+        &self,
+    ) -> Result<CurrentUsageAuth<Self::AuthMaterial>, UsageAuthReadFailure> {
+        Ok(CurrentUsageAuth::new(
+            RefreshAccountBinding::selected(1, std::path::PathBuf::from("/chosen/auth.json"))
+                .with_account_id("account-one".to_owned()),
+            (),
+            [1; 32],
+        ))
+    }
+
+    async fn fetch_usage<'a>(
+        &'a self,
+        _auth: &'a Self::AuthMaterial,
+        captured_at_unix_ms: i64,
+    ) -> Result<WeeklyUsageObservation, UsageSourceError> {
+        self.barrier.wait().await;
+        Ok(observation(captured_at_unix_ms))
+    }
+}
+
+struct BarrierRadarSource {
+    barrier: Arc<Barrier>,
+    result: Result<RadarSnapshot, RadarSourceError>,
+}
+
+impl ResetRadarSource for BarrierRadarSource {
+    fn fetch_radar(
+        &self,
+        _attempted_at_unix_ms: i64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<RadarSnapshot, RadarSourceError>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            self.barrier.wait().await;
+            self.result.clone()
+        })
+    }
 }
 
 impl UsageRefreshSource for SwitchingSource {
@@ -427,6 +477,118 @@ async fn resume_runs_once_only_after_the_hourly_deadline() {
     assert_eq!(early.outcome, RefreshOutcome::NotDue);
     assert_eq!(due.outcome, RefreshOutcome::Updated);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn codex_and_radar_run_concurrently_and_commit_partial_success_independently() {
+    let (_directory, store) = configured_store().await;
+    let barrier = Arc::new(Barrier::new(2));
+    let coordinator = RefreshCoordinator::new(
+        store.clone(),
+        BarrierUsageSource {
+            barrier: Arc::clone(&barrier),
+        },
+        FakeClock::new(1_785_000_000_000),
+    )
+    .with_reset_radar_source(BarrierRadarSource {
+        barrier,
+        result: Err(RadarSourceError::new(RadarSourceErrorCode::Timeout)),
+    });
+
+    let receipt = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        coordinator.refresh(RefreshTrigger::Hourly),
+    )
+    .await
+    .expect("sources must overlap")
+    .expect("refresh");
+
+    assert_eq!(receipt.outcome, RefreshOutcome::Updated);
+    assert!(
+        store
+            .public_live_quota(1_785_000_000_000)
+            .await
+            .expect("quota")
+            .is_some()
+    );
+    let radar = store
+        .public_reset_radar(1_785_000_000_000)
+        .await
+        .expect("radar");
+    assert_eq!(radar.public_error, Some(RadarSourceErrorCode::Timeout));
+    assert_eq!(radar.consecutive_failures, 1);
+}
+
+#[tokio::test]
+async fn radar_success_survives_a_codex_source_failure() {
+    let (_directory, store) = configured_store().await;
+    let radar = RadarObservation::new(
+        "2081899343091843463",
+        7_500,
+        1_784_999_000_000,
+        1_785_086_400_000,
+        "Possible additional reset.",
+        "https://x.com/thsottiaux/status/2081899343091843463",
+    )
+    .expect("radar");
+    let coordinator = RefreshCoordinator::new(
+        store.clone(),
+        FakeSource::failed(UsageSourceErrorCode::RateLimited),
+        FakeClock::new(1_785_000_000_000),
+    )
+    .with_reset_radar_source(BarrierRadarSource {
+        barrier: Arc::new(Barrier::new(1)),
+        result: Ok(RadarSnapshot::new(Some(radar), None)),
+    });
+
+    let receipt = coordinator
+        .refresh(RefreshTrigger::Hourly)
+        .await
+        .expect("refresh");
+
+    assert_eq!(
+        receipt.outcome,
+        RefreshOutcome::Failed(UsageSourceErrorCode::RateLimited)
+    );
+    assert!(
+        store
+            .public_reset_radar(1_785_000_000_000)
+            .await
+            .expect("radar")
+            .prediction
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn a_new_announcement_requests_one_account_only_recheck() {
+    let (_directory, store) = configured_store().await;
+    let source = FakeSource::successful(1_785_000_000_000);
+    let calls = Arc::clone(&source.calls);
+    let announcement = RadarAnnouncement::new(
+        "2082317452755751098",
+        1_784_999_000_000,
+        "Usage limits have been reset.",
+        "https://x.com/thsottiaux/status/2082317452755751098",
+    )
+    .expect("announcement");
+    let coordinator = RefreshCoordinator::new(store, source, FakeClock::new(1_785_000_000_000))
+        .with_reset_radar_source(BarrierRadarSource {
+            barrier: Arc::new(Barrier::new(1)),
+            result: Ok(RadarSnapshot::new(None, Some(announcement))),
+        });
+
+    coordinator
+        .refresh(RefreshTrigger::Hourly)
+        .await
+        .expect("first refresh");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    coordinator
+        .refresh(RefreshTrigger::Hourly)
+        .await
+        .expect("same announcement refresh");
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
 
 #[tokio::test]

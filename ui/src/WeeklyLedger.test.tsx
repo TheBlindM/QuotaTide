@@ -24,6 +24,11 @@ describe("Weekly Ledger overview", () => {
     expect(screen.getByText("Codex 额度 · 正常")).toBeInTheDocument();
     expect(screen.getByText("重置雷达 · 第三方预测")).toBeInTheDocument();
     expect(screen.getByText(">70%")).toBeInTheDocument();
+    expect(screen.getByText("第三方 AI 估算 · 非 OpenAI 承诺")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "查看原始来源" })).toHaveAttribute(
+      "href",
+      "https://x.com/thsottiaux/status/2081899343091843463",
+    );
 
     const ledger = screen.getByRole("table", {
       name: "当前七日窗口 07/24 至 07/30",
@@ -121,5 +126,40 @@ describe("Weekly Ledger overview", () => {
 
     screen.getByRole("button", { name: "选择 auth.json" }).click();
     expect(onOpenSettings).toHaveBeenCalledOnce();
+  });
+
+  it("distinguishes no current prediction from a Radar source failure", () => {
+    render(
+      <WeeklyLedger
+        fixture={{
+          ...ledgerFixtures.fresh,
+          radar: {
+            kind: "empty",
+            message: "当前无有效预测",
+            announcement: null,
+          },
+        }}
+        onOpenSettings={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("当前无有效预测")).toBeInTheDocument();
+    cleanup();
+
+    render(
+      <WeeklyLedger
+        fixture={{
+          ...ledgerFixtures.fresh,
+          radar: {
+            kind: "empty",
+            message: "预测数据暂不可用",
+            announcement: null,
+          },
+        }}
+        onOpenSettings={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("预测数据暂不可用")).toBeInTheDocument();
   });
 });

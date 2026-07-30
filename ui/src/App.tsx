@@ -4,6 +4,7 @@ import type { BuildInfo } from "./bindings/BuildInfo";
 import type { PublicAccountSettings } from "./bindings/PublicAccountSettings";
 import type { PublicLedgerDay } from "./bindings/PublicLedgerDay";
 import type { PublicLiveQuota } from "./bindings/PublicLiveQuota";
+import type { PublicResetRadar } from "./bindings/PublicResetRadar";
 import type { UsageSourceErrorCode } from "./bindings/UsageSourceErrorCode";
 import {
   getAccountSettings,
@@ -27,6 +28,7 @@ type ViewState =
       info: BuildInfo;
       accountSettings: PublicAccountSettings;
       liveQuota: PublicLiveQuota | null;
+      radar: PublicResetRadar;
       refreshing: boolean;
     }
   | { kind: "error" };
@@ -60,6 +62,7 @@ export function App() {
             },
           },
           liveQuota: null,
+          radar: emptyRadarState,
           refreshing: false,
         }
       : { kind: "loading" },
@@ -80,6 +83,7 @@ export function App() {
             info,
             accountSettings,
             liveQuota: liveQuotaState.quota,
+            radar: liveQuotaState.radar,
             refreshing: liveQuotaState.refreshing,
           });
         }
@@ -112,6 +116,7 @@ export function App() {
                     ...current,
                     accountSettings,
                     liveQuota: liveQuotaState.quota,
+                    radar: liveQuotaState.radar,
                     refreshing: liveQuotaState.refreshing,
                   }
                 : current,
@@ -181,7 +186,12 @@ export function App() {
       : "fresh";
   const fixture = isPreview
     ? ledgerFixtures[tone]
-    : projectLiveFixture(state.accountSettings, state.liveQuota);
+    : projectLiveFixture(
+        state.accountSettings,
+        state.liveQuota,
+        Date.now(),
+        state.radar,
+      );
 
   return (
     <TrayApp
@@ -199,6 +209,7 @@ export function App() {
               ? {
                   ...current,
                   liveQuota: liveQuotaState.quota,
+                  radar: liveQuotaState.radar,
                   refreshing: liveQuotaState.refreshing,
                 }
               : current,
@@ -215,6 +226,7 @@ export function App() {
                 ...current,
                 accountSettings,
                 liveQuota: liveQuotaState.quota,
+                radar: liveQuotaState.radar,
                 refreshing: liveQuotaState.refreshing,
               }
             : current,
@@ -231,6 +243,7 @@ export function App() {
                 ...current,
                 accountSettings,
                 liveQuota: liveQuotaState.quota,
+                radar: liveQuotaState.radar,
               }
             : current,
         );
@@ -244,6 +257,7 @@ export function projectLiveFixture(
   account: PublicAccountSettings,
   live: PublicLiveQuota | null,
   now = Date.now(),
+  radar: PublicResetRadar = emptyRadarState,
 ): (typeof ledgerFixtures)[LedgerTone] {
   if (!account.configured) {
     return ledgerFixtures.unconfigured;
@@ -261,7 +275,7 @@ export function projectLiveFixture(
       resetAbsolute: "",
       resetRelative: "",
       todayLimit: "",
-      radarChance: "",
+      radar: projectRadarFixture(radar, now),
       days: [],
     };
   }
@@ -308,8 +322,68 @@ export function projectLiveFixture(
     resetRelative: resetMs === null ? "" : formatRelative(resetMs - now),
     todayAvailable,
     todayLimit,
-    radarChance: "",
+    radar: projectRadarFixture(radar, now),
     days,
+  };
+}
+
+export const emptyRadarState: PublicResetRadar = {
+  lastAttemptAtUnixMs: null,
+  lastSuccessAtUnixMs: null,
+  consecutiveFailures: 0,
+  sourceStatus: "unavailable",
+  publicError: null,
+  prediction: null,
+  latestAnnouncement: null,
+};
+
+export function projectRadarFixture(
+  radar: PublicResetRadar,
+  now = Date.now(),
+) {
+  const announcement =
+    radar.latestAnnouncement === null
+      ? null
+      : {
+          text: radar.latestAnnouncement.text,
+          sourceUrl: radar.latestAnnouncement.sourceUrl,
+          announcedAt: formatDateTime(
+            radar.latestAnnouncement.announcedAtUnixMs,
+          ),
+        };
+  const prediction =
+    radar.prediction !== null &&
+    radar.prediction.observedAtUnixMs <= now &&
+    now < radar.prediction.expiresAtUnixMs
+      ? radar.prediction
+      : null;
+  if (prediction !== null) {
+    const health =
+      radar.sourceStatus === "fresh"
+        ? "数据源正常"
+        : radar.sourceStatus === "stale_after_failure"
+          ? `数据源暂不可用，显示有效快照`
+          : "显示仍有效的最后快照";
+    return {
+      kind: "active" as const,
+      chance: prediction.displayChance,
+      explanation: prediction.explanation,
+      sourceUrl: prediction.sourceUrl,
+      timing: `有效至 ${formatDateTime(prediction.expiresAtUnixMs)}`,
+      health,
+      announcement,
+    };
+  }
+  const message =
+    radar.sourceStatus === "fresh"
+      ? "当前无有效预测"
+      : radar.lastAttemptAtUnixMs === null
+        ? "等待首次雷达同步"
+        : "预测数据暂不可用";
+  return {
+    kind: "empty" as const,
+    message,
+    announcement,
   };
 }
 

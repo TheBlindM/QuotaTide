@@ -15,16 +15,19 @@ use crate::quota_ledger::{
     PolicyWindowFacts, QuotaPolicy, ThresholdTransition,
 };
 use crate::{
-    LedgerApplyKind, LedgerDayStatus, PublicLedgerDay, PublicLiveQuota, QuotaLedger,
-    RefreshAccountBinding, SourceStatus, UsageSourceErrorCode, WeeklyUsageObservation,
+    LedgerApplyKind, LedgerDayStatus, PublicLedgerDay, PublicLiveQuota, PublicRadarAnnouncement,
+    PublicRadarPrediction, PublicResetRadar, QuotaLedger, RadarChance, RadarCommitDisposition,
+    RadarSnapshot, RadarSourceErrorCode, RefreshAccountBinding, SourceStatus, UsageSourceErrorCode,
+    WeeklyUsageObservation, radar_bucket_label,
 };
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-settings-v1-account-path-stream";
 const LIVE_QUOTA_SCHEMA_CHECKSUM: &str = "quotatide-v2-live-quota-health";
 const QUOTA_LEDGER_SCHEMA_CHECKSUM: &str = "quotatide-v3-current-seven-day-ledger";
 const IMMUTABLE_IANA_SCHEMA_CHECKSUM: &str = "quotatide-v4-immutable-observations-iana-policy";
 const DAILY_POLICY_SCHEMA_CHECKSUM: &str = "quotatide-v5-versioned-daily-policy";
+const RESET_RADAR_SCHEMA_CHECKSUM: &str = "quotatide-v6-independent-reset-radar";
 const FRESH_FOR_MS: i64 = 90 * 60 * 1000;
 
 /// A stable, secret-free account configuration projection for the UI.
@@ -260,16 +263,6 @@ impl<V: AuthCandidateValidator> SettingsManager<V> {
             .await
             .map_err(Into::into)
     }
-
-    pub(crate) async fn live_quota_snapshot(
-        &self,
-        now_unix_ms: i64,
-    ) -> Result<(u64, Option<PublicLiveQuota>), AccountConfigError<V::Error>> {
-        self.store
-            .public_live_quota_snapshot(now_unix_ms)
-            .await
-            .map_err(Into::into)
-    }
 }
 
 /// Sole account-configuration facade exposed to the native shell.
@@ -335,13 +328,6 @@ impl<V: AuthCandidateValidator> AccountApplication<V> {
         now_unix_ms: i64,
     ) -> Result<Option<PublicLiveQuota>, AccountConfigError<V::Error>> {
         self.settings.live_quota(now_unix_ms).await
-    }
-
-    pub(crate) async fn live_quota_snapshot(
-        &self,
-        now_unix_ms: i64,
-    ) -> Result<(u64, Option<PublicLiveQuota>), AccountConfigError<V::Error>> {
-        self.settings.live_quota_snapshot(now_unix_ms).await
     }
 }
 
@@ -420,6 +406,11 @@ fn initialize_database(
         migrate_daily_policy_v5(database, now, policy_timezone)?;
     } else {
         validate_migration(database, 5, DAILY_POLICY_SCHEMA_CHECKSUM)?;
+    }
+    if current_version <= 5 {
+        migrate_reset_radar_v6(database, now)?;
+    } else {
+        validate_migration(database, 6, RESET_RADAR_SCHEMA_CHECKSUM)?;
     }
     Ok(())
 }
@@ -760,6 +751,71 @@ fn migrate_daily_policy_v5(
         rusqlite::params![now, env!("CARGO_PKG_VERSION"), DAILY_POLICY_SCHEMA_CHECKSUM],
     )?;
     transaction.pragma_update(None, "user_version", 5)?;
+    transaction.commit()
+}
+
+fn migrate_reset_radar_v6(database: &mut rusqlite::Connection, now: i64) -> rusqlite::Result<()> {
+    let transaction =
+        database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE radar_observations (
+           id INTEGER PRIMARY KEY,
+           source_id TEXT NOT NULL,
+           observed_at_ms INTEGER NOT NULL,
+           expires_at_ms INTEGER NOT NULL CHECK (expires_at_ms > observed_at_ms),
+           chance_basis_points INTEGER NOT NULL
+             CHECK (chance_basis_points BETWEEN 0 AND 10000),
+           explanation TEXT NOT NULL,
+           source_url TEXT NOT NULL,
+           captured_at_ms INTEGER NOT NULL,
+           UNIQUE(source_id, observed_at_ms)
+         );
+         CREATE TABLE radar_announcements (
+           id INTEGER PRIMARY KEY,
+           source_id TEXT NOT NULL UNIQUE,
+           announced_at_ms INTEGER NOT NULL,
+           text TEXT NOT NULL,
+           source_url TEXT NOT NULL,
+           captured_at_ms INTEGER NOT NULL
+         );
+         CREATE TABLE radar_source_health (
+           singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+           last_attempt_at_ms INTEGER NOT NULL,
+           last_success_at_ms INTEGER,
+           consecutive_failures INTEGER NOT NULL CHECK (consecutive_failures >= 0),
+           public_error TEXT,
+           current_observation_id INTEGER REFERENCES radar_observations(id)
+         );
+         CREATE INDEX radar_announcements_time
+           ON radar_announcements(announced_at_ms DESC);
+         CREATE TRIGGER radar_observations_are_immutable_update
+           BEFORE UPDATE ON radar_observations
+           BEGIN
+             SELECT RAISE(ABORT, 'radar observations are immutable');
+           END;
+         CREATE TRIGGER radar_observations_are_immutable_delete
+           BEFORE DELETE ON radar_observations
+           BEGIN
+             SELECT RAISE(ABORT, 'radar observations are immutable');
+           END;
+         CREATE TRIGGER radar_announcements_are_immutable_update
+           BEFORE UPDATE ON radar_announcements
+           BEGIN
+             SELECT RAISE(ABORT, 'radar announcements are immutable');
+           END;
+         CREATE TRIGGER radar_announcements_are_immutable_delete
+           BEFORE DELETE ON radar_announcements
+           BEGIN
+             SELECT RAISE(ABORT, 'radar announcements are immutable');
+           END;",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations
+         (version, applied_at_ms, app_version, checksum)
+         VALUES (6, ?1, ?2, ?3)",
+        rusqlite::params![now, env!("CARGO_PKG_VERSION"), RESET_RADAR_SCHEMA_CHECKSUM],
+    )?;
+    transaction.pragma_update(None, "user_version", 6)?;
     transaction.commit()
 }
 
@@ -1144,6 +1200,18 @@ impl AccountSettingsStore {
         expected_revision: u32,
         draft: QuotaPolicyDraft,
     ) -> Result<PublicAccountSettings, SettingsStoreError> {
+        self.update_quota_policy_at(expected_revision, draft, unix_time_ms())
+            .await
+    }
+
+    /// Deterministic clock seam for migration and policy timeline tests.
+    #[doc(hidden)]
+    pub async fn update_quota_policy_at(
+        &self,
+        expected_revision: u32,
+        draft: QuotaPolicyDraft,
+        now_unix_ms: i64,
+    ) -> Result<PublicAccountSettings, SettingsStoreError> {
         let base_micropoints: [i64; 7] = draft
             .base_micropoints
             .try_into()
@@ -1156,6 +1224,7 @@ impl AccountSettingsStore {
         let policy_timezone = policy.policy_timezone().name().to_owned();
         let carry_workdays_enabled = policy.carry_workdays_enabled();
         let base_micropoints = policy.base_micropoints();
+        let now = now_unix_ms;
         self.connection
             .call(move |database| {
                 let transaction =
@@ -1168,7 +1237,6 @@ impl AccountSettingsStore {
                 if current_revision != i64::from(expected_revision) {
                     return Err(StoreCallError::Conflict);
                 }
-                let now = unix_time_ms();
                 let configured_stream_id: Option<i64> = transaction.query_row(
                     "SELECT configured_account_stream_id
                      FROM app_settings WHERE singleton_id = 1",
@@ -1376,6 +1444,148 @@ impl AccountSettingsStore {
             .map_err(SettingsStoreError::database)
     }
 
+    /// Atomically commits Radar facts and resets only Radar source health.
+    ///
+    /// This transaction has no account-stream or quota-epoch foreign keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the independent Radar transaction fails.
+    pub async fn record_radar_success(
+        &self,
+        attempted_at_unix_ms: i64,
+        snapshot: RadarSnapshot,
+    ) -> Result<RadarCommitDisposition, SettingsStoreError> {
+        self.connection
+            .call(move |database| {
+                let transaction =
+                    database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let current_observation_id = if let Some(observation) = snapshot.observation() {
+                    transaction.execute(
+                        "INSERT INTO radar_observations
+                         (source_id, observed_at_ms, expires_at_ms, chance_basis_points,
+                          explanation, source_url, captured_at_ms)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                         ON CONFLICT(source_id, observed_at_ms) DO NOTHING",
+                        rusqlite::params![
+                            observation.source_id(),
+                            observation.observed_at_unix_ms(),
+                            observation.expires_at_unix_ms(),
+                            observation.chance().basis_points(),
+                            observation.explanation(),
+                            observation.source_url(),
+                            attempted_at_unix_ms,
+                        ],
+                    )?;
+                    Some(transaction.query_row(
+                        "SELECT id FROM radar_observations
+                         WHERE source_id = ?1 AND observed_at_ms = ?2",
+                        rusqlite::params![
+                            observation.source_id(),
+                            observation.observed_at_unix_ms()
+                        ],
+                        |row| row.get::<_, i64>(0),
+                    )?)
+                } else {
+                    None
+                };
+                let new_announcement = if let Some(announcement) = snapshot.latest_announcement() {
+                    transaction.execute(
+                        "INSERT INTO radar_announcements
+                             (source_id, announced_at_ms, text, source_url, captured_at_ms)
+                             VALUES (?1, ?2, ?3, ?4, ?5)
+                             ON CONFLICT(source_id) DO NOTHING",
+                        rusqlite::params![
+                            announcement.source_id(),
+                            announcement.announced_at_unix_ms(),
+                            announcement.text(),
+                            announcement.source_url(),
+                            attempted_at_unix_ms,
+                        ],
+                    )? == 1
+                } else {
+                    false
+                };
+                transaction.execute(
+                    "INSERT INTO radar_source_health
+                     (singleton_id, last_attempt_at_ms, last_success_at_ms,
+                      consecutive_failures, public_error, current_observation_id)
+                     VALUES (1, ?1, ?1, 0, NULL, ?2)
+                     ON CONFLICT(singleton_id) DO UPDATE SET
+                       last_attempt_at_ms = excluded.last_attempt_at_ms,
+                       last_success_at_ms = excluded.last_success_at_ms,
+                       consecutive_failures = 0,
+                       public_error = NULL,
+                       current_observation_id = excluded.current_observation_id",
+                    rusqlite::params![attempted_at_unix_ms, current_observation_id],
+                )?;
+                transaction.execute(
+                    "UPDATE app_meta
+                     SET dashboard_revision = dashboard_revision + 1,
+                         updated_at_ms = ?1
+                     WHERE singleton_id = 1",
+                    [attempted_at_unix_ms],
+                )?;
+                transaction.commit()?;
+                Ok::<_, rusqlite::Error>(RadarCommitDisposition { new_announcement })
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
+    /// Records one Radar failure while retaining its current observation link.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the independent health transaction fails.
+    pub async fn record_radar_failure(
+        &self,
+        attempted_at_unix_ms: i64,
+        public_error: RadarSourceErrorCode,
+    ) -> Result<(), SettingsStoreError> {
+        self.connection
+            .call(move |database| {
+                let transaction =
+                    database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                transaction.execute(
+                    "INSERT INTO radar_source_health
+                     (singleton_id, last_attempt_at_ms, last_success_at_ms,
+                      consecutive_failures, public_error, current_observation_id)
+                     VALUES (1, ?1, NULL, 1, ?2, NULL)
+                     ON CONFLICT(singleton_id) DO UPDATE SET
+                       last_attempt_at_ms = excluded.last_attempt_at_ms,
+                       consecutive_failures = consecutive_failures + 1,
+                       public_error = excluded.public_error",
+                    rusqlite::params![attempted_at_unix_ms, public_error.as_storage_key()],
+                )?;
+                transaction.execute(
+                    "UPDATE app_meta
+                     SET dashboard_revision = dashboard_revision + 1,
+                         updated_at_ms = ?1
+                     WHERE singleton_id = 1",
+                    [attempted_at_unix_ms],
+                )?;
+                transaction.commit()
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
+    /// Returns the independent Radar projection, hiding expired predictions.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when persisted state is corrupt.
+    pub async fn public_reset_radar(
+        &self,
+        now_unix_ms: i64,
+    ) -> Result<PublicResetRadar, SettingsStoreError> {
+        self.connection
+            .call(move |database| query_public_reset_radar(database, now_unix_ms))
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
     /// Returns the last-known-good quota and current source health for only the
     /// configured account stream.
     ///
@@ -1422,6 +1632,43 @@ impl AccountSettingsStore {
                 )?;
                 build_public_live_quota(row, ledger_days, now_unix_ms)
                     .map(|quota| (revision, Some(quota)))
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
+    /// Returns one transactionally consistent quota + Radar dashboard snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when either independent projection is corrupt.
+    pub async fn public_dashboard_snapshot(
+        &self,
+        now_unix_ms: i64,
+    ) -> Result<(u64, Option<PublicLiveQuota>, PublicResetRadar), SettingsStoreError> {
+        self.connection
+            .call(move |database| {
+                let transaction = database.unchecked_transaction()?;
+                let revision: i64 = transaction.query_row(
+                    "SELECT dashboard_revision FROM app_meta WHERE singleton_id = 1",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let revision =
+                    u64::try_from(revision).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let quota = if let Some(row) = query_live_quota_row(&transaction)? {
+                    let ledger_days = project_public_ledger_days(
+                        &transaction,
+                        row.stream_id,
+                        row.policy_timezone,
+                        now_unix_ms,
+                    )?;
+                    Some(build_public_live_quota(row, ledger_days, now_unix_ms)?)
+                } else {
+                    None
+                };
+                let radar = query_public_reset_radar(&transaction, now_unix_ms)?;
+                Ok::<_, rusqlite::Error>((revision, quota, radar))
             })
             .await
             .map_err(SettingsStoreError::database)
@@ -1482,6 +1729,158 @@ fn record_usage_success_transaction(
     transaction
         .commit()
         .map(|()| UsageCommitDisposition::Committed)
+}
+
+fn query_public_reset_radar(
+    database: &rusqlite::Connection,
+    now_unix_ms: i64,
+) -> rusqlite::Result<PublicResetRadar> {
+    let health = query_radar_health(database)?;
+    let latest_announcement = query_latest_radar_announcement(database)?;
+    let Some(health) = health else {
+        return Ok(PublicResetRadar {
+            last_attempt_at_unix_ms: None,
+            last_success_at_unix_ms: None,
+            consecutive_failures: 0,
+            source_status: SourceStatus::Unavailable,
+            public_error: None,
+            prediction: None,
+            latest_announcement,
+        });
+    };
+    let public_error = match health.error_key.as_deref() {
+        Some(key) => {
+            Some(RadarSourceErrorCode::from_storage_key(key).ok_or(rusqlite::Error::InvalidQuery)?)
+        }
+        None => None,
+    };
+    let source_status =
+        project_radar_source_status(public_error, health.last_success_at_unix_ms, now_unix_ms);
+    let prediction = query_radar_prediction(database, health.current_observation_id, now_unix_ms)?;
+    let consecutive_failures =
+        u32::try_from(health.consecutive_failures).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    Ok(PublicResetRadar {
+        last_attempt_at_unix_ms: Some(health.last_attempt_at_unix_ms),
+        last_success_at_unix_ms: health.last_success_at_unix_ms,
+        consecutive_failures,
+        source_status,
+        public_error,
+        prediction,
+        latest_announcement,
+    })
+}
+
+struct RadarHealthRow {
+    last_attempt_at_unix_ms: i64,
+    last_success_at_unix_ms: Option<i64>,
+    consecutive_failures: i64,
+    error_key: Option<String>,
+    current_observation_id: Option<i64>,
+}
+
+fn query_radar_health(database: &rusqlite::Connection) -> rusqlite::Result<Option<RadarHealthRow>> {
+    use rusqlite::OptionalExtension as _;
+
+    database
+        .query_row(
+            "SELECT last_attempt_at_ms, last_success_at_ms,
+                    consecutive_failures, public_error, current_observation_id
+             FROM radar_source_health WHERE singleton_id = 1",
+            [],
+            |row| {
+                Ok(RadarHealthRow {
+                    last_attempt_at_unix_ms: row.get(0)?,
+                    last_success_at_unix_ms: row.get(1)?,
+                    consecutive_failures: row.get(2)?,
+                    error_key: row.get(3)?,
+                    current_observation_id: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+}
+
+fn query_latest_radar_announcement(
+    database: &rusqlite::Connection,
+) -> rusqlite::Result<Option<PublicRadarAnnouncement>> {
+    use rusqlite::OptionalExtension as _;
+
+    database
+        .query_row(
+            "SELECT announced_at_ms, text, source_url
+             FROM radar_announcements
+             ORDER BY announced_at_ms DESC, id DESC LIMIT 1",
+            [],
+            |row| {
+                Ok(PublicRadarAnnouncement {
+                    announced_at_unix_ms: row.get(0)?,
+                    text: row.get(1)?,
+                    source_url: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+}
+
+fn project_radar_source_status(
+    public_error: Option<RadarSourceErrorCode>,
+    last_success_at_unix_ms: Option<i64>,
+    now_unix_ms: i64,
+) -> SourceStatus {
+    if public_error.is_some() {
+        if last_success_at_unix_ms.is_some() {
+            SourceStatus::StaleAfterFailure
+        } else {
+            SourceStatus::Unavailable
+        }
+    } else if last_success_at_unix_ms
+        .is_some_and(|success| now_unix_ms.saturating_sub(success) > FRESH_FOR_MS)
+    {
+        SourceStatus::StaleByAge
+    } else if last_success_at_unix_ms.is_some() {
+        SourceStatus::Fresh
+    } else {
+        SourceStatus::Unavailable
+    }
+}
+
+fn query_radar_prediction(
+    database: &rusqlite::Connection,
+    current_observation_id: Option<i64>,
+    now_unix_ms: i64,
+) -> rusqlite::Result<Option<PublicRadarPrediction>> {
+    let prediction = current_observation_id
+        .map(|observation_id| {
+            database.query_row(
+                "SELECT chance_basis_points, observed_at_ms, expires_at_ms,
+                        explanation, source_url
+                 FROM radar_observations WHERE id = ?1",
+                [observation_id],
+                |row| {
+                    let chance: i64 = row.get(0)?;
+                    let chance = u16::try_from(chance)
+                        .ok()
+                        .and_then(RadarChance::from_basis_points)
+                        .ok_or(rusqlite::Error::InvalidQuery)?;
+                    let observed_at_unix_ms: i64 = row.get(1)?;
+                    let expires_at_unix_ms: i64 = row.get(2)?;
+                    Ok(PublicRadarPrediction {
+                        chance_basis_points: chance.basis_points(),
+                        display_chance: radar_bucket_label(chance).to_owned(),
+                        observed_at_unix_ms,
+                        expires_at_unix_ms,
+                        explanation: row.get(3)?,
+                        source_url: row.get(4)?,
+                    })
+                },
+            )
+        })
+        .transpose()?
+        .filter(|prediction| {
+            prediction.observed_at_unix_ms <= now_unix_ms
+                && now_unix_ms < prediction.expires_at_unix_ms
+        });
+    Ok(prediction)
 }
 
 fn persist_daily_policy_snapshots(
