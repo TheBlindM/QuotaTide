@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 
 import type { AlertEventKind } from "./bindings/AlertEventKind";
 import type { BuildInfo } from "./bindings/BuildInfo";
@@ -87,10 +87,51 @@ const previewAlertKinds: AlertEventKind[] = [
   "source_failures_3",
 ];
 
+function useMinuteClock(enabled: boolean): number {
+  const [nowUnixMs, setNowUnixMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    let timeoutId: number | undefined;
+    const schedule = () => {
+      const now = Date.now();
+      const delay = 60_000 - (now % 60_000);
+      timeoutId = window.setTimeout(() => {
+        setNowUnixMs(Date.now());
+        schedule();
+      }, delay);
+    };
+    schedule();
+    return () => {
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [enabled]);
+
+  return nowUnixMs;
+}
+
+function policyLocalDate(nowUnixMs: number, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(nowUnixMs);
+  const read = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return `${read("year")}-${read("month")}-${read("day")}`;
+}
+
 export function App() {
   const { text } = useI18n();
   const searchParams = new URLSearchParams(window.location.search);
   const isPreview = searchParams.has("preview");
+  const nowUnixMs = useMinuteClock(!isPreview);
+  const lastPolicyDateRef = useRef<string | null>(null);
   const previewRecovery = searchParams.get("recovery");
   const previewAlerts = searchParams.get("alerts") === "denied";
   const preview = createPreviewScenario(searchParams);
@@ -309,6 +350,9 @@ export function App() {
           unlistenAlerts = disposeAlerts;
           unlistenNotification = disposeNotification;
           unlistenUpdate = disposeUpdate;
+          // Close the startup handshake race: a refresh can finish after the
+          // initial snapshot but before the native listeners are attached.
+          reloadDashboard();
         } else {
           disposeDashboard();
           disposeSettings();
@@ -328,6 +372,41 @@ export function App() {
       unlistenUpdate?.();
     };
   }, [isPreview, state.kind]);
+
+  const currentPolicyDate =
+    state.kind === "ready"
+      ? policyLocalDate(
+          nowUnixMs,
+          state.settings.quotaPolicy.policyTimezone,
+        )
+      : null;
+  useEffect(() => {
+    if (isPreview || state.kind !== "ready" || currentPolicyDate === null) {
+      return;
+    }
+    const previousPolicyDate = lastPolicyDateRef.current;
+    lastPolicyDateRef.current = currentPolicyDate;
+    if (
+      previousPolicyDate === null ||
+      previousPolicyDate === currentPolicyDate
+    ) {
+      return;
+    }
+    void getLiveQuota()
+      .then((liveQuotaState) => {
+        setState((current) =>
+          current.kind === "ready"
+            ? {
+                ...current,
+                liveQuota: liveQuotaState.quota,
+                radar: liveQuotaState.radar,
+                refreshing: liveQuotaState.refreshing,
+              }
+            : current,
+        );
+      })
+      .catch(() => undefined);
+  }, [currentPolicyDate, isPreview, state.kind]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -449,7 +528,7 @@ export function App() {
     : projectLiveFixture(
         state.settings,
         state.liveQuota,
-        Date.now(),
+        nowUnixMs,
         state.radar,
         resolveInterfaceLocale(
           state.settings.interfaceLocale,

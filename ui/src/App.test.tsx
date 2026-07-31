@@ -3,6 +3,7 @@
 import "@testing-library/jest-dom/vitest";
 import {
   cleanup,
+  act,
   fireEvent,
   render,
   screen,
@@ -12,7 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App, projectLiveFixture, projectRadarFixture } from "./App";
 import { saveSettings } from "./api/account-settings";
-import { getLiveQuota } from "./api/live-quota";
+import { getLiveQuota, onDashboardChanged } from "./api/live-quota";
 import {
   getStartupState,
   openLocalDataDirectory,
@@ -200,7 +201,9 @@ vi.mock("./api/updater", () => ({
 }));
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
+  vi.clearAllMocks();
   vi.mocked(getStartupState).mockResolvedValue({
     mode: "ready",
     messageKey: "startup.ready",
@@ -224,6 +227,77 @@ describe("QuotaTide tray app", () => {
       screen.getByRole("table", { name: /当前七日窗口/ }),
     ).toBeInTheDocument();
     expect(screen.getByText(/已用 42%/)).toBeInTheDocument();
+  });
+
+  it("reconciles a refresh that completes before dashboard listeners attach", async () => {
+    const steadyState = await getLiveQuota();
+    vi.mocked(getLiveQuota).mockClear();
+    vi.mocked(getLiveQuota)
+      .mockResolvedValueOnce({ ...steadyState, refreshing: true })
+      .mockResolvedValueOnce({ ...steadyState, refreshing: false });
+    vi.mocked(onDashboardChanged).mockResolvedValueOnce(
+      () => undefined,
+    );
+
+    render(<App />);
+
+    expect(
+      await screen.findByText("Codex 额度 · 正在刷新"),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "立即刷新" }),
+      ).toBeEnabled();
+    });
+    expect(getLiveQuota).toHaveBeenCalledTimes(2);
+  });
+
+  it("reprojects the current ledger day when policy midnight passes", async () => {
+    const steadyState = await getLiveQuota();
+    const quota = steadyState.quota;
+    if (quota === null) {
+      throw new Error("Expected the default live quota fixture");
+    }
+    const beforeMidnight = {
+      ...steadyState,
+      quota: {
+        ...quota,
+        ledgerDays: quota.ledgerDays.map((day) => ({
+          ...day,
+          isToday: day.localDate === "2026-07-28",
+        })),
+      },
+    };
+    const afterMidnight = {
+      ...steadyState,
+      quota: {
+        ...quota,
+        ledgerDays: quota.ledgerDays.map((day) => ({
+          ...day,
+          isToday: day.localDate === "2026-07-29",
+        })),
+      },
+    };
+    vi.mocked(getLiveQuota).mockClear();
+    vi.mocked(getLiveQuota)
+      .mockResolvedValueOnce(beforeMidnight)
+      .mockResolvedValueOnce(beforeMidnight)
+      .mockResolvedValueOnce(afterMidnight);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-07-28T15:59:30.000Z"));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(document.querySelector(".is-today")).toHaveTextContent("07/28");
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    await waitFor(() => {
+      expect(document.querySelector(".is-today")).toHaveTextContent("07/29");
+    });
+    expect(getLiveQuota).toHaveBeenCalledTimes(3);
   });
 
   it("keeps a visible notice after an automatic validated-backup recovery", async () => {
@@ -290,6 +364,9 @@ describe("QuotaTide tray app", () => {
     });
     render(<App />);
     expect(await screen.findByText(/已用 42%/)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(getLiveQuota).toHaveBeenCalledTimes(2);
+    });
     vi.mocked(getLiveQuota).mockResolvedValueOnce({
       dashboardRevision: 2,
       refreshing: true,
