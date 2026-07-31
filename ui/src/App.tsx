@@ -235,6 +235,8 @@ export function App() {
     state.kind === "ready" ? state.settings.interfaceLocale : "system",
     systemLocale,
   );
+  const dashboardRefreshing =
+    state.kind === "ready" && state.refreshing;
 
   useEffect(() => {
     if (isPreview) {
@@ -372,6 +374,49 @@ export function App() {
       unlistenUpdate?.();
     };
   }, [isPreview, state.kind]);
+
+  useEffect(() => {
+    if (isPreview || state.kind !== "ready" || !dashboardRefreshing) {
+      return;
+    }
+
+    let active = true;
+    let timeoutId: number | undefined;
+    const reconcileRefresh = () => {
+      void getLiveQuota()
+        .then((liveQuotaState) => {
+          if (!active) {
+            return;
+          }
+          setState((current) =>
+            current.kind === "ready"
+              ? {
+                  ...current,
+                  liveQuota: liveQuotaState.quota,
+                  radar: liveQuotaState.radar,
+                  refreshing: liveQuotaState.refreshing,
+                }
+              : current,
+          );
+          if (liveQuotaState.refreshing) {
+            timeoutId = window.setTimeout(reconcileRefresh, 1_000);
+          }
+        })
+        .catch(() => {
+          if (active) {
+            timeoutId = window.setTimeout(reconcileRefresh, 1_000);
+          }
+        });
+    };
+
+    timeoutId = window.setTimeout(reconcileRefresh, 1_000);
+    return () => {
+      active = false;
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [dashboardRefreshing, isPreview, state.kind]);
 
   const currentPolicyDate =
     state.kind === "ready"

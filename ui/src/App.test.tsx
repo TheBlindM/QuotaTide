@@ -229,21 +229,25 @@ describe("QuotaTide tray app", () => {
     expect(screen.getByText(/已用 42%/)).toBeInTheDocument();
   });
 
-  it("reconciles a refresh that completes before dashboard listeners attach", async () => {
+  it("reconciles a refresh even while dashboard listeners are still attaching", async () => {
     const steadyState = await getLiveQuota();
     vi.mocked(getLiveQuota).mockClear();
     vi.mocked(getLiveQuota)
       .mockResolvedValueOnce({ ...steadyState, refreshing: true })
       .mockResolvedValueOnce({ ...steadyState, refreshing: false });
-    vi.mocked(onDashboardChanged).mockResolvedValueOnce(
-      () => undefined,
+    vi.mocked(onDashboardChanged).mockReturnValueOnce(
+      new Promise(() => undefined),
     );
+    vi.useFakeTimers({ shouldAdvanceTime: true });
 
     render(<App />);
 
     expect(
       await screen.findByText("Codex 额度 · 正在刷新"),
     ).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_100);
+    });
     await waitFor(() => {
       expect(
         screen.getByRole("button", { name: "立即刷新" }),
