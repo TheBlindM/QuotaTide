@@ -2,7 +2,7 @@
 
 > Ticket：25
 >
-> 日期：2026-07-30
+> 日期：2026-07-31
 >
 > 修订：包含本文档的提交
 
@@ -14,7 +14,7 @@ candidate 产物执行；未执行的人工项不得据此标为通过。
 
 | 门禁 | 命令 | 结果 |
 |---|---|---|
-| UI lint、类型、测试、构建 | `npm --prefix ui run check` | PASS；5 个单元测试文件、61 项测试 |
+| UI lint、类型、测试、构建 | `npm --prefix ui run check` | PASS；5 个单元测试文件、63 项测试 |
 | 真实浏览器大字体布局 | `npm --prefix ui run test:browser` | PASS；Chrome 420 × 680、200% 字体、English overview、两条 Radar 链接、四个 settings panel 与底部操作完整可见且可聚焦 |
 | axe | 包含在 UI 测试 | PASS；overview 与四个 settings panel 无 critical/serious |
 | Rust lint | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
@@ -24,7 +24,7 @@ candidate 产物执行；未执行的人工项不得据此标为通过。
 | 发布身份 | `node scripts/check-release-identity.mjs` | 预期 BLOCKED；真实 GitHub 仓库尚未绑定 |
 | macOS `.app` | `cargo tauri build --bundles app` | PASS |
 
-UI 生产资源 gzip 合计 32,491 bytes，低于 100 KiB 发布预算。
+UI 生产资源 gzip 合计 32,809 bytes，低于 100 KiB 发布预算。
 
 ## 已验证契约
 
@@ -65,8 +65,9 @@ Account、Quota、Alerts、Privacy 与底部操作，要求控件完整位于滚
 
 ## Ticket 27 必须补齐的人工证据
 
-- macOS 已生成新的 `.app`，但本轮真实窗口检查遇到锁屏，状态为
-  `BLOCKED`，不是 `PASS`。
+- macOS 已生成新的 universal `.app`。解锁后的开发机已完成原生窗口、四个
+  settings panel、当前七日窗口和刷新结束自动恢复的 smoke；它仍不是从最终
+  DMG 安装、在最低支持补丁上执行的正式矩阵 `PASS`。
 - VoiceOver 核心工作流、Increase Contrast / Reduce Transparency /
   Reduce Motion 组合和真实 200% 字体需要在解锁后的支持版本 macOS 执行。
 - Narrator、High Contrast Black/White、forced colors 和 Windows 200%
