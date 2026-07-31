@@ -25,10 +25,14 @@ impl LaunchMode {
         }
     }
 
-    /// Returns whether this launch is allowed to display the tray window.
+    /// Process launches only establish or wake the tray runtime.
+    ///
+    /// The window is displayed by an explicit tray/menu/notification action,
+    /// never by launching the executable itself.
     #[must_use]
     pub const fn shows_window(self) -> bool {
-        matches!(self, Self::User)
+        let _ = self;
+        false
     }
 }
 
@@ -36,7 +40,7 @@ impl LaunchMode {
 ///
 /// # Errors
 ///
-/// Returns the window activation error after both background workers have started.
+/// The retained activation seam proves that process startup never invokes it.
 pub fn start_primary<E>(
     mode: LaunchMode,
     start_scheduler: impl FnOnce(),
@@ -57,7 +61,7 @@ pub fn start_primary<E>(
 ///
 /// # Errors
 ///
-/// Returns the existing-window activation error for an explicit user launch.
+/// The retained activation seam proves that a second process never invokes it.
 pub fn notify_secondary<E>(
     mode: LaunchMode,
     show_window: impl FnOnce() -> Result<(), E>,

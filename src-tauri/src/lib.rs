@@ -1302,17 +1302,6 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
 fn handle_run_event(app: &AppHandle, event: &RunEvent) {
     match event {
-        #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } => {
-            if dispatch_shell_event(app, ShellEvent::OpenRequested, None).is_err() {
-                safe_log(
-                    SafeLogLevel::Warning,
-                    "window",
-                    "reopen",
-                    SafeLogFields::default(),
-                );
-            }
-        }
         RunEvent::Resumed => {
             if dispatch_shell_event(app, ShellEvent::ResumeRequested, None).is_err() {
                 safe_log(
@@ -1736,14 +1725,14 @@ mod tests {
     }
 
     #[test]
-    fn autostart_launch_stays_hidden_while_a_user_launch_opens_the_existing_window() {
+    fn every_process_launch_stays_hidden_until_the_tray_is_clicked() {
         assert_eq!(
             LaunchMode::from_args(["quotatide", AUTOSTART_ARGUMENT]),
             LaunchMode::Autostart
         );
         assert!(!LaunchMode::Autostart.shows_window());
         assert_eq!(LaunchMode::from_args(["quotatide"]), LaunchMode::User);
-        assert!(LaunchMode::User.shows_window());
+        assert!(!LaunchMode::User.shows_window());
         assert!(!LaunchMode::from_args(["quotatide", AUTOSTART_ARGUMENT]).shows_window());
     }
 

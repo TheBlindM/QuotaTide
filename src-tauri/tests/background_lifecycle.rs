@@ -53,13 +53,13 @@ fn login_and_secondary_launches_share_one_background_runtime() {
 
     assert_eq!(scheduler_starts.get(), 1);
     assert_eq!(delivery_starts.get(), 1);
-    assert_eq!(window_opens.get(), 1);
+    assert_eq!(window_opens.get(), 0);
     assert_eq!(scheduler_wakes.get(), 2);
     assert_eq!(delivery_wakes.get(), 2);
 }
 
 #[test]
-fn secondary_wakes_survive_a_window_activation_failure() {
+fn secondary_launch_wakes_workers_without_attempting_window_activation() {
     let scheduler_wakes = Cell::new(0);
     let delivery_wakes = Cell::new(0);
 
@@ -70,7 +70,7 @@ fn secondary_wakes_survive_a_window_activation_failure() {
         || delivery_wakes.set(delivery_wakes.get() + 1),
     );
 
-    assert_eq!(result, Err("window unavailable"));
+    assert_eq!(result, Ok(()));
     assert_eq!(scheduler_wakes.get(), 1);
     assert_eq!(delivery_wakes.get(), 1);
 }
