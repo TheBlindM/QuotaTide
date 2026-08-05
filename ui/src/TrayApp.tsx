@@ -929,7 +929,7 @@ function SettingsView({
               <div class="settings-section__heading">
                 <span>{text("关于与更新", "About and updates")}</span>
                 <h2>
-                  QuotaTide {updateState?.currentVersion ?? "0.1.0"}
+                  QuotaTide {updateState?.currentVersion ?? "0.1.1"}
                 </h2>
                 <small>{text("作者 TheBlind", "By TheBlind")}</small>
               </div>

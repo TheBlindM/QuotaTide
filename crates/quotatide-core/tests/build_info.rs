@@ -7,7 +7,7 @@ fn build_info_exposes_only_public_product_identity() {
         build_info(),
         BuildInfo {
             product_name: "QuotaTide".to_owned(),
-            version: "0.1.0".to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
             author: "TheBlind".to_owned(),
             identifier: "dev.theblind.quotatide".to_owned(),
             stage: "skeleton".to_owned(),
