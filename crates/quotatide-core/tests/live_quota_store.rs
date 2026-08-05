@@ -236,9 +236,12 @@ async fn success_commits_observation_and_health_as_one_public_snapshot() {
 #[tokio::test]
 async fn mid_window_baseline_reserves_future_policy_before_suggesting_usage_from_now() {
     let directory = tempdir().expect("temporary directory");
-    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
-        .await
-        .expect("open store");
+    let store = AccountSettingsStore::open_with_policy_timezone(
+        directory.path().join("state.sqlite3"),
+        "Asia/Shanghai",
+    )
+    .await
+    .expect("open store");
     store
         .configure_account(0, "/chosen/auth.json", "account-one")
         .await
@@ -288,9 +291,12 @@ async fn mid_window_baseline_reserves_future_policy_before_suggesting_usage_from
 #[tokio::test]
 async fn mid_window_baseline_stays_suggested_after_more_usage_on_the_same_day() {
     let directory = tempdir().expect("temporary directory");
-    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
-        .await
-        .expect("open store");
+    let store = AccountSettingsStore::open_with_policy_timezone(
+        directory.path().join("state.sqlite3"),
+        "Asia/Shanghai",
+    )
+    .await
+    .expect("open store");
     store
         .configure_account(0, "/chosen/auth.json", "account-one")
         .await
@@ -336,9 +342,12 @@ async fn mid_window_baseline_stays_suggested_after_more_usage_on_the_same_day() 
 #[tokio::test]
 async fn a_new_policy_day_stays_suggested_until_that_day_syncs() {
     let directory = tempdir().expect("temporary directory");
-    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
-        .await
-        .expect("open store");
+    let store = AccountSettingsStore::open_with_policy_timezone(
+        directory.path().join("state.sqlite3"),
+        "Asia/Shanghai",
+    )
+    .await
+    .expect("open store");
     store
         .configure_account(0, "/chosen/auth.json", "account-one")
         .await
@@ -376,9 +385,12 @@ async fn a_new_policy_day_stays_suggested_until_that_day_syncs() {
 #[tokio::test]
 async fn the_first_successful_sync_on_a_later_policy_day_rebalances_the_remaining_plan() {
     let directory = tempdir().expect("temporary directory");
-    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
-        .await
-        .expect("open store");
+    let store = AccountSettingsStore::open_with_policy_timezone(
+        directory.path().join("state.sqlite3"),
+        "Asia/Shanghai",
+    )
+    .await
+    .expect("open store");
     store
         .configure_account(0, "/chosen/auth.json", "account-one")
         .await
@@ -424,9 +436,12 @@ async fn the_first_successful_sync_on_a_later_policy_day_rebalances_the_remainin
 #[tokio::test]
 async fn a_later_day_keeps_the_most_recent_plan_until_its_first_sync() {
     let directory = tempdir().expect("temporary directory");
-    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
-        .await
-        .expect("open store");
+    let store = AccountSettingsStore::open_with_policy_timezone(
+        directory.path().join("state.sqlite3"),
+        "Asia/Shanghai",
+    )
+    .await
+    .expect("open store");
     store
         .configure_account(0, "/chosen/auth.json", "account-one")
         .await
@@ -468,9 +483,12 @@ async fn a_later_day_keeps_the_most_recent_plan_until_its_first_sync() {
 #[tokio::test]
 async fn suggested_plan_uses_configured_weekday_and_weekend_weights_without_waste() {
     let directory = tempdir().expect("temporary directory");
-    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
-        .await
-        .expect("open store");
+    let store = AccountSettingsStore::open_with_policy_timezone(
+        directory.path().join("state.sqlite3"),
+        "Asia/Shanghai",
+    )
+    .await
+    .expect("open store");
     store
         .configure_account(0, "/chosen/auth.json", "account-one")
         .await
