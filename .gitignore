@@ -8,3 +8,9 @@ ui/.vitest-attachments/
 .env
 *.log
 .DS_Store
+.idea/
+.scratch/
+ui/prototypes/
+ui/artwork/**/*.png
+ui/artwork/**/sources/
+ui/pnpm-lock.yaml
