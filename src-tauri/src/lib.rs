@@ -1476,14 +1476,17 @@ fn apply_windows_rounded_corners(window: &WebviewWindow) -> bool {
         return false;
     };
     let preference = DWMWCP_ROUND;
+    let Ok(preference_size) = u32::try_from(size_of_val(&preference)) else {
+        return false;
+    };
     // SAFETY: `hwnd` belongs to this live Tauri window and the attribute payload
     // points to a correctly-sized DWM_WINDOW_CORNER_PREFERENCE value.
     let result = unsafe {
         DwmSetWindowAttribute(
             hwnd.0,
             DWMWA_WINDOW_CORNER_PREFERENCE as u32,
-            (&preference as *const _) as *const c_void,
-            size_of_val(&preference) as u32,
+            std::ptr::from_ref(&preference).cast::<c_void>(),
+            preference_size,
         )
     };
     result >= 0
@@ -2073,7 +2076,7 @@ fn apply_windows_dacl(path: &std::path::Path, directory: bool) -> std::io::Resul
     // unsafe FFI in this crate. Start from an empty ACL, disable inheritance,
     // add the exact allowlist, apply it, and then fail closed unless a read-back
     // proves the DACL is protected and contains exactly those three SIDs.
-    const ACL_SCRIPT: &str = r#"
+    const ACL_SCRIPT: &str = r"
 $ErrorActionPreference = 'Stop'
 $target = $args[0]
 $isDirectory = $args[1] -eq 'directory'
@@ -2111,7 +2114,7 @@ foreach ($rule in $rules) {
   if (($expected.Value -notcontains $rule.IdentityReference.Value)) { exit 35 }
   if (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { exit 36 }
 }
-"#;
+";
     let kind = if directory { "directory" } else { "file" };
     let status = Command::new("powershell.exe")
         .args([
