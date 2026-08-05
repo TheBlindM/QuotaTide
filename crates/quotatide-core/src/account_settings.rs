@@ -30,8 +30,8 @@ use crate::{
     LedgerApplyKind, LedgerDayStatus, PublicBurnProjection, PublicLedgerDay, PublicLiveQuota,
     PublicRadarAnnouncement, PublicRadarPrediction, PublicResetRadar, QuotaLedger, QuotaPressure,
     RadarChance, RadarCommitDisposition, RadarSnapshot, RadarSourceError, RadarSourceErrorCode,
-    RefreshAccountBinding, RefreshOutcome, SourceStatus, UsageRefreshAttempt, UsageSourceErrorCode,
-    WeeklyUsageObservation, radar_bucket_label,
+    RefreshAccountBinding, RefreshOutcome, SourceStatus, TodayAvailabilityKind,
+    UsageRefreshAttempt, UsageSourceErrorCode, WeeklyUsageObservation, radar_bucket_label,
 };
 
 const SCHEMA_VERSION: i64 = 15;
@@ -3749,9 +3749,17 @@ impl AccountSettingsStore {
                     row.policy_timezone,
                     now_unix_ms,
                 )?;
+                let suggested_plan_anchor =
+                    query_latest_suggested_plan_anchor(&transaction, &row, &ledger_days)?;
                 let burn_samples = query_burn_projection_samples(&transaction, &row)?;
-                build_public_live_quota(row, ledger_days, &burn_samples, now_unix_ms)
-                    .map(|quota| (revision, Some(quota)))
+                build_public_live_quota(
+                    row,
+                    ledger_days,
+                    suggested_plan_anchor,
+                    &burn_samples,
+                    now_unix_ms,
+                )
+                .map(|quota| (revision, Some(quota)))
             })
             .await
             .map_err(SettingsStoreError::database)
@@ -3783,10 +3791,13 @@ impl AccountSettingsStore {
                         row.policy_timezone,
                         now_unix_ms,
                     )?;
+                    let suggested_plan_anchor =
+                        query_latest_suggested_plan_anchor(&transaction, &row, &ledger_days)?;
                     let burn_samples = query_burn_projection_samples(&transaction, &row)?;
                     Some(build_public_live_quota(
                         row,
                         ledger_days,
+                        suggested_plan_anchor,
                         &burn_samples,
                         now_unix_ms,
                     )?)
@@ -5916,6 +5927,57 @@ fn query_burn_projection_samples(
         .collect()
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SuggestedPlanAnchor {
+    local_date: chrono::NaiveDate,
+    used_micropoints: i64,
+}
+
+fn query_latest_suggested_plan_anchor(
+    transaction: &rusqlite::Transaction<'_>,
+    row: &LiveQuotaRow,
+    ledger_days: &[PublicLedgerDay],
+) -> rusqlite::Result<Option<SuggestedPlanAnchor>> {
+    let (Some(epoch_id), Some(today)) = (
+        row.quota_epoch_id,
+        ledger_days.iter().find(|day| day.is_today),
+    ) else {
+        return Ok(None);
+    };
+    let today = chrono::NaiveDate::parse_from_str(&today.local_date, "%Y-%m-%d")
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let mut statement = transaction.prepare(
+        "SELECT captured_at_ms, used_micropoints
+         FROM usage_observations
+         WHERE account_stream_id = ?1
+           AND quota_epoch_id = ?2
+           AND ledger_eligible = 1
+         ORDER BY captured_at_ms, id",
+    )?;
+    let mut observations = statement.query(rusqlite::params![row.stream_id, epoch_id])?;
+    let mut latest_anchor = None;
+    let mut previous_date = None;
+    while let Some(observation) = observations.next()? {
+        let captured_at_unix_ms: i64 = observation.get(0)?;
+        let captured_date = chrono::DateTime::from_timestamp_millis(captured_at_unix_ms)
+            .ok_or(rusqlite::Error::InvalidQuery)?
+            .with_timezone(&row.policy_timezone)
+            .date_naive();
+        if captured_date > today {
+            break;
+        }
+        if previous_date == Some(captured_date) {
+            continue;
+        }
+        previous_date = Some(captured_date);
+        latest_anchor = Some(SuggestedPlanAnchor {
+            local_date: captured_date,
+            used_micropoints: observation.get(1)?,
+        });
+    }
+    Ok(latest_anchor)
+}
+
 fn burn_projection(
     samples: &[BurnProjectionSample],
     resets_at_unix_s: Option<i64>,
@@ -6200,6 +6262,7 @@ fn public_ledger_day(
             .map_err(|_| rusqlite::Error::InvalidQuery)?,
         limit_micropoints: u32::try_from(day.limit_micropoints)
             .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        suggested_limit_micropoints: None,
         is_today: day.local_date == today,
         finalized: day.finalized,
         status: match day.status {
@@ -6250,9 +6313,79 @@ fn load_active_quota_policy(
     Ok((public.policy_revision, policy))
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DailyAvailabilityContext {
+    today_index: Option<usize>,
+    today_is_fully_observed: bool,
+    used_since_anchor_micropoints: u32,
+}
+
+fn apply_suggested_plan(
+    ledger_days: &mut [PublicLedgerDay],
+    suggested_plan_anchor: Option<SuggestedPlanAnchor>,
+    weekly_used_micropoints: Option<u32>,
+) -> DailyAvailabilityContext {
+    let today_index = ledger_days.iter().position(|day| day.is_today);
+    let today = today_index.and_then(|index| ledger_days.get(index));
+    let tracked_epoch_micropoints = ledger_days
+        .iter()
+        .filter_map(|day| day.used_micropoints)
+        .sum::<i64>();
+    let today_is_fully_observed = today.is_some()
+        && weekly_used_micropoints
+            .is_some_and(|weekly_used| tracked_epoch_micropoints == i64::from(weekly_used));
+    let plan_start_index = suggested_plan_anchor.and_then(|anchor| {
+        ledger_days
+            .iter()
+            .position(|day| day.local_date == anchor.local_date.to_string())
+    });
+    let today_date =
+        today.and_then(|day| chrono::NaiveDate::parse_from_str(&day.local_date, "%Y-%m-%d").ok());
+    let used_since_anchor_micropoints = suggested_plan_anchor
+        .filter(|anchor| Some(anchor.local_date) == today_date)
+        .and_then(|anchor| {
+            u32::try_from(anchor.used_micropoints)
+                .ok()
+                .and_then(|anchor| {
+                    weekly_used_micropoints.map(|current| current.saturating_sub(anchor))
+                })
+        })
+        .unwrap_or(0);
+    let suggested_plan = if today_is_fully_observed {
+        None
+    } else {
+        today_index
+            .zip(plan_start_index)
+            .zip(suggested_plan_anchor)
+            .and_then(|((today_index, start_index), anchor)| {
+                let anchor = u32::try_from(anchor.used_micropoints).ok()?;
+                let today_offset = today_index.checked_sub(start_index)?;
+                let plan = weighted_quota_plan(
+                    FULL_QUOTA_MICROPOINTS.saturating_sub(anchor),
+                    &ledger_days[start_index..]
+                        .iter()
+                        .map(|day| day.base_micropoints)
+                        .collect::<Vec<_>>(),
+                );
+                Some(plan[today_offset..].to_vec())
+            })
+    };
+    if let (Some(index), Some(plan)) = (today_index, suggested_plan.as_ref()) {
+        for (day, allocation) in ledger_days[index..].iter_mut().zip(plan) {
+            day.suggested_limit_micropoints = Some(*allocation);
+        }
+    }
+    DailyAvailabilityContext {
+        today_index,
+        today_is_fully_observed,
+        used_since_anchor_micropoints,
+    }
+}
+
 fn build_public_live_quota(
     row: LiveQuotaRow,
-    ledger_days: Vec<PublicLedgerDay>,
+    mut ledger_days: Vec<PublicLedgerDay>,
+    suggested_plan_anchor: Option<SuggestedPlanAnchor>,
     burn_samples: &[BurnProjectionSample],
     now_unix_ms: i64,
 ) -> rusqlite::Result<PublicLiveQuota> {
@@ -6281,17 +6414,32 @@ fn build_public_live_quota(
     } else {
         SourceStatus::StaleByAge
     };
-    let today = ledger_days.iter().find(|day| day.is_today);
+    let remaining_micropoints = used.map(|value| FULL_QUOTA_MICROPOINTS.saturating_sub(value));
+    let availability = apply_suggested_plan(&mut ledger_days, suggested_plan_anchor, used);
+    let today = availability
+        .today_index
+        .and_then(|index| ledger_days.get(index));
     let today_base_micropoints = today.map(|day| day.base_micropoints);
     let today_carry_micropoints = today.map(|day| day.carry_micropoints);
     let today_limit_micropoints = today.map(|day| day.limit_micropoints);
-    let today_available_micropoints = today.and_then(|day| {
-        day.used_micropoints.and_then(|used| {
-            u32::try_from(used)
-                .ok()
-                .map(|used| day.limit_micropoints.saturating_sub(used))
-        })
-    });
+    let (today_available_micropoints, today_availability_kind) =
+        today.map_or((None, TodayAvailabilityKind::Unavailable), |day| {
+            if availability.today_is_fully_observed {
+                let used = day
+                    .used_micropoints
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or(0);
+                return (
+                    Some(day.limit_micropoints.saturating_sub(used)),
+                    TodayAvailabilityKind::Actual,
+                );
+            }
+            (
+                day.suggested_limit_micropoints
+                    .map(|limit| limit.saturating_sub(availability.used_since_anchor_micropoints)),
+                TodayAvailabilityKind::SuggestedFromNow,
+            )
+        });
     let burn_projection = burn_projection(burn_samples, row.resets_at_unix_s);
     let pressure = quota_pressure(
         used,
@@ -6302,7 +6450,7 @@ fn build_public_live_quota(
     );
     Ok(PublicLiveQuota {
         used_micropoints: used,
-        remaining_micropoints: used.map(|value| FULL_QUOTA_MICROPOINTS.saturating_sub(value)),
+        remaining_micropoints,
         pressure,
         burn_projection,
         captured_at_unix_ms: row.captured_at_unix_ms,
@@ -6322,8 +6470,42 @@ fn build_public_live_quota(
         today_carry_micropoints,
         today_limit_micropoints,
         today_available_micropoints,
+        today_availability_kind,
         ledger_days,
     })
+}
+
+fn weighted_quota_plan(total_micropoints: u32, weights: &[u32]) -> Vec<u32> {
+    if weights.is_empty() {
+        return Vec::new();
+    }
+    let effective_weights = if weights.iter().all(|weight| *weight == 0) {
+        vec![1_u32; weights.len()]
+    } else {
+        weights.to_vec()
+    };
+    let weight_total = effective_weights
+        .iter()
+        .map(|weight| u64::from(*weight))
+        .sum::<u64>();
+    let mut allocations = Vec::with_capacity(effective_weights.len());
+    let mut remainders = Vec::with_capacity(effective_weights.len());
+    let mut allocated = 0_u32;
+    for (index, weight) in effective_weights.iter().enumerate() {
+        let weighted = u64::from(total_micropoints) * u64::from(*weight);
+        let floor = u32::try_from(weighted / weight_total).unwrap_or(0);
+        allocations.push(floor);
+        remainders.push((index, weighted % weight_total));
+        allocated = allocated.saturating_add(floor);
+    }
+    remainders.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    for (index, _) in remainders
+        .into_iter()
+        .take(total_micropoints.saturating_sub(allocated) as usize)
+    {
+        allocations[index] = allocations[index].saturating_add(1);
+    }
+    allocations
 }
 
 fn parse_policy_timezone(value: &str) -> rusqlite::Result<chrono_tz::Tz> {

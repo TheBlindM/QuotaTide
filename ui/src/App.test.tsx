@@ -67,6 +67,7 @@ function ledgerDay(
     baseMicropoints: 16_000_000,
     carryMicropoints: 0,
     limitMicropoints: 16_000_000,
+    suggestedLimitMicropoints: null,
     isToday,
     finalized: status === "finalized",
     status,
@@ -161,6 +162,7 @@ vi.mock("./api/live-quota", () => ({
       todayCarryMicropoints: 0,
       todayLimitMicropoints: 16_000_000,
       todayAvailableMicropoints: 15_000_000,
+      todayAvailabilityKind: "actual",
       ledgerDays: [
         ledgerDay("2026-07-24", null, false),
         ledgerDay("2026-07-25", null, false),
@@ -561,6 +563,7 @@ describe("QuotaTide tray app", () => {
         todayCarryMicropoints: 0,
         todayLimitMicropoints: 16_000_000,
         todayAvailableMicropoints: 15_000_000,
+        todayAvailabilityKind: "actual",
         ledgerDays: [
           ledgerDay("2026-07-24", null, false),
           ledgerDay("2026-07-25", null, false),
@@ -586,6 +589,49 @@ describe("QuotaTide tray app", () => {
     expect(fixture.sourceHealth).toBe("Codex 额度 · 连续 1 次失败（请求超时）");
     expect(fixture.lastSuccess).toContain("上次成功");
     expect(fixture.todayLimit).toBe("基础 16% + 结转 0% = 实际 16%");
+  });
+
+  it("projects a mid-window baseline as suggested quota from now", async () => {
+    const state = await getLiveQuota();
+    const quota = state.quota;
+    if (quota === null) {
+      throw new Error("Expected the default live quota fixture");
+    }
+    const fixture = projectLiveFixture(
+      {
+        settingsRevision: 1,
+        configured: true,
+        pathSummary: "…/auth.json",
+        accountLabel: "账号 • 21B8",
+        quotaPolicy,
+      },
+      {
+        ...quota,
+        usedMicropoints: 48_000_000,
+        remainingMicropoints: 52_000_000,
+        todayAvailableMicropoints: 17_333_334,
+        todayAvailabilityKind: "suggested_from_now",
+        ledgerDays: quota.ledgerDays.map((day, index) => ({
+          ...day,
+          usedMicropoints: null,
+          suggestedLimitMicropoints:
+            index < 4
+              ? null
+              : [17_333_334, 17_333_333, 17_333_333][index - 4],
+          status: "unknown" as const,
+        })),
+      },
+    );
+
+    expect(fixture.todayAvailable).toBe("17.3%");
+    expect(fixture.todayAvailabilityKind).toBe("suggested_from_now");
+    expect(fixture.days.find((day) => day.today)).toMatchObject({
+      used: null,
+      suggested: 17.333334,
+    });
+    expect(
+      fixture.days.filter((day) => day.suggested !== null).map((day) => day.suggested),
+    ).toEqual([17.333334, 17.333333, 17.333333]);
   });
 
   it.each([
@@ -620,6 +666,7 @@ describe("QuotaTide tray app", () => {
         todayCarryMicropoints: 800_000,
         todayLimitMicropoints: 16_800_000,
         todayAvailableMicropoints: status === "warning" ? 2_600_000 : 0,
+        todayAvailabilityKind: "actual",
         ledgerDays: [
           ledgerDay(
             "2026-07-28",

@@ -3183,7 +3183,7 @@ dependencies = [
 
 [[package]]
 name = "quotatide-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3207,7 +3207,7 @@ dependencies = [
 
 [[package]]
 name = "quotatide-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3238,7 +3238,7 @@ dependencies = [
 
 [[package]]
 name = "quotatide-native-notifications"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "block2",
  "objc2",
@@ -3251,7 +3251,7 @@ dependencies = [
 
 [[package]]
 name = "quotatide-release-tools"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "minisign-verify",

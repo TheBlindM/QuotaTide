@@ -5,6 +5,7 @@ import type { AlertTarget } from "./bindings/AlertTarget";
 import type { PublicAlertInbox } from "./bindings/PublicAlertInbox";
 import type { QuotaPressure } from "./bindings/QuotaPressure";
 import type { StoryTheme } from "./bindings/StoryTheme";
+import type { TodayAvailabilityKind } from "./bindings/TodayAvailabilityKind";
 import { ThemeToggle, type ColorTheme } from "./color-theme";
 import { useI18n } from "./i18n-context";
 import type { InterfaceLocale } from "./i18n";
@@ -21,6 +22,7 @@ export type LedgerDay = {
   date: string;
   used: number | null;
   limit: number | null;
+  suggested: number | null;
   today?: boolean;
   status: string;
 };
@@ -121,6 +123,41 @@ function usageToneForDay(day: LedgerDay | undefined): UsageTone {
   return "normal";
 }
 
+function usesSuggestedPlan(fixture: LedgerFixture, day: LedgerDay): boolean {
+  return (
+    fixture.todayAvailabilityKind === "suggested_from_now" &&
+    day.suggested !== null
+  );
+}
+
+function usesSuggestedToday(fixture: LedgerFixture, day: LedgerDay): boolean {
+  return day.today === true && usesSuggestedPlan(fixture, day);
+}
+
+function displayedDayUsed(fixture: LedgerFixture, day: LedgerDay): number | null {
+  return usesSuggestedToday(fixture, day) ? (day.used ?? 0) : day.used;
+}
+
+function displayedDayLimit(fixture: LedgerFixture, day: LedgerDay): number | null {
+  return usesSuggestedPlan(fixture, day) ? day.suggested : day.limit;
+}
+
+function displayedDayAvailable(fixture: LedgerFixture, day: LedgerDay): string {
+  if (usesSuggestedToday(fixture, day)) {
+    return fixture.todayAvailable;
+  }
+  if (usesSuggestedPlan(fixture, day)) {
+    return formatDayPercentage(day.suggested);
+  }
+  return day.used === null || day.limit === null
+    ? "—"
+    : `${Math.max(0, day.limit - day.used).toFixed(1)}%`;
+}
+
+function formatDayPercentage(value: number | null): string {
+  return value === null ? "—" : `${value.toFixed(1)}%`;
+}
+
 export type RadarAnnouncementFixture = {
   text: string;
   sourceUrl: string;
@@ -158,6 +195,7 @@ export type LedgerFixture = {
     expiryLabel: string;
   } | null;
   todayAvailable: string;
+  todayAvailabilityKind: TodayAvailabilityKind;
   todayLimit: string;
   sourceHealth: string;
   windowLabel: string;
@@ -169,20 +207,21 @@ export type LedgerFixture = {
 };
 
 const freshDays: LedgerDay[] = [
-  { label: "周五", date: "07/24", used: 12.8, limit: 16, status: "正常" },
-  { label: "周六", date: "07/25", used: 6, limit: 10, status: "正常" },
-  { label: "周日", date: "07/26", used: 1, limit: 10, status: "正常" },
-  { label: "周一", date: "07/27", used: 11, limit: 16, status: "正常" },
+  { label: "周五", date: "07/24", used: 12.8, limit: 16, suggested: null, status: "正常" },
+  { label: "周六", date: "07/25", used: 6, limit: 10, suggested: null, status: "正常" },
+  { label: "周日", date: "07/26", used: 1, limit: 10, suggested: null, status: "正常" },
+  { label: "周一", date: "07/27", used: 11, limit: 16, suggested: null, status: "正常" },
   {
     label: "今天",
     date: "07/28",
     used: 11.4,
     limit: 16.8,
+    suggested: null,
     today: true,
     status: "正常",
   },
-  { label: "周三", date: "07/29", used: null, limit: 16.8, status: "尚无记录" },
-  { label: "周四", date: "07/30", used: null, limit: 16.4, status: "尚无记录" },
+  { label: "周三", date: "07/29", used: null, limit: 16.8, suggested: null, status: "尚无记录" },
+  { label: "周四", date: "07/30", used: null, limit: 16.4, suggested: null, status: "尚无记录" },
 ];
 
 const freshFixture: LedgerFixture = {
@@ -197,6 +236,7 @@ const freshFixture: LedgerFixture = {
   },
   resetCredits: null,
   todayAvailable: "5.4%",
+  todayAvailabilityKind: "actual",
   todayLimit: "基础 16% + 结转 0.8% = 实际 16.8%",
   sourceHealth: "Codex 额度 · 正常",
   windowLabel: "07/24 至 07/30",
@@ -261,6 +301,7 @@ export const ledgerFixtures: Record<LedgerTone, LedgerFixture> = {
     burnProjection: null,
     resetCredits: null,
     todayAvailable: "",
+    todayAvailabilityKind: "unavailable",
     todayLimit: "",
     sourceHealth: "尚未连接",
     windowLabel: "",
@@ -983,6 +1024,10 @@ export function WeeklyLedger({
   );
   const alertCount = alerts?.events.length ?? 0;
   const today = fixture.days.find((day) => day.today) ?? fixture.days.at(0);
+  const suggestedFromNow = fixture.todayAvailabilityKind === "suggested_from_now";
+  const todayAvailabilityLabel = suggestedFromNow
+    ? text("从现在建议可用", "Suggested from now")
+    : text("今天还可用", "Available today");
   const todayUsageTone = usageToneForDay(today);
   const todayUsageState =
     todayUsageTone === "danger"
@@ -1213,8 +1258,8 @@ export function WeeklyLedger({
             <div
               class={`side-stat quota-side-stat side-stat--${todayUsageTone} pressure-${fixture.pressure}`}
               aria-label={text(
-                `周剩余 ${fixture.weeklyRemaining}，${weeklyState}；原因：${weeklyPressureReason}；今天还可用 ${fixture.todayAvailable}；用量状态：${todayUsageState}${fixture.todayLimit === "" ? "" : `；实际上限 ${fixture.todayLimit}`}`,
-                `Weekly remaining ${fixture.weeklyRemaining}, ${weeklyState}; reason: ${weeklyPressureReason}; available today ${fixture.todayAvailable}; usage status: ${todayUsageState}${fixture.todayLimit === "" ? "" : `; adjusted limit ${fixture.todayLimit}`}`,
+                `周剩余 ${fixture.weeklyRemaining}，${weeklyState}；原因：${weeklyPressureReason}；${todayAvailabilityLabel} ${fixture.todayAvailable}；用量状态：${todayUsageState}${fixture.todayLimit === "" ? "" : `；实际上限 ${fixture.todayLimit}`}`,
+                `Weekly remaining ${fixture.weeklyRemaining}, ${weeklyState}; reason: ${weeklyPressureReason}; ${todayAvailabilityLabel} ${fixture.todayAvailable}; usage status: ${todayUsageState}${fixture.todayLimit === "" ? "" : `; adjusted limit ${fixture.todayLimit}`}`,
               )}
               aria-live="polite"
             >
@@ -1229,7 +1274,7 @@ export function WeeklyLedger({
                 </small>
               </div>
               <div class="quota-side-stat__row quota-side-stat__row--today">
-                <span>{text("今天还可用", "Available today")}</span>
+                <span>{todayAvailabilityLabel}</span>
                 <strong>{fixture.todayAvailable}</strong>
               </div>
             </div>
@@ -1332,28 +1377,32 @@ export function WeeklyLedger({
                         </div>
                         <div class="ledger-day-inspector__metrics">
                           <span>
-                            <small>{text("已用", "Used")}</small>
+                            <small>
+                              {usesSuggestedToday(fixture, day)
+                                ? text("本机已记录", "Recorded locally")
+                                : text("已用", "Used")}
+                            </small>
                             <strong>
-                              {day.used === null
-                                ? "—"
-                                : `${day.used.toFixed(1)}%`}
+                              {formatDayPercentage(displayedDayUsed(fixture, day))}
                             </strong>
                           </span>
                           <span>
-                            <small>{text("上限", "Limit")}</small>
+                            <small>
+                              {usesSuggestedPlan(fixture, day)
+                                ? text("计划上限", "Planned limit")
+                                : text("上限", "Limit")}
+                            </small>
                             <strong>
-                              {day.limit === null
-                                ? "—"
-                                : `${day.limit.toFixed(1)}%`}
+                              {formatDayPercentage(displayedDayLimit(fixture, day))}
                             </strong>
                           </span>
                           <span class="is-available">
-                            <small>{text("可用", "Available")}</small>
-                            <strong>
-                              {day.used === null || day.limit === null
-                                ? "—"
-                                : `${Math.max(0, day.limit - day.used).toFixed(1)}%`}
-                            </strong>
+                            <small>
+                              {usesSuggestedPlan(fixture, day)
+                                ? text("建议可用", "Suggested available")
+                                : text("可用", "Available")}
+                            </small>
+                            <strong>{displayedDayAvailable(fixture, day)}</strong>
                           </span>
                         </div>
                       </div>
@@ -1396,9 +1445,9 @@ export function WeeklyLedger({
               <div class="ledger-week-detail__labels" aria-hidden="true">
                 <span>{text("日期", "Date")}</span>
                 <span>{text("使用进度", "Usage progress")}</span>
-                <span>{text("使用", "Usage")}</span>
-                <span>{text("上限", "Limit")}</span>
-                <span>{text("可用", "Available")}</span>
+                <span>{suggestedFromNow ? text("记录/使用", "Recorded/usage") : text("使用", "Usage")}</span>
+                <span>{suggestedFromNow ? text("计划/上限", "Plan/limit") : text("上限", "Limit")}</span>
+                <span>{suggestedFromNow ? text("建议/可用", "Suggested/available") : text("可用", "Available")}</span>
               </div>
               <div class="ledger-week-detail__list" role="list">
                 {fixture.days.map((day, index) => (
@@ -1428,16 +1477,12 @@ export function WeeklyLedger({
                       <small>{day.status}</small>
                     </div>
                     <strong>
-                      {day.used === null ? "—" : `${day.used.toFixed(1)}%`}
+                      {formatDayPercentage(displayedDayUsed(fixture, day))}
                     </strong>
                     <strong>
-                      {day.limit === null ? "—" : `${day.limit.toFixed(1)}%`}
+                      {formatDayPercentage(displayedDayLimit(fixture, day))}
                     </strong>
-                    <strong>
-                      {day.used === null || day.limit === null
-                        ? "—"
-                        : `${Math.max(0, day.limit - day.used).toFixed(1)}%`}
-                    </strong>
+                    <strong>{displayedDayAvailable(fixture, day)}</strong>
                   </div>
                 ))}
               </div>

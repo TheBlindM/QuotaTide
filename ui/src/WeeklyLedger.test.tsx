@@ -326,6 +326,48 @@ describe("Weekly Ledger overview", () => {
     expect(onWeekDetailChange).toHaveBeenLastCalledWith(false);
   });
 
+  it("labels a mid-window baseline as quota suggested from now", () => {
+    const suggestedFixture = {
+      ...ledgerFixtures.fresh,
+      todayAvailable: "17.3%",
+      todayAvailabilityKind: "suggested_from_now" as const,
+      days: ledgerFixtures.fresh.days.map((day, index) => ({
+        ...day,
+        used: index < 4 ? day.used : null,
+        suggested:
+          index < 4
+            ? null
+            : [17.333334, 17.333333, 17.333333][index - 4],
+        status: index < 4 ? day.status : "尚无记录",
+      })),
+    };
+    render(
+      <WeeklyLedger
+        fixture={suggestedFixture}
+        onOpenSettings={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("从现在建议可用")).toBeInTheDocument();
+    const todaySummary = screen.getByRole("listitem", {
+      name: "今天 07/28 · 尚无记录",
+    });
+    const todayDay = todaySummary.querySelector<HTMLElement>(".ledger-day");
+    expect(todayDay).not.toBeNull();
+    fireEvent.mouseEnter(todayDay as HTMLElement);
+    const inspector = screen.getByRole("tooltip", { name: "今天 额度明细" });
+    expect(inspector).toHaveTextContent("本机已记录0.0%");
+    expect(inspector).toHaveTextContent("计划上限17.3%");
+    expect(inspector).toHaveTextContent("建议可用17.3%");
+
+    fireEvent.click(screen.getByRole("button", { name: "查看明细" }));
+    const futureDay = screen.getByRole("listitem", {
+      name: "周三 07/29 · 尚无记录",
+    });
+    expect(futureDay).toHaveTextContent("17.3%");
+  });
+
   it("renders the selected C telemetry hierarchy instead of the generic card dashboard", () => {
     render(
       <WeeklyLedger

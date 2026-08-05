@@ -32,8 +32,8 @@ pub use live_quota::{
     PublicLedgerDay, PublicLiveQuota, PublicLiveQuotaState, PublicResetCredit, PublicResetCredits,
     QuotaPressure, QuotaUnits, RefreshAccountBinding, RefreshCoordinator, RefreshCoordinatorError,
     RefreshOutcome, RefreshReceipt, RefreshTrigger, SettingsChanged, SourceStatus,
-    UsageAuthReadFailure, UsageRefreshAttempt, UsageRefreshSource, UsageSourceError,
-    UsageSourceErrorCode, WeeklyUsageObservation,
+    TodayAvailabilityKind, UsageAuthReadFailure, UsageRefreshAttempt, UsageRefreshSource,
+    UsageSourceError, UsageSourceErrorCode, WeeklyUsageObservation,
 };
 pub use quota_ledger::{
     DailyUsageFact, LedgerApplyKind, LedgerError, LedgerProjection, LedgerState, LedgerTransition,

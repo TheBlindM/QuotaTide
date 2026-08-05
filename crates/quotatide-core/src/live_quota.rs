@@ -196,6 +196,17 @@ pub enum QuotaPressure {
     Recovery,
 }
 
+/// Whether today's available quota is complete-day accounting or a
+/// forward-looking recommendation after an incomplete local baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub enum TodayAvailabilityKind {
+    Actual,
+    SuggestedFromNow,
+    Unavailable,
+}
+
 /// Stable burn projection derived from recent observations in one quota window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -260,6 +271,7 @@ pub struct PublicLiveQuota {
     pub today_carry_micropoints: Option<u32>,
     pub today_limit_micropoints: Option<u32>,
     pub today_available_micropoints: Option<u32>,
+    pub today_availability_kind: TodayAvailabilityKind,
     pub ledger_days: Vec<PublicLedgerDay>,
 }
 
@@ -287,6 +299,7 @@ pub struct PublicLedgerDay {
     pub base_micropoints: u32,
     pub carry_micropoints: u32,
     pub limit_micropoints: u32,
+    pub suggested_limit_micropoints: Option<u32>,
     pub is_today: bool,
     pub finalized: bool,
     pub status: LedgerDayStatus,

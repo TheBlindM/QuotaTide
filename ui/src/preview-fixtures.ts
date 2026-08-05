@@ -114,6 +114,7 @@ function ledgerDay(
     baseMicropoints,
     carryMicropoints,
     limitMicropoints: baseMicropoints + carryMicropoints,
+    suggestedLimitMicropoints: null,
     isToday,
     finalized: status === "finalized",
     status,
@@ -197,6 +198,7 @@ function createLiveQuota(
       0,
       16_800_000 - todayUsedMicropoints,
     ),
+    todayAvailabilityKind: "actual",
     ledgerDays: [
       ledgerDay(
         "2026-07-24",

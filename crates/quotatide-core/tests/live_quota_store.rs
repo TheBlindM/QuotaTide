@@ -1,6 +1,6 @@
 use quotatide_core::{
     AccountSettingsStore, QuotaPressure, QuotaUnits, RefreshAccountBinding, SourceStatus,
-    UsageCommitDisposition, UsageSourceErrorCode, WeeklyUsageObservation,
+    TodayAvailabilityKind, UsageCommitDisposition, UsageSourceErrorCode, WeeklyUsageObservation,
 };
 use tempfile::tempdir;
 
@@ -230,6 +230,276 @@ async fn success_commits_observation_and_health_as_one_public_snapshot() {
             .map(|day| day.base_micropoints)
             .sum::<u32>(),
         100_000_000
+    );
+}
+
+#[tokio::test]
+async fn mid_window_baseline_reserves_future_policy_before_suggesting_usage_from_now() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+
+    store
+        .record_usage_success(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            observation_with_reset(
+                timestamp_ms("2026-08-05T13:03:00Z"),
+                48_000_000,
+                timestamp_ms("2026-08-07T16:00:00Z") / 1_000,
+            ),
+        )
+        .await
+        .expect("record mid-window baseline");
+    let quota = store
+        .public_live_quota(timestamp_ms("2026-08-05T13:03:00Z"))
+        .await
+        .expect("live quota")
+        .expect("configured quota");
+
+    assert_eq!(quota.remaining_micropoints, Some(52_000_000));
+    assert_eq!(quota.today_available_micropoints, Some(17_333_334));
+    assert_eq!(
+        quota.today_availability_kind,
+        TodayAvailabilityKind::SuggestedFromNow
+    );
+    assert_eq!(
+        quota
+            .ledger_days
+            .iter()
+            .find(|day| day.is_today)
+            .and_then(|day| day.used_micropoints),
+        None
+    );
+    assert_eq!(
+        quota
+            .ledger_days
+            .iter()
+            .filter_map(|day| day.suggested_limit_micropoints)
+            .collect::<Vec<_>>(),
+        vec![17_333_334, 17_333_333, 17_333_333]
+    );
+}
+
+#[tokio::test]
+async fn mid_window_baseline_stays_suggested_after_more_usage_on_the_same_day() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let selected = binding(1, "/chosen/auth.json", "account-one");
+    let reset = timestamp_ms("2026-08-07T16:00:00Z") / 1_000;
+
+    store
+        .record_usage_success(
+            &selected,
+            observation_with_reset(timestamp_ms("2026-08-05T13:03:00Z"), 48_000_000, reset),
+        )
+        .await
+        .expect("record mid-window baseline");
+    store
+        .record_usage_success(
+            &selected,
+            observation_with_reset(timestamp_ms("2026-08-05T14:03:00Z"), 49_000_000, reset),
+        )
+        .await
+        .expect("record later usage");
+    let quota = store
+        .public_live_quota(timestamp_ms("2026-08-05T14:03:00Z"))
+        .await
+        .expect("live quota")
+        .expect("configured quota");
+
+    assert_eq!(quota.today_available_micropoints, Some(16_333_334));
+    assert_eq!(
+        quota.today_availability_kind,
+        TodayAvailabilityKind::SuggestedFromNow
+    );
+    assert_eq!(
+        quota
+            .ledger_days
+            .iter()
+            .filter_map(|day| day.suggested_limit_micropoints)
+            .collect::<Vec<_>>(),
+        vec![17_333_334, 17_333_333, 17_333_333]
+    );
+}
+
+#[tokio::test]
+async fn a_new_policy_day_stays_suggested_until_that_day_syncs() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let reset = timestamp_ms("2026-08-07T16:00:00Z") / 1_000;
+
+    store
+        .record_usage_success(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            observation_with_reset(timestamp_ms("2026-08-05T13:03:00Z"), 48_000_000, reset),
+        )
+        .await
+        .expect("record mid-window baseline");
+    let quota = store
+        .public_live_quota(timestamp_ms("2026-08-05T16:10:00Z"))
+        .await
+        .expect("live quota")
+        .expect("configured quota");
+
+    assert_eq!(quota.today_available_micropoints, Some(17_333_333));
+    assert_eq!(
+        quota.today_availability_kind,
+        TodayAvailabilityKind::SuggestedFromNow
+    );
+    assert_eq!(
+        quota
+            .ledger_days
+            .iter()
+            .filter_map(|day| day.suggested_limit_micropoints)
+            .collect::<Vec<_>>(),
+        vec![17_333_333, 17_333_333]
+    );
+}
+
+#[tokio::test]
+async fn the_first_successful_sync_on_a_later_policy_day_rebalances_the_remaining_plan() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let selected = binding(1, "/chosen/auth.json", "account-one");
+    let reset = timestamp_ms("2026-08-07T16:00:00Z") / 1_000;
+
+    store
+        .record_usage_success(
+            &selected,
+            observation_with_reset(timestamp_ms("2026-08-05T13:03:00Z"), 48_000_000, reset),
+        )
+        .await
+        .expect("record mid-window baseline");
+    store
+        .record_usage_success(
+            &selected,
+            observation_with_reset(timestamp_ms("2026-08-05T16:03:00Z"), 48_000_000, reset),
+        )
+        .await
+        .expect("record next-day checkpoint");
+    let quota = store
+        .public_live_quota(timestamp_ms("2026-08-05T16:03:00Z"))
+        .await
+        .expect("live quota")
+        .expect("configured quota");
+
+    assert_eq!(quota.today_available_micropoints, Some(26_000_000));
+    assert_eq!(
+        quota.today_availability_kind,
+        TodayAvailabilityKind::SuggestedFromNow
+    );
+    assert_eq!(
+        quota
+            .ledger_days
+            .iter()
+            .filter_map(|day| day.suggested_limit_micropoints)
+            .collect::<Vec<_>>(),
+        vec![26_000_000, 26_000_000]
+    );
+}
+
+#[tokio::test]
+async fn a_later_day_keeps_the_most_recent_plan_until_its_first_sync() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let selected = binding(1, "/chosen/auth.json", "account-one");
+    let reset = timestamp_ms("2026-08-07T16:00:00Z") / 1_000;
+
+    store
+        .record_usage_success(
+            &selected,
+            observation_with_reset(timestamp_ms("2026-08-05T13:03:00Z"), 48_000_000, reset),
+        )
+        .await
+        .expect("record Wednesday baseline");
+    store
+        .record_usage_success(
+            &selected,
+            observation_with_reset(timestamp_ms("2026-08-05T16:03:00Z"), 48_000_000, reset),
+        )
+        .await
+        .expect("record Thursday plan anchor");
+    let quota = store
+        .public_live_quota(timestamp_ms("2026-08-06T16:10:00Z"))
+        .await
+        .expect("live quota")
+        .expect("configured quota");
+
+    assert_eq!(quota.today_available_micropoints, Some(26_000_000));
+    assert_eq!(
+        quota
+            .ledger_days
+            .iter()
+            .filter_map(|day| day.suggested_limit_micropoints)
+            .collect::<Vec<_>>(),
+        vec![26_000_000]
+    );
+}
+
+#[tokio::test]
+async fn suggested_plan_uses_configured_weekday_and_weekend_weights_without_waste() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+
+    store
+        .record_usage_success(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            observation_with_reset(
+                timestamp_ms("2026-08-07T05:00:00Z"),
+                48_000_000,
+                timestamp_ms("2026-08-09T16:00:00Z") / 1_000,
+            ),
+        )
+        .await
+        .expect("record Friday baseline");
+    let quota = store
+        .public_live_quota(timestamp_ms("2026-08-07T05:00:00Z"))
+        .await
+        .expect("live quota")
+        .expect("configured quota");
+
+    assert_eq!(
+        quota
+            .ledger_days
+            .iter()
+            .filter_map(|day| day.suggested_limit_micropoints)
+            .collect::<Vec<_>>(),
+        vec![23_111_111, 14_444_445, 14_444_444]
     );
 }
 
@@ -890,6 +1160,10 @@ async fn failure_before_any_success_is_available_as_unavailable_health() {
     assert_eq!(quota.last_success_at_unix_ms, None);
     assert_eq!(quota.consecutive_failures, 1);
     assert_eq!(quota.source_status, SourceStatus::Unavailable);
+    assert_eq!(
+        quota.today_availability_kind,
+        TodayAvailabilityKind::Unavailable
+    );
     assert_eq!(quota.public_error, Some(UsageSourceErrorCode::Timeout));
 }
 

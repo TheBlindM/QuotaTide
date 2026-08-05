@@ -1,6 +1,6 @@
 {
   "name": "@quotatide/ui",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "repository": "https://github.com/TheBlindM/QuotaTide",
   "type": "module",

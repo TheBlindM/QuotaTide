@@ -923,6 +923,7 @@ export function projectLiveFixture(
       burnProjection: null,
       resetCredits: null,
       todayAvailable: "",
+      todayAvailabilityKind: "unavailable",
       todayLimit: "",
       sourceHealth:
         interfaceLocale === "zh-CN" ? "尚未连接" : "Not connected",
@@ -957,6 +958,7 @@ export function projectLiveFixture(
       resetAbsolute: "",
       resetRelative: "",
       todayAvailable: "",
+      todayAvailabilityKind: "unavailable",
       todayLimit: "",
       radar: projectRadarFixture(radar, interfaceLocale, formatLocale),
       days: [],
@@ -1082,6 +1084,7 @@ export function projectLiveFixture(
             account.quotaPolicy.policyTimezone,
           )?.relative ?? ""),
     todayAvailable,
+    todayAvailabilityKind: live.todayAvailabilityKind,
     todayLimit,
     radar: projectRadarFixture(radar, interfaceLocale, formatLocale),
     days,
@@ -1201,6 +1204,10 @@ function projectLedgerDay(
   const used =
     day.usedMicropoints === null ? null : day.usedMicropoints / 1_000_000;
   const limit = day.limitMicropoints / 1_000_000;
+  const suggested =
+    day.suggestedLimitMicropoints === null
+      ? null
+      : day.suggestedLimitMicropoints / 1_000_000;
   return {
     label: day.isToday
       ? copy(interfaceLocale, "今天", "Today")
@@ -1213,6 +1220,7 @@ function projectLedgerDay(
     }).format(naturalDate),
     used,
     limit,
+    suggested,
     today: day.isToday,
     status: ledgerStatusLabel(day.status, interfaceLocale),
   };
