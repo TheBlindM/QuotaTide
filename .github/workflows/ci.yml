@@ -102,11 +102,26 @@ jobs:
           cache-dependency-path: ui/package-lock.json
       - name: Install UI dependencies
         run: npm --prefix ui ci
+      # The complete GUI library unit suite runs on macOS. On headless Windows,
+      # compile every test target, execute the platform-safe integration tests,
+      # then smoke-test the real release executable after bundling.
       - name: Test desktop workspace
-        run: cargo test --workspace
+        run: |
+          cargo test --workspace --exclude quotatide-desktop
+          cargo test -p quotatide-desktop --no-run
+          cargo test -p quotatide-desktop --test auth_file --test background_lifecycle --test live_account_manual --test reset_radar_contract --test window_configuration
       - name: Lint desktop workspace
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version 2.11.4 --locked
       - name: Build NSIS application bundle
         run: cargo tauri build --bundles nsis
+      - name: Smoke-test the release executable
+        shell: pwsh
+        run: |
+          $app = Start-Process target\release\quotatide.exe -PassThru
+          Start-Sleep -Seconds 5
+          if ($app.HasExited) {
+            throw "QuotaTide exited during startup with code $($app.ExitCode)"
+          }
+          Stop-Process -Id $app.Id
