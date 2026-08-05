@@ -1,16 +1,30 @@
-# QuotaTide
+<p align="center">
+  <img src="assets/branding/app-icon.svg" width="104" alt="QuotaTide app icon">
+</p>
 
-QuotaTide is an independent, open-source macOS and Windows tray app that
-monitors the active seven-day Codex quota window for one local account.
+<h1 align="center">QuotaTide</h1>
 
-QuotaTide 是一款独立开源的 macOS / Windows 托盘应用，用于在本机监控单个
-Codex 账号当前额度周期中的七个自然日。
+<p align="center">
+  <strong>把 Codex 七日额度，变成一眼可懂的桌面潮汐。</strong><br>
+  <em>See your seven-day Codex quota at a glance.</em>
+</p>
 
-Author / 作者：TheBlind
+<p align="center">
+  <img alt="macOS 15+" src="https://img.shields.io/badge/macOS-15%2B-111111?logo=apple">
+  <img alt="Windows 11 25H2+" src="https://img.shields.io/badge/Windows-11%2025H2%2B-0078D4?logo=windows11">
+  <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8D8?logo=tauri&logoColor=white">
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-228B66"></a>
+</p>
 
-License / 许可证：[MIT](LICENSE)
+QuotaTide 是一款独立开源的 macOS / Windows 托盘应用。它在本机只读访问一个
+Codex 账号，展示当前七日额度窗口、动态每日预算、消耗压力和重置信号。
 
-Application ID / 应用标识：`dev.theblind.quotatide`
+QuotaTide is an independent, open-source macOS and Windows tray app. It reads
+one local Codex account and turns the active seven-day quota window, dynamic
+daily budget, burn pressure, and reset signals into a compact desktop view.
+
+Author / 作者：TheBlind · License / 许可证：[MIT](LICENSE) · Application ID /
+应用标识：`dev.theblind.quotatide`
 
 > QuotaTide is not affiliated with or endorsed by OpenAI. Codex and OpenAI are
 > trademarks of their respective owners.
@@ -18,34 +32,29 @@ Application ID / 应用标识：`dev.theblind.quotatide`
 > QuotaTide 与 OpenAI 没有官方关系，也未获得其背书。Codex 和 OpenAI 是其
 > 各自所有者的商标。
 
-## Features / 功能
+## Screenshots / 界面预览
 
-- Read-only access to a user-selected `auth.json`; QuotaTide never rewrites,
-  copies, or displays its tokens.
-- Current-account quota, reset time, and exactly the seven dates in the active
-  quota window—not a rolling “last seven days” chart.
-- Rising-water pressure chamber, robust burn-rate/exhaustion projection,
-  read-only reset-credit status, and configurable tray text.
-- Editable daily limits, policy timezone, and dynamic weekday carry-forward.
-- Hourly background refresh, reset-radar estimate, native notifications, and
-  optional TLS SMTP alerts.
-- Local SQLite history, encrypted OS credential storage, diagnostics export,
-  recovery mode, and local-data removal.
-- System/interface language selection for Simplified Chinese and English.
-- Explicit, signature-verified updates with a 60-second first check, daily
-  checks thereafter, manual checking, and an automatic-check toggle.
+| 潮汐压力舱 · Rising Water | 最后补给线 · Last Supply Line |
+| --- | --- |
+| <img src="docs/assets/readme/quota-pressure-chamber.png" width="420" alt="QuotaTide rising-water pressure chamber in light mode"> | <img src="docs/assets/readme/last-supply-line.png" width="420" alt="QuotaTide Last Supply Line theme in dark mode"> |
+| 水位、角色状态和颜色随额度压力变化 | 用补给与围城距离呈现同一组额度数据 |
 
-- 只读访问用户选择的 `auth.json`；不改写、不复制、也不显示其中的令牌。
-- 展示当前账号的额度、重置时间，以及当前额度周期内的七个日期，而不是滚动
-  的“最近七天”。
-- 水位上涨压力舱、稳健的消耗速率与耗尽预测、只读重置次数状态，以及可配置的
-  任务栏文字。
-- 可编辑每日额度与策略时区，支持工作日未用额度动态结转。
-- 每小时后台刷新、重置雷达预测、原生通知，以及可选的 TLS SMTP 邮件告警。
-- 本地 SQLite 历史、系统凭证库、诊断导出、恢复模式和本地数据清理。
-- 支持简体中文、英文及跟随系统。
-- 更新必须由用户确认并通过 Tauri 签名验证；首次启动 60 秒后检查，之后每
-  24 小时检查，也可手动检查或关闭自动检查。
+> 截图由内置预览场景生成，不包含真实账号或令牌。Screenshots use built-in
+> preview data and contain no real account or token information.
+
+## Highlights / 主要功能
+
+| | 功能 | What it does |
+| --- | --- | --- |
+| **📊** | **当前七日窗口**：展示周剩余、今天还可用、精确重置时间和窗口内七个自然日；不是滚动的“最近七天”。 | Shows the active seven-day window, remaining quota, today's allowance, exact reset time, and all seven calendar dates. |
+| **🌊** | **可视化压力**：潮汐压力舱和最后补给线两套主题会随安全、提醒、危险、临界和恢复状态变化。 | Two visual stories react to safe, warning, danger, critical, and recovery states. |
+| **📈** | **消耗预测**：用稳健速率估算重置前用量与可能耗尽时间，并展示只读重置次数状态。 | Projects usage at reset and likely exhaustion time with a robust burn rate, plus read-only reset-credit status. |
+| **🗓️** | **动态每日预算**：可编辑七天基础额度、策略时区和工作日未用额度结转。 | Supports editable daily limits, policy timezone, and weekday carry-forward. |
+| **🔔** | **多通道提醒**：每小时后台刷新，可按阈值发送系统通知或可选的 TLS SMTP 邮件。 | Refreshes hourly and delivers threshold alerts through native notifications or optional TLS SMTP email. |
+| **📡** | **重置雷达**：并列呈现 Codex 本机观测与第三方公开重置信号，不把预测伪装成官方事实。 | Keeps local Codex observations separate from third-party public reset estimates. |
+| **🖥️** | **托盘优先**：常驻菜单栏 / 任务栏，托盘文字可配置，并支持开机启动、浅色与深色外观。 | Lives in the tray with configurable text, autostart, and light/dark appearance. |
+| **🔒** | **本地优先**：`auth.json` 始终只读；历史保存在本地 SQLite，秘密存入系统凭证库，并支持脱敏诊断、恢复和本地数据清除。 | Keeps `auth.json` read-only, stores history locally, protects secrets with the OS vault, and provides redacted diagnostics and recovery tools. |
+| **🌐** | **双语与安全更新**：支持简体中文、英文及跟随系统；更新需用户确认并通过 Tauri 签名验证。 | Supports Chinese, English, and system language, with explicit signature-verified updates. |
 
 ## Preview distribution / 预览版分发
 
