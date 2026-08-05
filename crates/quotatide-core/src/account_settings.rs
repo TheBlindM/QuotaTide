@@ -2738,6 +2738,21 @@ impl AccountSettingsStore {
         self.recovered_at_startup
     }
 
+    /// Closes the database and waits for its worker thread to exit.
+    ///
+    /// Use this before externally moving, replacing, or corrupting database
+    /// files so those operations cannot race a final `SQLite` checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the worker cannot be closed cleanly.
+    pub async fn close(self) -> Result<(), SettingsStoreError> {
+        self.connection
+            .close()
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
     /// Atomically commits a validated account if the revision still matches.
     ///
     /// # Errors

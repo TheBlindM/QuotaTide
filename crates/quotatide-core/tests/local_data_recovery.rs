@@ -24,7 +24,7 @@ async fn database_files_are_restricted_to_the_current_user() {
     let store = AccountSettingsStore::open(&database)
         .await
         .expect("create store");
-    drop(store);
+    store.close().await.expect("close store");
 
     assert_eq!(
         fs::metadata(database)
@@ -47,7 +47,7 @@ async fn corrupted_main_database_is_isolated_and_restored_from_newest_valid_back
         .configure_account(0, "/chosen/auth.json", "account-one")
         .await
         .expect("configure account");
-    drop(store);
+    store.close().await.expect("close store");
 
     let backups = directory.path().join("backups");
     fs::create_dir(&backups).expect("create backups");
@@ -89,7 +89,7 @@ async fn recovery_skips_a_newer_integrity_valid_backup_with_broken_domain_invari
         .configure_account(0, "/chosen/auth.json", "account-one")
         .await
         .expect("configure account");
-    drop(store);
+    store.close().await.expect("close store");
     let backups = directory.path().join("backups");
     fs::create_dir(&backups).expect("create backups");
     online_backup(&database, &backups.join("state-v10-100.sqlite3"));
@@ -148,7 +148,7 @@ async fn leftover_wal_and_shm_are_recovered_before_settings_are_read() {
     let store = AccountSettingsStore::open(&source_database)
         .await
         .expect("source store");
-    drop(store);
+    store.close().await.expect("close store");
 
     let writer = Connection::open(&source_database).expect("WAL writer");
     writer

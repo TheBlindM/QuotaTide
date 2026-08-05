@@ -86,9 +86,7 @@ jobs:
 
   windows-bundle:
     name: Windows x64 bundle
-    # Keep the release baseline on the VS 2022 image while Rust 1.88 is pinned.
-    # windows-latest moved to Windows Server 2025 + VS 2026 in 2026 and the
-    # desktop test executable fails during PE loading before its harness starts.
+    # Keep an explicit, supported Windows compatibility baseline for v0.1.x.
     runs-on: windows-2022
     permissions:
       contents: read

@@ -1391,7 +1391,7 @@ fn system_reduces_motion() -> bool {
         .is_some_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "1")
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 #[allow(unsafe_code)]
 fn system_reduces_motion() -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1410,6 +1410,14 @@ fn system_reduces_motion() -> bool {
         )
     } != 0;
     succeeded && animations_enabled == 0
+}
+
+// GitHub's headless Windows hosts cannot load every desktop-only entry point
+// into the all-inclusive library test harness. Pure unit tests inject the
+// conservative fallback; integration and production builds keep the real API.
+#[cfg(all(target_os = "windows", test))]
+const fn system_reduces_motion() -> bool {
+    false
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -1463,7 +1471,7 @@ fn window_effects_config(effect: WindowEffect) -> WindowEffectsConfig {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 #[allow(unsafe_code)]
 fn apply_windows_rounded_corners(window: &WebviewWindow) -> bool {
     use std::ffi::c_void;
@@ -1487,6 +1495,11 @@ fn apply_windows_rounded_corners(window: &WebviewWindow) -> bool {
         )
     };
     result >= 0
+}
+
+#[cfg(all(target_os = "windows", test))]
+const fn apply_windows_rounded_corners(_window: &WebviewWindow) -> bool {
+    false
 }
 
 fn apply_platform_material(window: &WebviewWindow) -> bool {
