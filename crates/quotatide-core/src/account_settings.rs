@@ -4556,12 +4556,20 @@ async fn open_initialized_connection(
     policy_timezone: String,
 ) -> Result<Connection, tokio_rusqlite::Error> {
     let connection = Connection::open(path).await?;
-    connection
+    let initialization = connection
         .call(move |database| {
             initialize_database(database, &salt, &app_instance_id, now, &policy_timezone)
         })
-        .await?;
-    Ok(connection)
+        .await;
+    match initialization {
+        Ok(()) => Ok(connection),
+        Err(error) => {
+            // Await the SQLite worker before recovery moves this database. A
+            // dropped connection may still hold the file open on Windows.
+            let _ = connection.close().await;
+            Err(error)
+        }
+    }
 }
 
 async fn recover_initialized_connection(
