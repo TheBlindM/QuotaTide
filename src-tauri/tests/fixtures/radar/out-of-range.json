@@ -1,13 +1,23 @@
 {
-  "generated_at": "2026-07-28T01:47:11.732Z",
-  "watch": {
-    "tweet_id": "2081899343091843463",
-    "tweet_url": "https://x.com/thsottiaux/status/2081899343091843463",
-    "text": "Invalid probability.",
-    "observed_at": "2026-07-28T00:27:37.000Z",
-    "expires_at": "2026-07-29T00:27:37.000Z",
-    "reset_chance_24h": 100.01,
-    "window_hours": 24
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-28T01:47:11.732Z",
+  "lastSuccessfulCheckAt": "2026-07-28T01:47:11.732Z",
+  "monitor": {
+    "status": "ok",
+    "errorCode": null
   },
-  "events": []
+  "events": [
+    {
+      "kind": "reset_scheduled",
+      "announcedAt": "2026-07-28T00:27:37.000Z",
+      "effectiveAt": "2026-07-29T00:27:37.000Z",
+      "source": {
+        "handle": "thsottiaux",
+        "postId": "2081899343091843463",
+        "url": "https://x.com/thsottiaux/status/2081899343091843463"
+      },
+      "confidence": 1.01,
+      "rationale": "Invalid confidence."
+    }
+  ]
 }

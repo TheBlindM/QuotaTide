@@ -56,6 +56,12 @@ zip = { version = "=8.1.0", default-features = false }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "=0.31.3", default-features = false, features = ["fs", "user"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Graphics_Dwm",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
 [dev-dependencies]
 tokio = { version = "=1.49.0", features = ["macros", "rt-multi-thread"] }
 

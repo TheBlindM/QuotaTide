@@ -17,7 +17,11 @@ import { I18nProvider } from "./i18n-context";
 import { PrivacyPanel, TrayApp } from "./TrayApp";
 import { ledgerFixtures } from "./WeeklyLedger";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  window.localStorage.clear();
+  delete document.documentElement.dataset.theme;
+});
 
 const quotaPolicy = {
   policyRevision: 1,
@@ -54,6 +58,8 @@ const atomicSettings: PublicSettings = {
   alertPreferences,
   autostartEnabled: false,
   autoUpdateEnabled: true,
+  trayDisplayMode: "wave",
+  storyTheme: "rising_water",
   interfaceLocale: "system",
   formatLocale: "zh-CN",
   smtp: {
@@ -70,6 +76,45 @@ const atomicSettings: PublicSettings = {
 };
 
 describe("tray-window navigation", () => {
+  it("switches between day and night appearance and remembers the choice", () => {
+    const stored = new Map<string, string>();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        clear: () => {
+          stored.clear();
+        },
+        getItem: (key: string) => stored.get(key) ?? null,
+        removeItem: (key: string) => {
+          stored.delete(key);
+        },
+        setItem: (key: string, value: string) => {
+          stored.set(key, value);
+        },
+      },
+    });
+    document.documentElement.dataset.theme = "light";
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "切换到夜间模式" }),
+    );
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    expect(window.localStorage.getItem("quotatide.theme")).toBe("dark");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "切换到日间模式" }),
+    );
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    expect(window.localStorage.getItem("quotatide.theme")).toBe("light");
+  });
+
   it("saves account policy alerts and autostart as one revisioned draft", async () => {
     const onSaveSettings = vi
       .fn<(draft: SettingsDraft) => Promise<PublicSettings>>()
@@ -89,11 +134,17 @@ describe("tray-window navigation", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     fireEvent.input(screen.getByLabelText("auth.json 路径"), {
       target: { value: "/Users/me/.codex/auth.json" },
     });
     fireEvent.click(screen.getByLabelText("登录后自动启动"));
+    fireEvent.change(screen.getByLabelText("任务栏显示"), {
+      target: { value: "wave_weekly_remaining" },
+    });
+    fireEvent.change(screen.getByLabelText("故事主题"), {
+      target: { value: "last_supply_line" },
+    });
     fireEvent.click(screen.getByRole("tab", { name: "额度" }));
     fireEvent.input(screen.getByLabelText("周一额度"), {
       target: { value: "15" },
@@ -122,6 +173,8 @@ describe("tray-window navigation", () => {
         ),
         autostartEnabled: true,
         autoUpdateEnabled: true,
+        trayDisplayMode: "wave_weekly_remaining",
+        storyTheme: "last_supply_line",
         interfaceLocale: "system",
         formatLocale: "en",
         smtp: {
@@ -170,7 +223,7 @@ describe("tray-window navigation", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     fireEvent.click(screen.getByRole("tab", { name: "提醒" }));
     fireEvent.click(screen.getByLabelText("启用邮件通知"));
     fireEvent.input(screen.getByLabelText("SMTP 主机"), {
@@ -245,7 +298,7 @@ describe("tray-window navigation", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     fireEvent.click(screen.getByRole("tab", { name: "提醒" }));
     fireEvent.click(screen.getByRole("button", { name: "发送测试邮件" }));
 
@@ -289,7 +342,7 @@ describe("tray-window navigation", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     fireEvent.click(screen.getByRole("button", { name: "手动检查" }));
     expect(onCheckForUpdate).toHaveBeenCalledOnce();
 
@@ -309,7 +362,7 @@ describe("tray-window navigation", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     expect(screen.getByRole("heading", { name: "设置" })).toBeInTheDocument();
     expect(screen.getByText("尚未配置 Codex 账号")).toBeInTheDocument();
     expect(screen.getByLabelText("auth.json 路径")).toBeInTheDocument();
@@ -321,9 +374,7 @@ describe("tray-window navigation", () => {
     expect(screen.getByRole("tab", { name: "提醒" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
-    expect(
-      screen.getByRole("table", { name: /当前七日窗口/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: /本周策略/ })).toBeInTheDocument();
   });
 
   it("leaves settings and opens the target when a notification is activated", async () => {
@@ -337,7 +388,7 @@ describe("tray-window navigation", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     expect(screen.getByRole("heading", { name: "设置" })).toBeInTheDocument();
 
     rerender(
@@ -372,7 +423,7 @@ describe("tray-window navigation", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     fireEvent.click(screen.getByRole("tab", { name: "提醒" }));
     fireEvent.click(
       screen.getByRole("button", { name: "启用系统通知" }),
@@ -396,7 +447,7 @@ describe("tray-window navigation", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     fireEvent.click(screen.getByRole("tab", { name: "提醒" }));
     fireEvent.click(screen.getByRole("button", { name: "重新检查权限" }));
 
@@ -425,12 +476,83 @@ describe("tray-window navigation", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    fireEvent.input(screen.getByLabelText("auth.json 路径"), {
+      target: { value: "/Users/me/.codex/new-auth.json" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "保存全部设置" }));
 
     expect(await screen.findByText("账号 • 55AA")).toBeInTheDocument();
     expect(onReloadSettings).toHaveBeenCalledOnce();
     expect(screen.getByRole("alert")).toHaveTextContent("设置未保存");
+  });
+
+  it("chooses auth.json with the native picker and marks the draft dirty", async () => {
+    const onPickAuthFile = vi
+      .fn<() => Promise<string | null>>()
+      .mockResolvedValue("/Users/me/.codex/auth.json");
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        settings={atomicSettings}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+        onPickAuthFile={onPickAuthFile}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "浏览…" }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("auth.json 路径")).toHaveValue(
+        "/Users/me/.codex/auth.json",
+      );
+    });
+    expect(screen.getByText("有未保存更改")).toBeInTheDocument();
+    expect(onPickAuthFile).toHaveBeenCalledOnce();
+  });
+
+  it("confirms before discarding unsaved settings", () => {
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        settings={atomicSettings}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    fireEvent.click(screen.getByLabelText("登录后自动启动"));
+    fireEvent.click(screen.getByRole("button", { name: "放弃更改" }));
+
+    expect(screen.getByRole("heading", { name: "设置" })).toBeInTheDocument();
+    expect(screen.getByText("再次点击以放弃")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认放弃" }));
+    expect(screen.getByRole("heading", { name: "QuotaTide" })).toBeInTheDocument();
+  });
+
+  it("expands the tray window for settings and restores it on exit", async () => {
+    const onWeekDetailChange = vi.fn();
+    render(
+      <TrayApp
+        fixture={ledgerFixtures.fresh}
+        settings={atomicSettings}
+        onHide={vi.fn()}
+        onRefresh={vi.fn()}
+        onWeekDetailChange={onWeekDetailChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    await waitFor(() => {
+      expect(onWeekDetailChange).toHaveBeenLastCalledWith(true);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    await waitFor(() => {
+      expect(onWeekDetailChange).toHaveBeenLastCalledWith(false);
+    });
   });
 
   it("preserves unsaved edits when background refresh keeps the same revision", () => {
@@ -443,7 +565,7 @@ describe("tray-window navigation", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     fireEvent.click(screen.getByRole("tab", { name: "额度" }));
     fireEvent.input(screen.getByLabelText("周一额度"), {
       target: { value: "15" },
@@ -493,7 +615,7 @@ describe("tray-window navigation", () => {
         onRefresh={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     const account = screen.getByRole("tab", { name: "账号" });
     account.focus();
 
@@ -525,10 +647,10 @@ describe("tray-window navigation", () => {
     );
 
     expect(
-      screen.getByRole("table", { name: /Current seven-day window/u }),
+      screen.getByRole("list", { name: /This week's policy/u }),
     ).toBeInTheDocument();
     expect(screen.getByText("Weekly remaining")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByRole("heading", { name: "Settings" })).toHaveFocus();
     expect(
       screen.getByRole("combobox", { name: "Interface language" }),
@@ -561,9 +683,7 @@ describe("tray-window navigation", () => {
 
     expect(onRefresh).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: "正在刷新" })).toBeDisabled();
-    expect(
-      screen.getByRole("table", { name: /当前七日窗口/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: /本周策略/ })).toBeInTheDocument();
 
     completeRefresh?.();
   });

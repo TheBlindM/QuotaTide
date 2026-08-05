@@ -3,8 +3,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt as _;
 use quotatide_core::{
-    AccountSettingsStore, CurrentUsageAuth, QuotaUnits, UsageAuthReadFailure, UsageRefreshSource,
-    UsageSourceError, UsageSourceErrorCode, WeeklyUsageObservation,
+    AccountSettingsStore, CurrentUsageAuth, PublicResetCredit, PublicResetCredits, QuotaUnits,
+    UsageAuthReadFailure, UsageRefreshSource, UsageSourceError, UsageSourceErrorCode,
+    WeeklyUsageObservation,
 };
 use reqwest::{Client, StatusCode};
 use secrecy::{ExposeSecret as _, SecretString};
@@ -14,6 +15,8 @@ use sha2::{Digest as _, Sha256};
 use crate::auth_file::read_auth_file;
 
 const WHAM_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const WHAM_RESET_CREDITS_URL: &str =
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const WEEK_SECONDS: u32 = 604_800;
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -153,8 +156,17 @@ impl CodexUsageClient {
     }
 
     fn request(&self, access_token: &SecretString, account_id: &str) -> reqwest::RequestBuilder {
+        self.request_url(WHAM_USAGE_URL, access_token, account_id)
+    }
+
+    fn request_url(
+        &self,
+        url: &'static str,
+        access_token: &SecretString,
+        account_id: &str,
+    ) -> reqwest::RequestBuilder {
         self.client
-            .get(WHAM_USAGE_URL)
+            .get(url)
             .bearer_auth(access_token.expose_secret())
             .header("chatgpt-account-id", account_id)
             .header("originator", "codex_cli_rs")
@@ -207,6 +219,91 @@ impl CodexUsageClient {
         .map_err(|source| failure(UsageSourceErrorCode::UpstreamUnavailable, source))?;
         normalize_completed_usage(&bytes, captured_at_unix_ms, response_completed_at_unix_ms)
     }
+
+    /// Fetches earned reset credits independently from weekly quota.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe adapter error without exposing credit identifiers or auth material.
+    pub async fn fetch_reset_credits(
+        &self,
+        access_token: &SecretString,
+        account_id: &str,
+        checked_at_unix_ms: i64,
+    ) -> Result<PublicResetCredits, CodexUsageError> {
+        let response = self
+            .request_url(WHAM_RESET_CREDITS_URL, access_token, account_id)
+            .send()
+            .await
+            .map_err(map_transport)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(status_failure(status));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+        {
+            return Err(simple(UsageSourceErrorCode::ResponseTooLarge));
+        }
+        let mut bytes = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(map_transport)?;
+            if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+                return Err(simple(UsageSourceErrorCode::ResponseTooLarge));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        normalize_reset_credits(&bytes, checked_at_unix_ms)
+    }
+}
+
+/// Reads the configured auth file and independently fetches earned reset credits.
+///
+/// The auth file remains read-only and opaque identifiers never cross the native boundary.
+///
+/// # Errors
+///
+/// Returns a stable usage-source error when the configured file cannot be read,
+/// the credentials are stale, or the fixed upstream contract cannot be decoded.
+pub async fn fetch_configured_reset_credits(
+    store: &AccountSettingsStore,
+    checked_at_unix_ms: i64,
+) -> Result<PublicResetCredits, CodexUsageError> {
+    let binding = store
+        .configured_refresh_binding()
+        .await
+        .map_err(|error| failure(UsageSourceErrorCode::AuthPathUnavailable, error))?
+        .ok_or_else(|| simple(UsageSourceErrorCode::AuthPathUnavailable))?;
+    let credentials =
+        credentials_from_file(binding.canonical_path()).map_err(|error| CodexUsageError {
+            code: error.code(),
+            source: Some(Box::new(error)),
+        })?;
+    let resolved_binding = binding.with_account_id(credentials.account_id.clone());
+    if !store
+        .binding_matches_configured_account(&resolved_binding)
+        .await
+        .map_err(|error| failure(UsageSourceErrorCode::AuthPathUnavailable, error))?
+    {
+        return Err(simple(UsageSourceErrorCode::AuthenticationStale));
+    }
+    let snapshot = CodexUsageClient::new()?
+        .fetch_reset_credits(
+            &credentials.access_token,
+            &credentials.account_id,
+            checked_at_unix_ms,
+        )
+        .await?;
+    if !store
+        .binding_matches_configured_account(&resolved_binding)
+        .await
+        .map_err(|error| failure(UsageSourceErrorCode::AuthPathUnavailable, error))?
+    {
+        return Err(simple(UsageSourceErrorCode::AuthenticationStale));
+    }
+    Ok(snapshot)
 }
 
 #[derive(Deserialize)]
@@ -228,6 +325,87 @@ struct UsageWindow {
     limit_window_seconds: Option<u32>,
     reset_after_seconds: Option<i64>,
     reset_at: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct ResetCreditsDocument {
+    #[serde(alias = "availableCount")]
+    available_count: Option<u32>,
+    credits: Option<Vec<ResetCreditDocument>>,
+}
+
+#[derive(Deserialize)]
+struct ResetCreditDocument {
+    status: Option<String>,
+    #[serde(alias = "expiresAt")]
+    expires_at: Option<serde_json::Value>,
+}
+
+fn normalize_reset_credits(
+    bytes: &[u8],
+    checked_at_unix_ms: i64,
+) -> Result<PublicResetCredits, CodexUsageError> {
+    let document: ResetCreditsDocument = serde_json::from_slice(bytes)
+        .map_err(|source| failure(UsageSourceErrorCode::InvalidJson, source))?;
+    let credit_documents = document.credits.unwrap_or_default();
+    if credit_documents.len() > 200 {
+        return Err(simple(UsageSourceErrorCode::ContractViolation));
+    }
+    let credits = credit_documents
+        .into_iter()
+        .map(|credit| {
+            let status = credit.status.unwrap_or_else(|| "unknown".to_owned());
+            if status.is_empty()
+                || status.len() > 32
+                || !status
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            {
+                return Err(simple(UsageSourceErrorCode::ContractViolation));
+            }
+            Ok(PublicResetCredit {
+                status,
+                expires_at_unix_s: credit
+                    .expires_at
+                    .as_ref()
+                    .map(parse_reset_credit_timestamp)
+                    .transpose()?,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let inferred_available = credits
+        .iter()
+        .filter(|credit| credit.status == "available")
+        .count();
+    let available_count = document.available_count.map_or_else(
+        || {
+            u32::try_from(inferred_available)
+                .map_err(|_| simple(UsageSourceErrorCode::ContractViolation))
+        },
+        Ok,
+    )?;
+    if available_count > 1_000 {
+        return Err(simple(UsageSourceErrorCode::ContractViolation));
+    }
+    Ok(PublicResetCredits {
+        available_count,
+        credits,
+        checked_at_unix_ms,
+    })
+}
+
+fn parse_reset_credit_timestamp(value: &serde_json::Value) -> Result<i64, CodexUsageError> {
+    if let Some(seconds) = value.as_i64() {
+        return (seconds > 0)
+            .then_some(seconds)
+            .ok_or_else(|| simple(UsageSourceErrorCode::ContractViolation));
+    }
+    if let Some(text) = value.as_str() {
+        return chrono::DateTime::parse_from_rfc3339(text)
+            .map(|timestamp| timestamp.timestamp())
+            .map_err(|error| failure(UsageSourceErrorCode::ContractViolation, error));
+    }
+    Err(simple(UsageSourceErrorCode::ContractViolation))
 }
 
 fn normalize_completed_usage(
@@ -347,7 +525,9 @@ fn failure(
 mod tests {
     use secrecy::SecretString;
 
-    use super::{CodexUsageClient, normalize_completed_usage, normalize_usage};
+    use super::{
+        CodexUsageClient, normalize_completed_usage, normalize_reset_credits, normalize_usage,
+    };
     use quotatide_core::UsageSourceErrorCode;
 
     const VALID: &str = r#"{
@@ -368,6 +548,40 @@ mod tests {
         }
       }
     }"#;
+
+    #[test]
+    fn reset_credits_are_normalized_without_exposing_opaque_ids() {
+        let snapshot = normalize_reset_credits(
+            br#"{
+              "available_count": 2,
+              "credits": [
+                {
+                  "id": "RateLimitResetCredit_secret-one",
+                  "status": "available",
+                  "expires_at": 1784246400
+                },
+                {
+                  "id": "RateLimitResetCredit_secret-two",
+                  "status": "redeemed",
+                  "expires_at": "2026-07-17T00:00:00Z"
+                }
+              ]
+            }"#,
+            1_784_000_000_000,
+        )
+        .expect("valid reset credits");
+
+        assert_eq!(snapshot.available_count, 2);
+        assert_eq!(snapshot.checked_at_unix_ms, 1_784_000_000_000);
+        assert_eq!(snapshot.credits.len(), 2);
+        assert_eq!(snapshot.credits[0].status, "available");
+        assert_eq!(snapshot.credits[0].expires_at_unix_s, Some(1_784_246_400));
+        assert_eq!(snapshot.credits[1].status, "redeemed");
+        assert_eq!(snapshot.credits[1].expires_at_unix_s, Some(1_784_246_400));
+        let serialized = serde_json::to_string(&snapshot).expect("serialize public snapshot");
+        assert!(!serialized.contains("secret-one"));
+        assert!(!serialized.contains("secret-two"));
+    }
 
     #[test]
     fn request_contract_is_fixed_to_wham_without_redirects() {

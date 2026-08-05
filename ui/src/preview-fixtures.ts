@@ -1,6 +1,7 @@
 import type { PublicLedgerDay } from "./bindings/PublicLedgerDay";
 import type { PublicLiveQuota } from "./bindings/PublicLiveQuota";
 import type { PublicResetRadar } from "./bindings/PublicResetRadar";
+import type { QuotaPressure } from "./bindings/QuotaPressure";
 import type { InterfaceLocale } from "./i18n";
 import type { LedgerTone } from "./WeeklyLedger";
 
@@ -26,6 +27,8 @@ export function createPreviewScenario(
   searchParams: URLSearchParams,
 ): PreviewScenario {
   const tone = parseTone(searchParams.get("state"));
+  const mockUsedPercent = parseMockPercent(searchParams.get("quota"));
+  const mockPressure = parseMockPressure(searchParams.get("pressure"));
   const interfaceLocale: InterfaceLocale =
     searchParams.get("lang") === "en" ? "en" : "zh-CN";
   return {
@@ -35,10 +38,41 @@ export function createPreviewScenario(
       interfaceLocale,
     ),
     interfaceLocale,
-    liveQuota: createLiveQuota(tone),
+    liveQuota: createLiveQuota(tone, mockUsedPercent, mockPressure),
     radar: createRadar(searchParams.get("radar") === "active"),
     tone,
   };
+}
+
+function parseMockPercent(value: string | null): number | null {
+  if (value === null || value.trim() === "") {
+    return null;
+  }
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? Math.min(100, Math.max(0, parsed)) : null;
+}
+
+function parseMockPressure(value: string | null): QuotaPressure | null {
+  return value === "safe" ||
+    value === "warning" ||
+    value === "danger" ||
+    value === "critical" ||
+    value === "recovery"
+    ? value
+    : null;
+}
+
+function pressureForUsed(usedPercent: number): QuotaPressure {
+  if (usedPercent >= 95) {
+    return "critical";
+  }
+  if (usedPercent >= 80) {
+    return "danger";
+  }
+  if (usedPercent >= 60) {
+    return "warning";
+  }
+  return "safe";
 }
 
 function parseTone(value: string | null): LedgerTone {
@@ -86,7 +120,11 @@ function ledgerDay(
   };
 }
 
-function createLiveQuota(tone: LedgerTone): PublicLiveQuota | null {
+function createLiveQuota(
+  tone: LedgerTone,
+  mockUsedPercent: number | null,
+  mockPressure: QuotaPressure | null,
+): PublicLiveQuota | null {
   if (tone === "unconfigured") {
     return null;
   }
@@ -98,10 +136,47 @@ function createLiveQuota(tone: LedgerTone): PublicLiveQuota | null {
         ? 14_200_000
         : 11_400_000;
   const usedMicropoints =
-    tone === "over" ? 52_000_000 : tone === "warning" ? 45_000_000 : 42_000_000;
+    mockUsedPercent === null
+      ? tone === "over"
+        ? 52_000_000
+        : tone === "warning"
+          ? 45_000_000
+          : 42_000_000
+      : Math.round(mockUsedPercent * 1_000_000);
+  const pressure =
+    mockPressure ??
+    (mockUsedPercent === null
+      ? tone === "over"
+        ? "danger"
+        : tone === "warning"
+          ? "warning"
+          : "safe"
+      : pressureForUsed(mockUsedPercent));
+  const projectedUsedAtResetMicropoints =
+    mockUsedPercent === null
+      ? tone === "over"
+        ? 108_000_000
+        : tone === "warning"
+          ? 91_000_000
+          : 72_000_000
+      : Math.min(140_000_000, usedMicropoints + 30_000_000);
   return {
     usedMicropoints,
     remainingMicropoints: 100_000_000 - usedMicropoints,
+    pressure,
+    burnProjection:
+      pressure === "recovery"
+        ? null
+        : {
+            sampleCount: 8,
+            observedSpanSeconds: 21_600,
+            rateMicropointsPerHour: tone === "over" ? 1_400_000 : 300_000,
+            projectedUsedAtResetMicropoints,
+            exhaustsAtUnixS:
+              projectedUsedAtResetMicropoints >= 100_000_000
+                ? PREVIEW_NOW_UNIX_MS / 1_000 + 34 * 60 * 60
+                : null,
+          },
     capturedAtUnixMs: PREVIEW_NOW_UNIX_MS,
     resetsAtUnixS: PREVIEW_RESET_UNIX_S,
     windowStartsAtUnixS: PREVIEW_WINDOW_START_UNIX_S,

@@ -94,6 +94,8 @@ vi.mock("./api/account-settings", () => ({
     alertPreferences: appAlertPreferences,
     autostartEnabled: false,
     autoUpdateEnabled: true,
+    trayDisplayMode: "wave",
+    storyTheme: "rising_water",
     interfaceLocale: "zh-CN",
     formatLocale: "zh-CN",
     smtp: {
@@ -109,11 +111,14 @@ vi.mock("./api/account-settings", () => ({
     },
   }),
   onSettingsChanged: vi.fn().mockResolvedValue(vi.fn()),
+  pickAuthFile: vi.fn().mockResolvedValue(null),
   saveSettings: vi.fn(),
   sendTestEmail: vi.fn(),
 }));
 
 vi.mock("./api/alerts", () => ({
+  dismissAlert: vi.fn(),
+  dismissAllAlerts: vi.fn(),
   getAlerts: vi.fn().mockResolvedValue({
     notificationPermissionStatus: "granted",
     events: [],
@@ -139,6 +144,8 @@ vi.mock("./api/live-quota", () => ({
     quota: {
       usedMicropoints: 42_000_000,
       remainingMicropoints: 58_000_000,
+      pressure: "safe",
+      burnProjection: null,
       capturedAtUnixMs: 1_785_000_000_000,
       resetsAtUnixS: 1_786_000_000,
       windowStartsAtUnixS: 1_785_395_200,
@@ -168,6 +175,14 @@ vi.mock("./api/live-quota", () => ({
   onDashboardChanged: vi.fn().mockResolvedValue(vi.fn()),
 }));
 
+vi.mock("./api/reset-credits", () => ({
+  getResetCredits: vi.fn().mockResolvedValue({
+    availableCount: 0,
+    credits: [],
+    checkedAtUnixMs: 1_785_000_000_000,
+  }),
+}));
+
 vi.mock("./api/local-data", () => ({
   getStartupState: vi.fn().mockResolvedValue({
     mode: "ready",
@@ -184,6 +199,7 @@ vi.mock("./api/tray-shell", () => ({
   hideMainWindow: vi.fn().mockResolvedValue(undefined),
   requestManualRefresh: vi.fn().mockResolvedValue(0),
   setAccessibleSurface: vi.fn().mockResolvedValue(true),
+  setMainWindowExpanded: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("./api/updater", () => ({
@@ -210,6 +226,7 @@ afterEach(() => {
     recoveredFromBackup: false,
   });
   window.history.replaceState({}, "", "/");
+  delete document.documentElement.dataset.runtime;
   delete document.documentElement.dataset.theme;
   delete document.documentElement.dataset.surface;
   delete document.documentElement.dataset.platformFallback;
@@ -223,10 +240,10 @@ describe("QuotaTide tray app", () => {
     expect(
       await screen.findByRole("heading", { name: "QuotaTide" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: /本周策略/ })).toBeInTheDocument();
     expect(
-      screen.getByRole("table", { name: /当前七日窗口/ }),
+      screen.getByRole("group", { name: /已用 42%，剩余 58%/ }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/已用 42%/)).toBeInTheDocument();
   });
 
   it("reconciles a refresh even while dashboard listeners are still attaching", async () => {
@@ -352,6 +369,8 @@ describe("QuotaTide tray app", () => {
       alertPreferences: appAlertPreferences,
       autostartEnabled: false,
       autoUpdateEnabled: true,
+      trayDisplayMode: "wave",
+      storyTheme: "rising_water",
       interfaceLocale: "zh-CN",
       formatLocale: "zh-CN",
       smtp: {
@@ -367,7 +386,9 @@ describe("QuotaTide tray app", () => {
       },
     });
     render(<App />);
-    expect(await screen.findByText(/已用 42%/)).toBeInTheDocument();
+    expect(
+      await screen.findByRole("group", { name: /已用 42%，剩余 58%/ }),
+    ).toBeInTheDocument();
     await waitFor(() => {
       expect(getLiveQuota).toHaveBeenCalledTimes(2);
     });
@@ -386,7 +407,7 @@ describe("QuotaTide tray app", () => {
       },
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     fireEvent.input(screen.getByLabelText("auth.json 路径"), {
       target: { value: "/Users/me/.codex/new-auth.json" },
     });
@@ -395,7 +416,8 @@ describe("QuotaTide tray app", () => {
     expect(
       await screen.findByText("账号 • 991A"),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    const cancel = await screen.findByRole("button", { name: "取消" });
+    fireEvent.click(cancel);
     expect(screen.getByText("Codex 额度 · 正在刷新")).toBeInTheDocument();
     expect(screen.queryByText(/已用 42%/)).not.toBeInTheDocument();
   });
@@ -411,7 +433,10 @@ describe("QuotaTide tray app", () => {
 
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     expect(document.documentElement).toHaveAttribute("data-surface", "opaque");
-    expect(screen.getByRole("alert")).toHaveTextContent("接近今日额度");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/今天还可用 2\.6%/u)).toHaveClass(
+      "side-stat--warning",
+    );
   });
 
   it("renders app-owned English preview copy from structured quota data", () => {
@@ -424,7 +449,9 @@ describe("QuotaTide tray app", () => {
     render(<App />);
 
     expect(screen.getByText("Weekly remaining")).toBeInTheDocument();
-    expect(screen.getByText(/Used 45%/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("group", { name: /45% used, 55% remaining/ }),
+    ).toBeInTheDocument();
     expect(screen.getByText("I'm feeling like a limit reset.")).toBeInTheDocument();
     expect(screen.getByText("Codex limits were reset.")).toBeInTheDocument();
     expect(document.body).toHaveAttribute(
@@ -443,8 +470,8 @@ describe("QuotaTide tray app", () => {
     render(<App />);
 
     expect(screen.getByText("Weekly remaining")).toBeInTheDocument();
-    expect(screen.getByText(/2026年7月31日/u)).toBeInTheDocument();
-    expect(screen.getByText("周五")).toBeInTheDocument();
+    expect(screen.getByTitle(/2026年7月31日/u)).toBeInTheDocument();
+    expect(screen.getAllByText("周五")).toHaveLength(2);
     expect(screen.queryByText("Fri")).not.toBeInTheDocument();
   });
 
@@ -517,6 +544,8 @@ describe("QuotaTide tray app", () => {
       {
         usedMicropoints: 42_000_000,
         remainingMicropoints: 58_000_000,
+        pressure: "safe",
+        burnProjection: null,
         capturedAtUnixMs: 1_785_000_000_000,
         resetsAtUnixS: 1_786_000_000,
         windowStartsAtUnixS: 1_785_395_200,
@@ -574,6 +603,8 @@ describe("QuotaTide tray app", () => {
       {
         usedMicropoints: 45_000_000,
         remainingMicropoints: 55_000_000,
+        pressure: "safe",
+        burnProjection: null,
         capturedAtUnixMs: 1_785_000_000_000,
         resetsAtUnixS: 1_786_000_000,
         windowStartsAtUnixS: 1_785_395_200,
@@ -647,7 +678,7 @@ describe("QuotaTide tray app", () => {
         }),
     ).toMatchObject({
       kind: "empty",
-      message: "预测数据暂不可用",
+      message: "重置数据暂不可用",
     });
   });
 

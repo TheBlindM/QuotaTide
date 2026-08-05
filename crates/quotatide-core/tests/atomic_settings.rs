@@ -8,8 +8,8 @@ use quotatide_core::{
     AccountSettingsStore, AlertChannel, AlertEventKind, AlertPreferenceDraft,
     AtomicSettingsManager, AuthCandidateValidator, AutostartControl, CredentialVault,
     InterfaceLocalePreference, PublicError, QuotaPolicyDraft, SecretUpdate, SettingsDraft,
-    SmtpCredentialStatus, SmtpRecipientDraft, SmtpSettingsDraft, SmtpTlsMode,
-    ValidatedAccountCandidate,
+    SmtpCredentialStatus, SmtpRecipientDraft, SmtpSettingsDraft, SmtpTlsMode, StoryTheme,
+    TrayDisplayMode, ValidatedAccountCandidate,
 };
 use secrecy::{ExposeSecret as _, SecretString};
 use tempfile::tempdir;
@@ -202,6 +202,8 @@ fn draft(revision: u32, autostart_enabled: bool) -> SettingsDraft {
         alert_preferences,
         autostart_enabled,
         auto_update_enabled: true,
+        tray_display_mode: TrayDisplayMode::Wave,
+        story_theme: StoryTheme::RisingWater,
         interface_locale: InterfaceLocalePreference::System,
         format_locale: "en-US".to_owned(),
         smtp: SmtpSettingsDraft {
@@ -257,6 +259,7 @@ async fn defaults_expose_every_non_secret_setting_and_channel_preference() {
     assert!(!settings.configured);
     assert!(!settings.autostart_enabled);
     assert!(settings.auto_update_enabled);
+    assert_eq!(settings.tray_display_mode, TrayDisplayMode::Wave);
     assert_eq!(settings.interface_locale, InterfaceLocalePreference::System);
     assert_eq!(settings.format_locale, "en");
     assert_eq!(settings.alert_preferences.len(), 14);
@@ -264,6 +267,70 @@ async fn defaults_expose_every_non_secret_setting_and_channel_preference() {
         settings.alert_preferences.iter().all(|preference| {
             preference.enabled == (preference.channel == AlertChannel::System)
         })
+    );
+}
+
+#[tokio::test]
+async fn tray_display_mode_is_revisioned_and_survives_restart() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open store");
+    let service = AtomicSettingsManager::new(store, ValidAuth, FakeAutostart::new(false));
+    let mut countdown = draft(0, false);
+    countdown.tray_display_mode = TrayDisplayMode::WaveResetCountdown;
+
+    let saved = service
+        .save_settings(countdown)
+        .await
+        .expect("save tray display mode");
+    assert_eq!(saved.tray_display_mode, TrayDisplayMode::WaveResetCountdown);
+    drop(service);
+
+    let reopened = AccountSettingsStore::open(database)
+        .await
+        .expect("reopen store");
+    let restarted = AtomicSettingsManager::new(reopened, ValidAuth, FakeAutostart::new(false));
+    assert_eq!(
+        restarted
+            .public_settings()
+            .await
+            .expect("restarted settings")
+            .tray_display_mode,
+        TrayDisplayMode::WaveResetCountdown
+    );
+}
+
+#[tokio::test]
+async fn story_theme_is_revisioned_and_survives_restart() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open store");
+    let service = AtomicSettingsManager::new(store, ValidAuth, FakeAutostart::new(false));
+    let mut siege = draft(0, false);
+    siege.story_theme = StoryTheme::LastSupplyLine;
+
+    let saved = service
+        .save_settings(siege)
+        .await
+        .expect("save story theme");
+    assert_eq!(saved.story_theme, StoryTheme::LastSupplyLine);
+    drop(service);
+
+    let reopened = AccountSettingsStore::open(database)
+        .await
+        .expect("reopen store");
+    let restarted = AtomicSettingsManager::new(reopened, ValidAuth, FakeAutostart::new(false));
+    assert_eq!(
+        restarted
+            .public_settings()
+            .await
+            .expect("restarted settings")
+            .story_theme,
+        StoryTheme::LastSupplyLine
     );
 }
 

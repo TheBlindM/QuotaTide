@@ -1,12 +1,23 @@
 {
-  "generated_at": "2026-07-30T01:50:11.274Z",
-  "watch": null,
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-30T01:50:11.274Z",
+  "lastSuccessfulCheckAt": "2026-07-30T01:50:11.274Z",
+  "monitor": {
+    "status": "ok",
+    "errorCode": null
+  },
   "events": [
     {
-      "tweet_id": "2082317452755751098",
-      "tweet_url": "https://x.com/thsottiaux/status/2082317452755751098",
-      "text": "Usage limits have been reset for ChatGPT Work and Codex users.",
-      "announced_at": "2026-07-29T04:09:02.000Z"
+      "kind": "reset_completed",
+      "announcedAt": "2026-07-29T04:09:02.000Z",
+      "effectiveAt": null,
+      "source": {
+        "handle": "thsottiaux",
+        "postId": "2082317452755751098",
+        "url": "https://x.com/thsottiaux/status/2082317452755751098"
+      },
+      "confidence": 0.95,
+      "rationale": "Explicit Codex quota reset announcement."
     }
   ]
 }

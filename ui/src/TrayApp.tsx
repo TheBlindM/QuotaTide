@@ -8,6 +8,15 @@ import type { NotificationPermissionStatus } from "./bindings/NotificationPermis
 import type { PublicAlertInbox } from "./bindings/PublicAlertInbox";
 import type { PublicSettings } from "./bindings/PublicSettings";
 import type { SettingsDraft } from "./bindings/SettingsDraft";
+import type { StoryTheme } from "./bindings/StoryTheme";
+import type { TrayDisplayMode } from "./bindings/TrayDisplayMode";
+import {
+  applyColorTheme,
+  readInitialColorTheme,
+  rememberColorTheme,
+  ThemeToggle,
+  type ColorTheme,
+} from "./color-theme";
 import type { PublicUpdateState } from "./api/updater";
 import type { NotificationActivation } from "./api/alerts";
 import { useI18n } from "./i18n-context";
@@ -50,10 +59,10 @@ const alertEvents: ReadonlyArray<{
   },
   {
     kind: "radar_chance_70",
-    label: "重置预测达到 70%",
-    detail: "Reset Radar 预测近期可能重置",
-    enLabel: "Reset prediction reaches 70%",
-    enDetail: "Reset Radar predicts a possible near-term reset",
+    label: "重置预测置信度达到 70%",
+    detail: "第三方公开信号预测近期可能重置",
+    enLabel: "Reset prediction confidence reaches 70%",
+    enDetail: "A third-party public signal predicts a near-term reset",
   },
   {
     kind: "quota_reset_confirmed",
@@ -96,6 +105,8 @@ const unconfiguredSettings: PublicSettings = {
   alertPreferences: defaultAlertPreferences,
   autostartEnabled: false,
   autoUpdateEnabled: true,
+  trayDisplayMode: "wave",
+  storyTheme: "rising_water",
   interfaceLocale: "system",
   formatLocale: "zh-CN",
   smtp: {
@@ -340,6 +351,10 @@ type TrayAppProps = {
   updateState?: PublicUpdateState;
   onHide: () => void;
   onRefresh: () => unknown;
+  onDismissAlert?: (eventId: number) => unknown;
+  onDismissAllAlerts?: () => unknown;
+  onWeekDetailChange?: (expanded: boolean) => unknown;
+  onPickAuthFile?: () => Promise<string | null>;
   onRequestNotificationPermission?: () => Promise<NotificationPermissionStatus>;
   onSendTestEmail?: () => Promise<number>;
   onExportDiagnostics?: () => Promise<boolean>;
@@ -350,9 +365,14 @@ type TrayAppProps = {
   onInstallUpdate?: () => Promise<PublicUpdateState>;
 };
 
+type SettingsTab = "account" | "quota" | "alerts" | "privacy";
+
 function SettingsView({
   settings,
+  theme,
+  onToggleTheme,
   onBack,
+  onPickAuthFile,
   onRequestNotificationPermission,
   onSendTestEmail,
   onExportDiagnostics,
@@ -363,7 +383,10 @@ function SettingsView({
   onSave,
 }: {
   settings: PublicSettings;
+  theme: ColorTheme;
+  onToggleTheme: () => void;
   onBack: () => void;
+  onPickAuthFile?: () => Promise<string | null>;
   onRequestNotificationPermission?: () => Promise<void>;
   onSendTestEmail?: () => Promise<number>;
   onExportDiagnostics?: () => Promise<boolean>;
@@ -376,9 +399,7 @@ function SettingsView({
   const { formatLocale, locale, text, t } = useI18n();
   const titleRef = useRef<HTMLHeadingElement>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const [activeTab, setActiveTab] = useState<
-    "account" | "quota" | "alerts" | "privacy"
-  >("account");
+  const [activeTab, setActiveTab] = useState<SettingsTab>("account");
   const [authPath, setAuthPath] = useState("");
   const [dailyLimits, setDailyLimits] = useState(() =>
     settings.quotaPolicy.baseMicropoints.map((value) => value / 1_000_000),
@@ -397,6 +418,12 @@ function SettingsView({
   );
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(
     settings.autoUpdateEnabled,
+  );
+  const [trayDisplayMode, setTrayDisplayMode] = useState<TrayDisplayMode>(
+    settings.trayDisplayMode,
+  );
+  const [storyTheme, setStoryTheme] = useState<StoryTheme>(
+    settings.storyTheme,
   );
   const [confirmUpdate, setConfirmUpdate] = useState(false);
   const [interfaceLocale, setInterfaceLocale] =
@@ -421,6 +448,9 @@ function SettingsView({
   const [testEmailCount, setTestEmailCount] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
+  const [pickingAuthFile, setPickingAuthFile] = useState(false);
+  const [authPickError, setAuthPickError] = useState(false);
+  const [discardRequested, setDiscardRequested] = useState(false);
 
   useEffect(() => {
     setAuthPath("");
@@ -434,6 +464,8 @@ function SettingsView({
     );
     setAutostartEnabled(settings.autostartEnabled);
     setAutoUpdateEnabled(settings.autoUpdateEnabled);
+    setTrayDisplayMode(settings.trayDisplayMode);
+    setStoryTheme(settings.storyTheme);
     setInterfaceLocale(settings.interfaceLocale);
     setSmtpEnabled(settings.smtp.enabled);
     setSmtpHost(settings.smtp.host);
@@ -448,6 +480,8 @@ function SettingsView({
     setSmtpPassword("");
     setDeleteSmtpPassword(false);
     setTestEmailState("idle");
+    setAuthPickError(false);
+    setDiscardRequested(false);
   }, [settings.settingsRevision]);
 
   useEffect(() => {
@@ -472,7 +506,52 @@ function SettingsView({
       smtpRecipients.some(
         (recipient) => recipient.enabled && recipient.address.includes("@"),
       ));
-  const settingsValid = policyValid && smtpValid;
+  const dailyMicropoints = dailyLimits.map((value) =>
+    Math.round(value * 1_000_000),
+  );
+  const hasChanges =
+    authPath.trim().length > 0 ||
+    dailyMicropoints.some(
+      (value, index) => value !== settings.quotaPolicy.baseMicropoints[index],
+    ) ||
+    policyTimezone.trim() !== settings.quotaPolicy.policyTimezone ||
+    carryEnabled !== settings.quotaPolicy.carryWorkdaysEnabled ||
+    JSON.stringify(alertPreferences) !==
+      JSON.stringify(settings.alertPreferences) ||
+    autostartEnabled !== settings.autostartEnabled ||
+    autoUpdateEnabled !== settings.autoUpdateEnabled ||
+    trayDisplayMode !== settings.trayDisplayMode ||
+    storyTheme !== settings.storyTheme ||
+    interfaceLocale !== settings.interfaceLocale ||
+    smtpEnabled !== settings.smtp.enabled ||
+    smtpHost.trim() !== settings.smtp.host ||
+    smtpPort !== String(settings.smtp.port) ||
+    smtpTlsMode !== settings.smtp.tlsMode ||
+    smtpUsername.trim() !== settings.smtp.username ||
+    smtpFromAddress.trim() !== settings.smtp.fromAddress ||
+    smtpFromName.trim() !== settings.smtp.fromName ||
+    JSON.stringify(
+      smtpRecipients.map((recipient) => ({
+        address: recipient.address.trim(),
+        enabled: recipient.enabled,
+      })),
+    ) !== JSON.stringify(settings.smtp.recipients) ||
+    smtpPassword.length > 0 ||
+    deleteSmtpPassword;
+  const enabledAlertCount = alertPreferences.filter(
+    (preference) => preference.enabled,
+  ).length;
+  const tabSummaries: Record<SettingsTab, string> = {
+    account: settings.configured
+      ? text("已连接", "Connected")
+      : text("需配置", "Setup needed"),
+    quota: Number.isFinite(total) ? `${total.toFixed(0)}%` : "—",
+    alerts: text(
+      `${String(enabledAlertCount)} 项开启`,
+      `${String(enabledAlertCount)} active`,
+    ),
+    privacy: text("仅本机", "On device"),
+  };
 
   const setAlertPreference = (
     eventKind: AlertEventKind,
@@ -490,7 +569,15 @@ function SettingsView({
   };
 
   const save = () => {
-    if (!settingsValid || saving) {
+    if (saving || !hasChanges) {
+      return;
+    }
+    if (!policyValid) {
+      setActiveTab("quota");
+      return;
+    }
+    if (!smtpValid) {
+      setActiveTab("alerts");
       return;
     }
     setSaving(true);
@@ -501,13 +588,13 @@ function SettingsView({
       quotaPolicy: {
         policyTimezone: policyTimezone.trim(),
         carryWorkdaysEnabled: carryEnabled,
-        baseMicropoints: dailyLimits.map((value) =>
-          Math.round(value * 1_000_000),
-        ),
+        baseMicropoints: dailyMicropoints,
       },
       alertPreferences,
       autostartEnabled,
       autoUpdateEnabled,
+      trayDisplayMode,
+      storyTheme,
       interfaceLocale,
       formatLocale,
       smtp: {
@@ -541,13 +628,44 @@ function SettingsView({
       });
   };
 
+  const requestBack = () => {
+    if (hasChanges && !discardRequested) {
+      setDiscardRequested(true);
+      return;
+    }
+    onBack();
+  };
+
+  useEffect(() => {
+    if (!hasChanges) {
+      setDiscardRequested(false);
+      return;
+    }
+    const protectUnsavedChanges = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (discardRequested) {
+        onBack();
+      } else {
+        setDiscardRequested(true);
+      }
+    };
+    window.addEventListener("keydown", protectUnsavedChanges, true);
+    return () => {
+      window.removeEventListener("keydown", protectUnsavedChanges, true);
+    };
+  }, [discardRequested, hasChanges, onBack]);
+
   return (
     <article class="settings-view">
       <header class="settings-header">
         <button
           type="button"
           aria-label={text("返回", "Back")}
-          onClick={onBack}
+          onClick={requestBack}
         >
           ←
         </button>
@@ -555,6 +673,7 @@ function SettingsView({
           <h1 ref={titleRef} tabIndex={-1}>{text("设置", "Settings")}</h1>
           <p>{text("所有更改将作为一个版本保存", "All changes are saved as one revision")}</p>
         </div>
+        <ThemeToggle theme={theme} onToggle={onToggleTheme} />
       </header>
 
       <main class="settings-content">
@@ -600,13 +719,21 @@ function SettingsView({
               }}
               id={`settings-tab-${tab}`}
               aria-controls={`settings-panel-${tab}`}
+              aria-label={label}
               aria-selected={activeTab === tab}
+              data-invalid={
+                (tab === "quota" && !policyValid) ||
+                (tab === "alerts" && !smtpValid)
+                  ? "true"
+                  : undefined
+              }
               tabIndex={activeTab === tab ? 0 : -1}
               onClick={() => {
                 setActiveTab(tab);
               }}
             >
-              {label}
+              <span>{label}</span>
+              <small>{tabSummaries[tab]}</small>
             </button>
           ))}
         </div>
@@ -631,28 +758,70 @@ function SettingsView({
               </span>
               {settings.pathSummary ? <strong>{settings.pathSummary}</strong> : null}
             </div>
-            <label class="auth-path-field">
-              <span>{text("auth.json 路径", "auth.json path")}</span>
-              <input
-                type="text"
-                aria-label={text("auth.json 路径", "auth.json path")}
-                value={authPath}
-                placeholder={
-                  settings.configured
-                    ? text(
-                        "留空以保留当前文件",
-                        "Leave blank to keep the current file",
-                      )
-                    : "/Users/name/.codex/auth.json"
-                }
-                autocomplete="off"
-                spellcheck={false}
-                onInput={(event) => {
-                  setAuthPath(event.currentTarget.value);
-                  setSaveError(false);
-                }}
-              />
-            </label>
+            <div class="auth-path-field">
+              <label for="settings-auth-path">
+                {text("auth.json 路径", "auth.json path")}
+              </label>
+              <div class="auth-path-control">
+                <input
+                  id="settings-auth-path"
+                  type="text"
+                  aria-label={text("auth.json 路径", "auth.json path")}
+                  value={authPath}
+                  placeholder={
+                    settings.configured
+                      ? text(
+                          "留空以保留当前文件",
+                          "Leave blank to keep the current file",
+                        )
+                      : "/Users/name/.codex/auth.json"
+                  }
+                  autocomplete="off"
+                  spellcheck={false}
+                  onInput={(event) => {
+                    setAuthPath(event.currentTarget.value);
+                    setAuthPickError(false);
+                    setSaveError(false);
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={!onPickAuthFile || pickingAuthFile}
+                  onClick={() => {
+                    if (!onPickAuthFile) {
+                      return;
+                    }
+                    setPickingAuthFile(true);
+                    setAuthPickError(false);
+                    void onPickAuthFile()
+                      .then((path) => {
+                        if (path) {
+                          setAuthPath(path);
+                          setSaveError(false);
+                        }
+                      })
+                      .catch(() => {
+                        setAuthPickError(true);
+                      })
+                      .finally(() => {
+                        setPickingAuthFile(false);
+                      });
+                  }}
+                >
+                  {pickingAuthFile
+                    ? text("选择中…", "Choosing…")
+                    : text("浏览…", "Browse…")}
+                </button>
+              </div>
+              {authPickError ? (
+                <small class="field-error" role="alert">
+                  {text(
+                    "无法打开文件选择器，也可以直接粘贴路径。",
+                    "The file picker could not open. You can paste the path instead.",
+                  )}
+                </small>
+              ) : null}
+            </div>
             <p class="privacy-note">
               {text(
                 "只读访问。QuotaTide 不会修改 auth.json，也不会把路径或令牌发给网页。",
@@ -698,6 +867,63 @@ function SettingsView({
                   setSaveError(false);
                 }}
               />
+            </label>
+            <label class="settings-row settings-row--separated">
+              <span>
+                <strong>{text("故事主题", "Story theme")}</strong>
+                <small>
+                  {text(
+                    "只改变额度故事表现，不影响额度计算、提醒或数据采集",
+                    "Changes only the quota story; calculations, alerts, and data collection stay the same",
+                  )}
+                </small>
+              </span>
+              <select
+                aria-label={text("故事主题", "Story theme")}
+                value={storyTheme}
+                onChange={(event) => {
+                  setStoryTheme(event.currentTarget.value as StoryTheme);
+                  setSaveError(false);
+                }}
+              >
+                <option value="rising_water">
+                  {text("水位上涨", "Rising Water")}
+                </option>
+                <option value="last_supply_line">
+                  {text("七日围城", "Last Supply Line")}
+                </option>
+              </select>
+            </label>
+            <label class="settings-row settings-row--separated">
+              <span>
+                <strong>{text("任务栏显示", "Menu bar display")}</strong>
+                <small>
+                  {text(
+                    "圆环水位始终显示；文字仅在系统支持时追加",
+                    "The animated water ring is always shown; text is added only when supported",
+                  )}
+                </small>
+              </span>
+              <select
+                aria-label={text("任务栏显示", "Menu bar display")}
+                value={trayDisplayMode}
+                onChange={(event) => {
+                  setTrayDisplayMode(
+                    event.currentTarget.value as TrayDisplayMode,
+                  );
+                  setSaveError(false);
+                }}
+              >
+                <option value="wave">
+                  {text("仅动态圆环", "Animated ring only")}
+                </option>
+                <option value="wave_weekly_remaining">
+                  {text("圆环 + 周剩余", "Ring + weekly remaining")}
+                </option>
+                <option value="wave_reset_countdown">
+                  {text("圆环 + 重置倒计时", "Ring + reset countdown")}
+                </option>
+              </select>
             </label>
             <div class="update-settings settings-row--separated">
               <div class="settings-section__heading">
@@ -1053,7 +1279,9 @@ function SettingsView({
                   />
                 </label>
               </div>
-              <div class="smtp-grid">
+              {smtpEnabled ? (
+                <div class="smtp-fields">
+                  <div class="smtp-grid">
                 <label>
                   <span>{text("SMTP 主机", "SMTP host")}</span>
                   <input
@@ -1270,51 +1498,60 @@ function SettingsView({
                   </div>
                 ))}
               </div>
-              <div class="smtp-actions">
-                <button
-                  type="button"
-                  disabled={
-                    !onSendTestEmail ||
-                    testEmailState === "sending" ||
-                    !settings.smtp.enabled ||
-                    settings.smtp.credentialStatus !== "configured"
-                  }
-                  onClick={() => {
-                    if (!onSendTestEmail) {
-                      return;
-                    }
-                    setTestEmailState("sending");
-                    void onSendTestEmail()
-                      .then((count) => {
-                        setTestEmailCount(count);
-                        setTestEmailState("sent");
-                      })
-                      .catch(() => {
-                        setTestEmailState("error");
-                      });
-                  }}
-                >
-                  {testEmailState === "sending"
-                    ? text("正在发送…", "Sending…")
-                    : text("发送测试邮件", "Send test email")}
-                </button>
-                <span role="status">
-                  {testEmailState === "sent"
-                    ? text(
-                        `已发送到 ${String(testEmailCount)} 个地址`,
-                        `Sent to ${String(testEmailCount)} recipients`,
-                      )
-                    : testEmailState === "error"
-                      ? text(
-                          "发送失败，请检查 SMTP 设置",
-                          "Delivery failed. Check SMTP settings.",
-                        )
-                      : text(
-                          "先保存设置，再执行测试",
-                          "Save settings before running a test",
-                        )}
-                </span>
-              </div>
+                  <div class="smtp-actions">
+                    <button
+                      type="button"
+                      disabled={
+                        !onSendTestEmail ||
+                        testEmailState === "sending" ||
+                        !settings.smtp.enabled ||
+                        settings.smtp.credentialStatus !== "configured"
+                      }
+                      onClick={() => {
+                        if (!onSendTestEmail) {
+                          return;
+                        }
+                        setTestEmailState("sending");
+                        void onSendTestEmail()
+                          .then((count) => {
+                            setTestEmailCount(count);
+                            setTestEmailState("sent");
+                          })
+                          .catch(() => {
+                            setTestEmailState("error");
+                          });
+                      }}
+                    >
+                      {testEmailState === "sending"
+                        ? text("正在发送…", "Sending…")
+                        : text("发送测试邮件", "Send test email")}
+                    </button>
+                    <span role="status">
+                      {testEmailState === "sent"
+                        ? text(
+                            `已发送到 ${String(testEmailCount)} 个地址`,
+                            `Sent to ${String(testEmailCount)} recipients`,
+                          )
+                        : testEmailState === "error"
+                          ? text(
+                              "发送失败，请检查 SMTP 设置",
+                              "Delivery failed. Check SMTP settings.",
+                            )
+                          : text(
+                              "先保存设置，再执行测试",
+                              "Save settings before running a test",
+                            )}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <p class="smtp-disabled-note">
+                  {text(
+                    "邮件通道已关闭。打开开关后再填写发件与收件信息。",
+                    "Email delivery is off. Turn it on to configure sender and recipients.",
+                  )}
+                </p>
+              )}
             </div>
             {!smtpValid ? (
               <p class="settings-error" role="alert">
@@ -1348,19 +1585,28 @@ function SettingsView({
       </main>
 
       <footer class="ledger-footer settings-footer">
-        <button type="button" onClick={onBack}>
-          {text("取消", "Cancel")}
+        <button type="button" onClick={requestBack}>
+          {discardRequested
+            ? text("确认放弃", "Discard")
+            : hasChanges
+              ? text("放弃更改", "Discard changes")
+              : text("取消", "Cancel")}
         </button>
-        <span>
-          {text(
-            "账号、策略与提醒一次提交",
-            "Account, policy, and alerts are committed together",
-          )}
+        <span
+          class={`settings-save-state${hasChanges ? " is-dirty" : ""}${discardRequested ? " is-warning" : ""}`}
+          role="status"
+        >
+          <i aria-hidden="true" />
+          {discardRequested
+            ? text("再次点击以放弃", "Click again to discard")
+            : hasChanges
+              ? text("有未保存更改", "Unsaved changes")
+              : text("所有更改已保存", "All changes saved")}
         </span>
         <button
           type="button"
           class="settings-save"
-          disabled={!settingsValid || saving}
+          disabled={saving || !hasChanges}
           onClick={save}
         >
           {saving
@@ -1382,6 +1628,10 @@ export function TrayApp({
   updateState,
   onHide,
   onRefresh,
+  onDismissAlert,
+  onDismissAllAlerts,
+  onWeekDetailChange,
+  onPickAuthFile,
   onRequestNotificationPermission,
   onSendTestEmail,
   onExportDiagnostics,
@@ -1393,12 +1643,26 @@ export function TrayApp({
 }: TrayAppProps) {
   const { text } = useI18n();
   const [view, setView] = useState<"ledger" | "settings">("ledger");
+  const [theme, setTheme] = useState<ColorTheme>(readInitialColorTheme);
   const [currentSettings, setCurrentSettings] = useState(settings);
   const [refreshing, setRefreshing] = useState(false);
   const [coolingDown, setCoolingDown] = useState(false);
   const refreshingRef = useRef(false);
   const coolingDownRef = useRef(false);
   const cooldownTimerRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    applyColorTheme(theme);
+  }, [theme]);
+
+  const toggleTheme = useCallback(() => {
+    setTheme((current) => {
+      const next = current === "dark" ? "light" : "dark";
+      applyColorTheme(next);
+      rememberColorTheme(next);
+      return next;
+    });
+  }, []);
 
   useEffect(
     () => () => {
@@ -1412,6 +1676,10 @@ export function TrayApp({
   useEffect(() => {
     setCurrentSettings(settings);
   }, [settings]);
+
+  useEffect(() => {
+    void onWeekDetailChange?.(view === "settings");
+  }, [onWeekDetailChange, view]);
 
   useEffect(() => {
     if (focusRequest !== null) {
@@ -1487,9 +1755,12 @@ export function TrayApp({
     return (
       <SettingsView
         settings={currentSettings}
+        theme={theme}
+        onToggleTheme={toggleTheme}
         onBack={() => {
           setView("ledger");
         }}
+        onPickAuthFile={onPickAuthFile}
         onRequestNotificationPermission={
           onRequestNotificationPermission
             ? async () => {
@@ -1536,9 +1807,15 @@ export function TrayApp({
       ) : null}
       <WeeklyLedger
         fixture={fixture}
+        storyTheme={currentSettings.storyTheme}
+        theme={theme}
+        onToggleTheme={toggleTheme}
         alerts={alerts}
         focusTarget={focusRequest?.target}
         focusActivationId={focusRequest?.activationId}
+        onDismissAlert={onDismissAlert}
+        onDismissAllAlerts={onDismissAllAlerts}
+        onWeekDetailChange={onWeekDetailChange}
         onOpenSettings={() => {
           setView("settings");
         }}

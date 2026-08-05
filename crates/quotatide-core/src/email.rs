@@ -249,8 +249,8 @@ fn render_mail(delivery: &ClaimedEmailDelivery) -> SafeMail {
                 ("QuotaTide：本周额度仅剩 10%", "当前七日窗口已接近耗尽。")
             }
             AlertEventKind::RadarChance70 => (
-                "QuotaTide：Reset Radar 预测提醒",
-                "第三方 Reset Radar 的 24 小时重置机会已达到 70% 档位；这不是 OpenAI 承诺。",
+                "QuotaTide：重置预测提醒",
+                "第三方公开信号的重置预测置信度已达到 70% 档位；这不是 OpenAI 承诺。",
             ),
             AlertEventKind::QuotaResetConfirmed => (
                 "QuotaTide：额度重置已确认",
@@ -280,8 +280,8 @@ fn render_mail(delivery: &ClaimedEmailDelivery) -> SafeMail {
                     "The current seven-day window is nearly exhausted.",
                 ),
                 AlertEventKind::RadarChance70 => (
-                    "QuotaTide: Reset Radar prediction",
-                    "The third-party Reset Radar's 24-hour reset chance has reached the 70% tier; this is not an OpenAI commitment.",
+                    "QuotaTide: reset prediction",
+                    "A third-party public signal's reset prediction confidence has reached the 70% tier; this is not an OpenAI commitment.",
                 ),
                 AlertEventKind::QuotaResetConfirmed => (
                     "QuotaTide: Quota reset confirmed",

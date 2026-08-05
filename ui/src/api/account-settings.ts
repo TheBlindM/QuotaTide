@@ -15,6 +15,10 @@ export async function saveSettings(
   return await invoke<PublicSettings>("save_settings", { draft });
 }
 
+export async function pickAuthFile(): Promise<string | null> {
+  return await invoke<string | null>("pick_auth_file");
+}
+
 export async function sendTestEmail(): Promise<number> {
   return await invoke<number>("send_test_email");
 }

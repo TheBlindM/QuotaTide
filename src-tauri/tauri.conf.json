@@ -6,7 +6,7 @@
   "mainBinaryName": "quotatide",
   "build": {
     "beforeDevCommand": "npm --prefix ui run dev",
-    "beforeBuildCommand": "npm --prefix ui run build",
+    "beforeBuildCommand": "npm run --prefix ui build",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../ui/dist"
   },
@@ -17,12 +17,12 @@
       {
         "label": "main",
         "title": "QuotaTide",
-        "width": 420,
-        "height": 680,
-        "minWidth": 420,
-        "minHeight": 680,
-        "maxWidth": 420,
-        "maxHeight": 680,
+        "width": 360,
+        "height": 430,
+        "minWidth": 360,
+        "minHeight": 430,
+        "maxWidth": 360,
+        "maxHeight": 602,
         "center": true,
         "visible": false,
         "resizable": false,
@@ -30,7 +30,7 @@
         "minimizable": false,
         "decorations": false,
         "transparent": true,
-        "shadow": true,
+        "shadow": false,
         "skipTaskbar": true
       }
     ],

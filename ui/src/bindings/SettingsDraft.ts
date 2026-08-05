@@ -4,8 +4,10 @@ import type { InterfaceLocalePreference } from "./InterfaceLocalePreference";
 import type { QuotaPolicyDraft } from "./QuotaPolicyDraft";
 import type { SecretUpdate } from "./SecretUpdate";
 import type { SmtpSettingsDraft } from "./SmtpSettingsDraft";
+import type { StoryTheme } from "./StoryTheme";
+import type { TrayDisplayMode } from "./TrayDisplayMode";
 
 /**
  * Complete settings replacement submitted against one optimistic revision.
  */
-export type SettingsDraft = { expectedSettingsRevision: number, authPath: string | null, quotaPolicy: QuotaPolicyDraft, alertPreferences: Array<AlertPreferenceDraft>, autostartEnabled: boolean, autoUpdateEnabled: boolean, interfaceLocale: InterfaceLocalePreference, formatLocale: string, smtp: SmtpSettingsDraft, smtpPassword: SecretUpdate, };
+export type SettingsDraft = { expectedSettingsRevision: number, authPath: string | null, quotaPolicy: QuotaPolicyDraft, alertPreferences: Array<AlertPreferenceDraft>, autostartEnabled: boolean, autoUpdateEnabled: boolean, trayDisplayMode: TrayDisplayMode, storyTheme: StoryTheme, interfaceLocale: InterfaceLocalePreference, formatLocale: string, smtp: SmtpSettingsDraft, smtpPassword: SecretUpdate, };

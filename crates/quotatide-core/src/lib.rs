@@ -19,7 +19,8 @@ pub use account_settings::{
     PublicAccountSettings, PublicError, PublicErrorCode, PublicQuotaPolicy, PublicSettings,
     PublicSmtpRecipient, PublicSmtpSettings, QuotaPolicyDraft, SafeErrorContext, SecretUpdate,
     SettingsDraft, SettingsManager, SettingsStoreError, SmtpCredentialStatus, SmtpRecipientDraft,
-    SmtpSettingsDraft, SmtpTlsMode, UsageCommitDisposition, ValidatedAccountCandidate,
+    SmtpSettingsDraft, SmtpTlsMode, StoryTheme, TrayDisplayMode, UsageCommitDisposition,
+    ValidatedAccountCandidate,
 };
 pub use alerts::{
     AlertTarget, DeliverySweep, DeliveryWorker, NotificationPermissionStatus, PublicAlertEvent,
@@ -27,10 +28,11 @@ pub use alerts::{
 };
 pub use email::{EmailDeliveryWorker, MailTransport, SafeMail, SmtpConnection, TestEmailError};
 pub use live_quota::{
-    Application, Clock, CurrentUsageAuth, DashboardChanged, LedgerDayStatus, PublicLedgerDay,
-    PublicLiveQuota, PublicLiveQuotaState, QuotaUnits, RefreshAccountBinding, RefreshCoordinator,
-    RefreshCoordinatorError, RefreshOutcome, RefreshReceipt, RefreshTrigger, SettingsChanged,
-    SourceStatus, UsageAuthReadFailure, UsageRefreshAttempt, UsageRefreshSource, UsageSourceError,
+    Application, Clock, CurrentUsageAuth, DashboardChanged, LedgerDayStatus, PublicBurnProjection,
+    PublicLedgerDay, PublicLiveQuota, PublicLiveQuotaState, PublicResetCredit, PublicResetCredits,
+    QuotaPressure, QuotaUnits, RefreshAccountBinding, RefreshCoordinator, RefreshCoordinatorError,
+    RefreshOutcome, RefreshReceipt, RefreshTrigger, SettingsChanged, SourceStatus,
+    UsageAuthReadFailure, UsageRefreshAttempt, UsageRefreshSource, UsageSourceError,
     UsageSourceErrorCode, WeeklyUsageObservation,
 };
 pub use quota_ledger::{

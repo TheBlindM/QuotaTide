@@ -8,15 +8,16 @@ mod platform_notifications;
 mod privacy;
 pub mod reset_radar;
 mod smtp;
+mod tray_meter;
 mod updater;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use auth_file::AuthFileReader;
 use background_lifecycle::{AUTOSTART_ARGUMENT, LaunchMode, notify_secondary, start_primary};
-use codex_usage::{CodexUsageClient, ConfiguredCodexUsageSource};
+use codex_usage::{CodexUsageClient, ConfiguredCodexUsageSource, fetch_configured_reset_credits};
 use credential_vault::SystemCredentialVault;
 use platform_notifications::{PlatformNotificationError, PlatformNotifier};
 use privacy::{SafeLogFields, SafeLogLevel, safe_log};
@@ -25,9 +26,10 @@ use quotatide_core::{
     AtomicSettingsManager, AutostartControl, BuildInfo, Clock, DashboardChanged, DeliveryWorker,
     EmailDeliveryWorker, InterfaceLocalePreference, NotificationPermissionStatus,
     PhysicalRect as CoreRect, PhysicalSize as CoreSize, PublicAlertInbox, PublicError,
-    PublicErrorCode, PublicLiveQuotaState, PublicSettings, RefreshCoordinator, RefreshTrigger,
-    SafeNotification, SettingsChanged, SettingsDraft, SettingsManager, SettingsStoreError,
-    ShellEffect, ShellEvent, SystemNotifier, TestEmailError, TrayShell, place_tray_window,
+    PublicErrorCode, PublicLiveQuotaState, PublicResetCredits, PublicSettings, RefreshCoordinator,
+    RefreshTrigger, SafeNotification, SettingsChanged, SettingsDraft, SettingsManager,
+    SettingsStoreError, ShellEffect, ShellEvent, SystemNotifier, TestEmailError, TrayDisplayMode,
+    TrayShell, place_tray_window,
 };
 use reset_radar::ResetRadarClient;
 use smtp::LettreMailTransport;
@@ -36,19 +38,31 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::utils::WindowEffect;
 use tauri::utils::config::WindowEffectsConfig;
 use tauri::{
-    App, AppHandle, Emitter, Manager, PhysicalPosition, Rect, RunEvent, WebviewWindow, WindowEvent,
+    App, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Rect, RunEvent, WebviewWindow,
+    WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 use tokio::sync::Notify;
+use tray_meter::{
+    TRAY_METER_FRAME_COUNT, TRAY_METER_ICON_SIZE, render_weekly_meter_frame_rgba,
+    render_weekly_meter_rgba,
+};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const MAIN_TRAY_ID: &str = "main";
 const WINDOW_GAP: f64 = 8.0;
+const WINDOW_CORNER_RADIUS: f64 = 20.0;
+const COMPACT_WINDOW_HEIGHT: f64 = 430.0;
+const EXPANDED_WINDOW_HEIGHT: f64 = 602.0;
+const ONE_HOUR_MILLISECONDS: u32 = 60 * 60 * 1_000;
+const TRAY_METER_ANIMATION_INTERVAL_MILLISECONDS: u64 = 180;
 const DASHBOARD_CHANGED_EVENT: &str = "quotatide://dashboard-changed";
 const SETTINGS_CHANGED_EVENT: &str = "quotatide://settings-changed";
 const NOTIFICATION_OPENED_EVENT: &str = "quotatide://notification-opened";
 const ALERTS_CHANGED_EVENT: &str = "quotatide://alerts-changed";
 static NOTIFICATION_ACTIVATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static TRAY_WEEKLY_USED_MICROPOINTS: AtomicU32 = AtomicU32::new(u32::MAX);
+static TRAY_METER_ANIMATION_STARTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -619,6 +633,38 @@ fn hide_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects AppHandle command arguments by value.
+fn set_main_window_expanded(app: AppHandle, expanded: bool) -> Result<(), String> {
+    let window = main_window(&app)?;
+    let height = if expanded {
+        EXPANDED_WINDOW_HEIGHT
+    } else {
+        COMPACT_WINDOW_HEIGHT
+    };
+    window
+        .set_size(LogicalSize::new(360.0, height))
+        .map_err(platform_error)?;
+    position_main_window(&app)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri injects command dependencies by value.
+async fn pick_auth_file(app: AppHandle) -> Result<Option<String>, PublicError> {
+    let _ = dispatch_shell_event(&app, ShellEvent::ModalActivityOpened, None);
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .add_filter("Codex auth.json", &["json"])
+            .set_file_name("auth.json")
+            .pick_file()
+            .map(|path| path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|_| storage_public_error());
+    let _ = dispatch_shell_event(&app, ShellEvent::ModalActivityClosed, None);
+    result
+}
+
+#[tauri::command]
 async fn request_manual_refresh(
     application: tauri::State<'_, LiveApplication>,
 ) -> Result<u64, PublicError> {
@@ -662,6 +708,15 @@ async fn get_live_quota(
 }
 
 #[tauri::command]
+async fn get_reset_credits(
+    store: tauri::State<'_, AccountSettingsStore>,
+) -> Result<PublicResetCredits, PublicError> {
+    fetch_configured_reset_credits(&store, SystemClock.now_unix_ms())
+        .await
+        .map_err(|_| storage_public_error())
+}
+
+#[tauri::command]
 async fn get_alerts(
     store: tauri::State<'_, AccountSettingsStore>,
 ) -> Result<PublicAlertInbox, PublicError> {
@@ -669,6 +724,41 @@ async fn get_alerts(
         .public_alerts(12)
         .await
         .map_err(|_| storage_public_error())
+}
+
+#[tauri::command]
+async fn dismiss_alert(
+    app: AppHandle,
+    store: tauri::State<'_, AccountSettingsStore>,
+    event_id: u64,
+) -> Result<PublicAlertInbox, PublicError> {
+    store
+        .dismiss_alert(event_id, SystemClock.now_unix_ms())
+        .await
+        .map_err(|_| storage_public_error())?;
+    let alerts = store
+        .public_alerts(12)
+        .await
+        .map_err(|_| storage_public_error())?;
+    let _ = app.emit(ALERTS_CHANGED_EVENT, ());
+    Ok(alerts)
+}
+
+#[tauri::command]
+async fn dismiss_all_alerts(
+    app: AppHandle,
+    store: tauri::State<'_, AccountSettingsStore>,
+) -> Result<PublicAlertInbox, PublicError> {
+    store
+        .dismiss_all_alerts(SystemClock.now_unix_ms())
+        .await
+        .map_err(|_| storage_public_error())?;
+    let alerts = store
+        .public_alerts(12)
+        .await
+        .map_err(|_| storage_public_error())?;
+    let _ = app.emit(ALERTS_CHANGED_EVENT, ());
+    Ok(alerts)
 }
 
 #[tauri::command]
@@ -770,6 +860,11 @@ async fn save_settings(
         },
     );
     let _ = setup_tray(&app, saved.interface_locale, &saved.format_locale);
+    spawn_tray_quota_refresh(
+        app.clone(),
+        application.inner().clone(),
+        store.inner().clone(),
+    );
     delivery_worker.wake();
     update_runtime.wake();
     if refresh_selected_account {
@@ -991,17 +1086,7 @@ fn setup_tray(
     let tray = app
         .tray_by_id(MAIN_TRAY_ID)
         .ok_or_else(|| tauri::Error::AssetNotFound("main tray icon".to_owned()))?;
-    let chinese = match preference {
-        InterfaceLocalePreference::ZhCn => true,
-        InterfaceLocalePreference::En => false,
-        InterfaceLocalePreference::System => {
-            let locale = format_locale.replace('_', "-").to_ascii_lowercase();
-            locale == "zh"
-                || locale.starts_with("zh-cn")
-                || locale.starts_with("zh-sg")
-                || locale.starts_with("zh-hans")
-        }
-    };
+    let chinese = uses_chinese_interface(preference, format_locale);
     let (open_label, refresh_label, exit_label) = if chinese {
         ("打开 QuotaTide", "立即刷新", "退出")
     } else {
@@ -1016,6 +1101,392 @@ fn setup_tray(
     tray.set_show_menu_on_left_click(false)
 }
 
+fn uses_chinese_interface(preference: InterfaceLocalePreference, format_locale: &str) -> bool {
+    match preference {
+        InterfaceLocalePreference::ZhCn => true,
+        InterfaceLocalePreference::En => false,
+        InterfaceLocalePreference::System => {
+            let locale = format_locale.replace('_', "-").to_ascii_lowercase();
+            locale == "zh"
+                || locale.starts_with("zh-cn")
+                || locale.starts_with("zh-sg")
+                || locale.starts_with("zh-hans")
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TrayQuotaCopy {
+    title: Option<String>,
+    tooltip: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TrayQuotaRate {
+    percent_per_hour: f64,
+    hours_remaining: f64,
+}
+
+fn average_quota_rate(
+    used_micropoints: Option<u32>,
+    remaining_micropoints: Option<u32>,
+    window_start_seconds: Option<i64>,
+    captured_at_unix_ms: Option<i64>,
+) -> Option<TrayQuotaRate> {
+    let used = used_micropoints?;
+    let remaining = remaining_micropoints?;
+    let window_start_milliseconds = window_start_seconds?.checked_mul(1_000)?;
+    let elapsed_milliseconds = captured_at_unix_ms?.checked_sub(window_start_milliseconds)?;
+
+    if elapsed_milliseconds < i64::from(ONE_HOUR_MILLISECONDS) {
+        return None;
+    }
+
+    let elapsed_milliseconds = u32::try_from(elapsed_milliseconds).ok()?;
+    let elapsed_hours = f64::from(elapsed_milliseconds) / f64::from(ONE_HOUR_MILLISECONDS);
+    let used_percent = f64::from(used) / 1_000_000.0;
+    let percent_per_hour = used_percent / elapsed_hours;
+    if !percent_per_hour.is_finite() || percent_per_hour <= 0.0 {
+        return None;
+    }
+
+    let remaining_percent = f64::from(remaining) / 1_000_000.0;
+    let hours_remaining = remaining_percent / percent_per_hour;
+    if !hours_remaining.is_finite() {
+        return None;
+    }
+
+    Some(TrayQuotaRate {
+        percent_per_hour,
+        hours_remaining,
+    })
+}
+
+fn tray_rate_label(rate: TrayQuotaRate) -> String {
+    if rate.percent_per_hour < 0.05 {
+        "<0.1%/h".to_owned()
+    } else {
+        format!("{:.1}%/h", rate.percent_per_hour)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TrayQuotaInput {
+    used_micropoints: Option<u32>,
+    remaining_micropoints: Option<u32>,
+    today_used_percent: Option<u32>,
+    today_available_micropoints: Option<u32>,
+    rate: Option<TrayQuotaRate>,
+    display_mode: TrayDisplayMode,
+    resets_at_unix_s: Option<i64>,
+    now_unix_ms: i64,
+    supports_title: bool,
+    chinese: bool,
+}
+
+fn tray_quota_copy(input: TrayQuotaInput) -> TrayQuotaCopy {
+    let TrayQuotaInput {
+        used_micropoints,
+        remaining_micropoints,
+        today_used_percent,
+        today_available_micropoints,
+        rate,
+        display_mode,
+        resets_at_unix_s,
+        now_unix_ms,
+        supports_title,
+        chinese,
+    } = input;
+    let Some(used) = used_micropoints.map(rounded_percent) else {
+        return TrayQuotaCopy {
+            title: None,
+            tooltip: if chinese {
+                "QuotaTide · 等待额度同步".to_owned()
+            } else {
+                "QuotaTide · Waiting for quota sync".to_owned()
+            },
+        };
+    };
+    let title = supports_title
+        .then(|| match display_mode {
+            TrayDisplayMode::Wave => None,
+            TrayDisplayMode::WaveWeeklyRemaining => remaining_micropoints
+                .map(rounded_percent)
+                .map(|remaining| format!("W {remaining}%")),
+            TrayDisplayMode::WaveResetCountdown => resets_at_unix_s
+                .and_then(|reset| reset.checked_mul(1_000))
+                .map(|reset| tray_reset_countdown(reset.saturating_sub(now_unix_ms)))
+                .map(|countdown| format!("R {countdown}")),
+        })
+        .flatten();
+    let mut tooltip_parts = vec![
+        "QuotaTide".to_owned(),
+        if chinese {
+            format!("本周已用 {used}%")
+        } else {
+            format!("{used}% weekly used")
+        },
+    ];
+    if let Some(remaining) = remaining_micropoints.map(rounded_percent) {
+        tooltip_parts.push(if chinese {
+            format!("周剩余 {remaining}%")
+        } else {
+            format!("{remaining}% weekly remaining")
+        });
+    }
+    if let Some(today) = today_used_percent {
+        tooltip_parts.push(if chinese {
+            format!("今日已用 {today}%")
+        } else {
+            format!("{today}% daily used")
+        });
+    }
+    if let Some(today) = today_available_micropoints {
+        let today = rounded_percent(today);
+        tooltip_parts.push(if chinese {
+            format!("今日可用 {today}%")
+        } else {
+            format!("{today}% today")
+        });
+    }
+    if let Some(rate) = rate {
+        let rate_label = tray_rate_label(rate);
+        tooltip_parts.push(if chinese {
+            format!("平均 {rate_label}")
+        } else {
+            format!("{rate_label} average")
+        });
+        let hours_remaining = rate.hours_remaining.ceil();
+        tooltip_parts.push(if chinese {
+            format!("按当前速度约 {hours_remaining:.0} 小时可用")
+        } else {
+            format!("about {hours_remaining:.0} hours left at this rate")
+        });
+    }
+
+    TrayQuotaCopy {
+        title,
+        tooltip: tooltip_parts.join(" · "),
+    }
+}
+
+fn tray_reset_countdown(remaining_ms: i64) -> String {
+    let remaining_minutes = remaining_ms.max(0).saturating_add(59_999) / 60_000;
+    if remaining_minutes >= 48 * 60 {
+        format!("{}d", remaining_minutes / (24 * 60))
+    } else if remaining_minutes >= 60 {
+        format!("{}h", remaining_minutes / 60)
+    } else {
+        format!("{remaining_minutes}m")
+    }
+}
+
+fn percent_of_daily_limit(used_micropoints: Option<i64>, limit_micropoints: u32) -> Option<u32> {
+    let used = u64::try_from(used_micropoints?).ok()?;
+    let limit = u64::from(limit_micropoints);
+    if limit == 0 {
+        return None;
+    }
+    let rounded = used
+        .checked_mul(100)?
+        .checked_add(limit / 2)?
+        .checked_div(limit)?;
+    u32::try_from(rounded).ok()
+}
+
+const fn rounded_percent(micropoints: u32) -> u32 {
+    micropoints.saturating_add(500_000) / 1_000_000
+}
+
+fn apply_tray_quota(
+    app: &AppHandle,
+    state: &PublicLiveQuotaState,
+    chinese: bool,
+    display_mode: TrayDisplayMode,
+) -> tauri::Result<()> {
+    let quota = state.quota.as_ref();
+    let today = quota.and_then(|value| value.ledger_days.iter().find(|day| day.is_today));
+    let today_used_percent =
+        today.and_then(|day| percent_of_daily_limit(day.used_micropoints, day.limit_micropoints));
+    let rate = quota.and_then(|value| {
+        average_quota_rate(
+            value.used_micropoints,
+            value.remaining_micropoints,
+            value.window_starts_at_unix_s,
+            value.captured_at_unix_ms,
+        )
+    });
+    let copy = tray_quota_copy(TrayQuotaInput {
+        used_micropoints: quota.and_then(|value| value.used_micropoints),
+        remaining_micropoints: quota.and_then(|value| value.remaining_micropoints),
+        today_used_percent,
+        today_available_micropoints: quota.and_then(|value| value.today_available_micropoints),
+        rate,
+        display_mode,
+        resets_at_unix_s: quota.and_then(|value| value.resets_at_unix_s),
+        now_unix_ms: SystemClock.now_unix_ms(),
+        supports_title: !cfg!(target_os = "windows"),
+        chinese,
+    });
+    let tray = app
+        .tray_by_id(MAIN_TRAY_ID)
+        .ok_or_else(|| tauri::Error::AssetNotFound("main tray icon".to_owned()))?;
+    if let Some(weekly_used) = quota.and_then(|value| value.used_micropoints) {
+        TRAY_WEEKLY_USED_MICROPOINTS.store(weekly_used, Ordering::Relaxed);
+        let icon = tauri::image::Image::new_owned(
+            render_weekly_meter_rgba(weekly_used),
+            TRAY_METER_ICON_SIZE,
+            TRAY_METER_ICON_SIZE,
+        );
+        tray.set_icon_with_as_template(Some(icon), cfg!(target_os = "macos"))?;
+    }
+    tray.set_title(copy.title.as_deref())?;
+    tray.set_tooltip(Some(copy.tooltip.as_str()))
+}
+
+fn spawn_tray_meter_animation(app: AppHandle) {
+    if !tray_meter_animation_allowed(system_reduces_motion()) {
+        return;
+    }
+    if TRAY_METER_ANIMATION_STARTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let mut frame = 0_u8;
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(
+            TRAY_METER_ANIMATION_INTERVAL_MILLISECONDS,
+        ));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let weekly_used = TRAY_WEEKLY_USED_MICROPOINTS.load(Ordering::Relaxed);
+            if weekly_used == u32::MAX {
+                continue;
+            }
+            let Some(tray) = app.tray_by_id(MAIN_TRAY_ID) else {
+                break;
+            };
+            frame = (frame + 1) % TRAY_METER_FRAME_COUNT;
+            let icon = tauri::image::Image::new_owned(
+                render_weekly_meter_frame_rgba(weekly_used, frame),
+                TRAY_METER_ICON_SIZE,
+                TRAY_METER_ICON_SIZE,
+            );
+            let _ = tray.set_icon_with_as_template(Some(icon), cfg!(target_os = "macos"));
+        }
+    });
+}
+
+const fn tray_meter_animation_allowed(reduces_motion: bool) -> bool {
+    !reduces_motion
+}
+
+#[cfg(target_os = "macos")]
+fn system_reduces_motion() -> bool {
+    std::process::Command::new("/usr/bin/defaults")
+        .args(["read", "com.apple.universalAccess", "reduceMotion"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "1")
+}
+
+#[cfg(target_os = "windows")]
+fn system_reduces_motion() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+    };
+
+    let mut animations_enabled = 1_i32;
+    // SAFETY: `animations_enabled` is a valid writable BOOL for the duration
+    // of this synchronous SPI query, and the action requires no other input.
+    let succeeded = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            std::ptr::from_mut(&mut animations_enabled).cast(),
+            0,
+        )
+    } != 0;
+    succeeded && animations_enabled == 0
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const fn system_reduces_motion() -> bool {
+    false
+}
+
+async fn refresh_tray_quota(
+    app: &AppHandle,
+    application: &LiveApplication,
+    store: &AccountSettingsStore,
+) {
+    let Ok(state) = application.live_quota(SystemClock.now_unix_ms()).await else {
+        return;
+    };
+    let (chinese, display_mode) = store
+        .public_atomic_settings()
+        .await
+        .map(|settings| {
+            (
+                uses_chinese_interface(settings.interface_locale, &settings.format_locale),
+                settings.tray_display_mode,
+            )
+        })
+        .unwrap_or((false, TrayDisplayMode::Wave));
+    if apply_tray_quota(app, &state, chinese, display_mode).is_err() {
+        safe_log(
+            SafeLogLevel::Warning,
+            "tray",
+            "update_quota_copy",
+            SafeLogFields::default(),
+        );
+    }
+}
+
+fn spawn_tray_quota_refresh(
+    app: AppHandle,
+    application: LiveApplication,
+    store: AccountSettingsStore,
+) {
+    tauri::async_runtime::spawn(async move {
+        refresh_tray_quota(&app, &application, &store).await;
+    });
+}
+
+fn window_effects_config(effect: WindowEffect) -> WindowEffectsConfig {
+    WindowEffectsConfig {
+        effects: vec![effect],
+        radius: cfg!(target_os = "macos").then_some(WINDOW_CORNER_RADIUS),
+        ..WindowEffectsConfig::default()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_windows_rounded_corners(window: &WebviewWindow) -> bool {
+    use std::ffi::c_void;
+    use std::mem::size_of_val;
+    use windows_sys::Win32::Graphics::Dwm::{
+        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+    };
+
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    let preference = DWMWCP_ROUND;
+    // SAFETY: `hwnd` belongs to this live Tauri window and the attribute payload
+    // points to a correctly-sized DWM_WINDOW_CORNER_PREFERENCE value.
+    let result = unsafe {
+        DwmSetWindowAttribute(
+            hwnd.0,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            (&preference as *const _) as *const c_void,
+            size_of_val(&preference) as u32,
+        )
+    };
+    result >= 0
+}
+
 fn apply_platform_material(window: &WebviewWindow) -> bool {
     #[cfg(target_os = "macos")]
     let effects = [WindowEffect::Popover, WindowEffect::HudWindow];
@@ -1024,14 +1495,18 @@ fn apply_platform_material(window: &WebviewWindow) -> bool {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let effects: [WindowEffect; 0] = [];
 
+    #[cfg(target_os = "windows")]
+    if !apply_windows_rounded_corners(window) {
+        safe_log(
+            SafeLogLevel::Info,
+            "window",
+            "windows_rounded_corner_fallback",
+            SafeLogFields::default(),
+        );
+    }
+
     for effect in effects {
-        if window
-            .set_effects(WindowEffectsConfig {
-                effects: vec![effect],
-                ..WindowEffectsConfig::default()
-            })
-            .is_ok()
-        {
+        if window.set_effects(window_effects_config(effect)).is_ok() {
             return true;
         }
     }
@@ -1084,12 +1559,15 @@ fn spawn_refresh_scheduler(application: LiveApplication, refresh_on_startup: boo
 fn spawn_dashboard_event_bridge(
     app: AppHandle,
     application: LiveApplication,
+    store: AccountSettingsStore,
     delivery_worker: DeliveryWorkerLifecycle,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut changes = application.subscribe_dashboard_changes();
+        refresh_tray_quota(&app, &application, &store).await;
         while changes.changed().await.is_ok() {
             let change: DashboardChanged = *changes.borrow_and_update();
+            refresh_tray_quota(&app, &application, &store).await;
             let _ = app.emit(DASHBOARD_CHANGED_EVENT, change);
             delivery_worker.wake();
         }
@@ -1278,8 +1756,10 @@ fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     spawn_dashboard_event_bridge(
         app.handle().clone(),
         application.clone(),
+        store.clone(),
         delivery_worker.clone(),
     );
+    spawn_tray_meter_animation(app.handle().clone());
     tauri::async_runtime::spawn(updater::run_scheduler(
         app.handle().clone(),
         update_runtime,
@@ -1442,13 +1922,18 @@ pub fn run() {
             export_diagnostics,
             clear_all_local_data,
             hide_main_window,
+            set_main_window_expanded,
+            pick_auth_file,
             request_manual_refresh,
             set_accessible_surface,
             begin_modal_activity,
             end_modal_activity,
             get_settings,
             get_live_quota,
+            get_reset_credits,
             get_alerts,
+            dismiss_alert,
+            dismiss_all_alerts,
             request_system_notification_permission,
             save_settings,
             send_test_email,
@@ -1653,14 +2138,15 @@ mod tests {
 
     use quotatide_core::{
         AccountApplication, AccountSettingsStore, NotificationPermissionStatus, SettingsManager,
-        ShellEvent,
+        ShellEvent, TrayDisplayMode,
     };
     use tempfile::tempdir;
 
     use super::{
         AuthFileReader, DeliveryWorkerLifecycle, PublicStartupState, SharedNotificationPermission,
-        configure_selected_auth, get_build_info, menu_event_for_id,
-        should_request_notification_permission,
+        TrayQuotaInput, average_quota_rate, configure_selected_auth, get_build_info,
+        menu_event_for_id, percent_of_daily_limit, should_request_notification_permission,
+        tray_meter_animation_allowed, tray_quota_copy,
     };
     use crate::background_lifecycle::{AUTOSTART_ARGUMENT, LaunchMode};
 
@@ -1671,6 +2157,153 @@ mod tests {
         assert_eq!(info.product_name, "QuotaTide");
         assert_eq!(info.identifier, "dev.theblind.quotatide");
         assert_eq!(info.stage, "skeleton");
+    }
+
+    #[test]
+    fn native_glass_uses_the_same_corner_radius_as_the_web_surface() {
+        let config = super::window_effects_config(tauri::utils::WindowEffect::Popover);
+
+        assert_eq!(config.effects, vec![tauri::utils::WindowEffect::Popover]);
+        #[cfg(target_os = "macos")]
+        assert_eq!(config.radius, Some(super::WINDOW_CORNER_RADIUS));
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(config.radius, None);
+    }
+
+    #[test]
+    fn reduced_motion_keeps_the_native_tray_meter_static() {
+        assert!(!tray_meter_animation_allowed(true));
+        assert!(tray_meter_animation_allowed(false));
+    }
+
+    #[test]
+    fn tray_copy_exposes_compact_weekly_quota_and_a_richer_tooltip() {
+        let rate = average_quota_rate(
+            Some(57_000_000),
+            Some(43_000_000),
+            Some(1_000_000),
+            Some((1_000_000 + 50 * 60 * 60) * 1_000),
+        )
+        .expect("fifty-hour average");
+        let chinese = tray_quota_copy(TrayQuotaInput {
+            used_micropoints: Some(56_600_000),
+            remaining_micropoints: Some(43_400_000),
+            today_used_percent: Some(68),
+            today_available_micropoints: Some(10_600_000),
+            rate: Some(rate),
+            display_mode: TrayDisplayMode::WaveWeeklyRemaining,
+            resets_at_unix_s: Some(1_785_500_000),
+            now_unix_ms: 1_785_000_000_000,
+            supports_title: true,
+            chinese: true,
+        });
+        assert_eq!(chinese.title.as_deref(), Some("W 43%"));
+        assert_eq!(
+            chinese.tooltip,
+            "QuotaTide · 本周已用 57% · 周剩余 43% · 今日已用 68% · 今日可用 11% · 平均 1.1%/h · 按当前速度约 38 小时可用"
+        );
+
+        let english = tray_quota_copy(TrayQuotaInput {
+            used_micropoints: Some(91_500_000),
+            remaining_micropoints: Some(8_500_000),
+            today_used_percent: Some(100),
+            today_available_micropoints: Some(0),
+            rate: None,
+            display_mode: TrayDisplayMode::WaveResetCountdown,
+            resets_at_unix_s: Some(1_785_500_000),
+            now_unix_ms: 1_785_492_800_000,
+            supports_title: true,
+            chinese: false,
+        });
+        assert_eq!(english.title.as_deref(), Some("R 2h"));
+        assert_eq!(
+            english.tooltip,
+            "QuotaTide · 92% weekly used · 9% weekly remaining · 100% daily used · 0% today"
+        );
+
+        let over = tray_quota_copy(TrayQuotaInput {
+            used_micropoints: Some(92_000_000),
+            remaining_micropoints: Some(8_000_000),
+            today_used_percent: Some(108),
+            today_available_micropoints: Some(0),
+            rate: None,
+            display_mode: TrayDisplayMode::Wave,
+            resets_at_unix_s: Some(1_785_500_000),
+            now_unix_ms: 1_785_000_000_000,
+            supports_title: true,
+            chinese: true,
+        });
+        assert_eq!(over.title, None);
+
+        let windows_fallback = tray_quota_copy(TrayQuotaInput {
+            used_micropoints: Some(57_000_000),
+            remaining_micropoints: Some(43_000_000),
+            today_used_percent: Some(68),
+            today_available_micropoints: Some(10_600_000),
+            rate: None,
+            display_mode: TrayDisplayMode::WaveWeeklyRemaining,
+            resets_at_unix_s: Some(1_785_500_000),
+            now_unix_ms: 1_785_000_000_000,
+            supports_title: false,
+            chinese: true,
+        });
+        assert_eq!(windows_fallback.title, None);
+    }
+
+    #[test]
+    fn tray_rate_uses_window_hours_and_suppresses_sub_hour_false_precision() {
+        let rate = average_quota_rate(
+            Some(57_000_000),
+            Some(43_000_000),
+            Some(1_000_000),
+            Some((1_000_000 + 50 * 60 * 60) * 1_000),
+        )
+        .expect("fifty-hour average");
+        assert!((rate.percent_per_hour - 1.14).abs() < f64::EPSILON);
+        assert!((rate.hours_remaining - 37.719_298_245_614_034).abs() < 1e-12);
+
+        assert_eq!(
+            average_quota_rate(
+                Some(1_000_000),
+                Some(99_000_000),
+                Some(1_000_000),
+                Some((1_000_000 + 59 * 60) * 1_000),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn tray_copy_avoids_showing_a_fake_percentage_before_first_sync() {
+        let copy = tray_quota_copy(TrayQuotaInput {
+            used_micropoints: None,
+            remaining_micropoints: None,
+            today_used_percent: None,
+            today_available_micropoints: None,
+            rate: None,
+            display_mode: TrayDisplayMode::Wave,
+            resets_at_unix_s: None,
+            now_unix_ms: 0,
+            supports_title: true,
+            chinese: true,
+        });
+
+        assert_eq!(copy.title, None);
+        assert_eq!(copy.tooltip, "QuotaTide · 等待额度同步");
+    }
+
+    #[test]
+    fn daily_tray_usage_tracks_the_dynamic_limit_and_keeps_overage_visible() {
+        assert_eq!(
+            percent_of_daily_limit(Some(11_400_000), 16_800_000),
+            Some(68)
+        );
+        assert_eq!(
+            percent_of_daily_limit(Some(18_200_000), 16_800_000),
+            Some(108)
+        );
+        assert_eq!(percent_of_daily_limit(Some(0), 0), None);
+        assert_eq!(percent_of_daily_limit(None, 16_800_000), None);
     }
 
     #[test]

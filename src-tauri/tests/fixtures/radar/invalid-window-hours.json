@@ -1,13 +1,23 @@
 {
-  "generated_at": "2026-07-28T08:00:00Z",
-  "watch": {
-    "tweet_id": "2081899343091843463",
-    "tweet_url": "https://x.com/thsottiaux/status/2081899343091843463",
-    "text": "Possible additional reset in the next 24 hours",
-    "observed_at": "2026-07-28T07:00:00Z",
-    "expires_at": "2026-07-29T07:00:00Z",
-    "reset_chance_24h": 75,
-    "window_hours": 0
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-28T08:00:00Z",
+  "lastSuccessfulCheckAt": "2026-07-28T08:00:00Z",
+  "monitor": {
+    "status": "ok",
+    "errorCode": null
   },
-  "events": []
+  "events": [
+    {
+      "kind": "reset_scheduled",
+      "announcedAt": "2026-07-28T07:00:00Z",
+      "effectiveAt": "2026-07-28T06:00:00Z",
+      "source": {
+        "handle": "thsottiaux",
+        "postId": "2081899343091843463",
+        "url": "https://x.com/thsottiaux/status/2081899343091843463"
+      },
+      "confidence": 0.75,
+      "rationale": "Invalid effective time."
+    }
+  ]
 }

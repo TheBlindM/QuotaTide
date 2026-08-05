@@ -5,16 +5,20 @@ import type { BuildInfo } from "./bindings/BuildInfo";
 import type { PublicAlertInbox } from "./bindings/PublicAlertInbox";
 import type { PublicLedgerDay } from "./bindings/PublicLedgerDay";
 import type { PublicLiveQuota } from "./bindings/PublicLiveQuota";
+import type { PublicResetCredits } from "./bindings/PublicResetCredits";
 import type { PublicResetRadar } from "./bindings/PublicResetRadar";
 import type { PublicSettings } from "./bindings/PublicSettings";
 import type { UsageSourceErrorCode } from "./bindings/UsageSourceErrorCode";
 import {
   getSettings,
   onSettingsChanged,
+  pickAuthFile,
   saveSettings,
   sendTestEmail,
 } from "./api/account-settings";
 import {
+  dismissAlert,
+  dismissAllAlerts,
   getAlerts,
   onAlertsChanged,
   onNotificationOpened,
@@ -23,10 +27,12 @@ import {
 } from "./api/alerts";
 import { loadBuildInfo } from "./api/build-info";
 import { getLiveQuota, onDashboardChanged } from "./api/live-quota";
+import { getResetCredits } from "./api/reset-credits";
 import {
   hideMainWindow,
   requestManualRefresh,
   setAccessibleSurface,
+  setMainWindowExpanded,
 } from "./api/tray-shell";
 import {
   getUpdateState,
@@ -69,6 +75,7 @@ type ViewState =
       alerts: PublicAlertInbox;
       focusRequest: NotificationActivation | null;
       liveQuota: PublicLiveQuota | null;
+      resetCredits: PublicResetCredits | null;
       radar: PublicResetRadar;
       refreshing: boolean;
       recoveredFromBackup: boolean;
@@ -130,11 +137,21 @@ export function App() {
   const { text } = useI18n();
   const searchParams = new URLSearchParams(window.location.search);
   const isPreview = searchParams.has("preview");
+  const isRisingWaterPrototype =
+    isPreview && searchParams.get("prototype") === "rising-water";
   const nowUnixMs = useMinuteClock(!isPreview);
   const lastPolicyDateRef = useRef<string | null>(null);
   const previewRecovery = searchParams.get("recovery");
   const previewAlerts = searchParams.get("alerts") === "denied";
-  const preview = createPreviewScenario(searchParams);
+  // PROTOTYPE — loops through the complete tide progression without touching
+  // real account data. Remove after the rising-water motion is approved.
+  const previewSearchParams = new URLSearchParams(searchParams);
+  if (isRisingWaterPrototype && !previewSearchParams.has("quota")) {
+    previewSearchParams.set("quota", "5");
+  }
+  const preview = createPreviewScenario(previewSearchParams);
+  const prototypeStartingUsedPercent =
+    (preview.liveQuota?.usedMicropoints ?? 5_000_000) / 1_000_000;
   const [state, setState] = useState<ViewState>(
     isPreview
       ? previewRecovery !== null
@@ -181,6 +198,11 @@ export function App() {
             ]),
             autostartEnabled: false,
             autoUpdateEnabled: true,
+            trayDisplayMode: "wave",
+            storyTheme:
+              searchParams.get("story") === "last_supply_line"
+                ? "last_supply_line"
+                : "rising_water",
             interfaceLocale: preview.interfaceLocale,
             formatLocale: preview.formatLocale,
             smtp: {
@@ -215,6 +237,16 @@ export function App() {
             ? { target: "today", activationId: 1 }
             : null,
           liveQuota: preview.liveQuota,
+          resetCredits: {
+            availableCount: 2,
+            credits: [
+              {
+                status: "available",
+                expiresAtUnixS: Math.floor(PREVIEW_NOW_UNIX_MS / 1_000) + 3 * 86_400,
+              },
+            ],
+            checkedAtUnixMs: PREVIEW_NOW_UNIX_MS,
+          },
           radar: preview.radar,
           refreshing: false,
           recoveredFromBackup: false,
@@ -239,6 +271,43 @@ export function App() {
     state.kind === "ready" && state.refreshing;
 
   useEffect(() => {
+    if (!isRisingWaterPrototype || previewRecovery !== null) {
+      return undefined;
+    }
+
+    let usedPercent = prototypeStartingUsedPercent;
+    let peakHoldTicks = 0;
+    const intervalId = window.setInterval(() => {
+      if (usedPercent >= 98) {
+        peakHoldTicks += 1;
+        if (peakHoldTicks < 9) {
+          return;
+        }
+        usedPercent = 5;
+        peakHoldTicks = 0;
+      } else {
+        usedPercent += 1;
+      }
+
+      const stepParams = new URLSearchParams(previewSearchParams);
+      stepParams.set("quota", String(usedPercent));
+      const liveQuota = createPreviewScenario(stepParams).liveQuota;
+      setState((current) =>
+        current.kind === "ready"
+          ? { ...current, liveQuota }
+          : current,
+      );
+    }, 180);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [
+    isRisingWaterPrototype,
+    previewRecovery,
+    prototypeStartingUsedPercent,
+  ]);
+
+  useEffect(() => {
     if (isPreview) {
       return;
     }
@@ -253,11 +322,12 @@ export function App() {
           }
           return;
         }
-        const [info, settings, liveQuotaState, alerts, updateState] =
+        const [info, settings, liveQuotaState, resetCredits, alerts, updateState] =
           await Promise.all([
           loadBuildInfo(),
           getSettings(),
           getLiveQuota(),
+          getResetCredits().catch(() => null),
           getAlerts(),
             getUpdateState(),
           ]);
@@ -269,6 +339,7 @@ export function App() {
             alerts,
             focusRequest: null,
             liveQuota: liveQuotaState.quota,
+            resetCredits,
             radar: liveQuotaState.radar,
             refreshing: liveQuotaState.refreshing,
             recoveredFromBackup: startup.recoveredFromBackup,
@@ -298,8 +369,13 @@ export function App() {
     let unlistenAlerts: (() => void) | undefined;
     let unlistenUpdate: (() => void) | undefined;
     const reloadDashboard = () => {
-      void Promise.all([getSettings(), getLiveQuota(), getAlerts()])
-        .then(([settings, liveQuotaState, alerts]) => {
+      void Promise.all([
+        getSettings(),
+        getLiveQuota(),
+        getResetCredits().catch(() => null),
+        getAlerts(),
+      ])
+        .then(([settings, liveQuotaState, resetCredits, alerts]) => {
           if (active) {
             setState((current) =>
               current.kind === "ready"
@@ -308,6 +384,7 @@ export function App() {
                     settings,
                     alerts,
                     liveQuota: liveQuotaState.quota,
+                    resetCredits,
                     radar: liveQuotaState.radar,
                     refreshing: liveQuotaState.refreshing,
                   }
@@ -459,9 +536,12 @@ export function App() {
     const surface = params.get("surface");
     const fontScale = params.get("fontScale");
 
+    document.documentElement.dataset.runtime = isPreview
+      ? "preview"
+      : "desktop";
     if (theme === "light" || theme === "dark") {
       document.documentElement.dataset.theme = theme;
-    } else {
+    } else if (isPreview) {
       delete document.documentElement.dataset.theme;
     }
 
@@ -477,7 +557,7 @@ export function App() {
     } else {
       delete document.documentElement.dataset.fontScale;
     }
-  }, []);
+  }, [isPreview]);
 
   useEffect(() => {
     document.body.dataset.platformFallbackMessage = translate(
@@ -569,6 +649,7 @@ export function App() {
           state.settings.formatLocale,
         ),
         state.settings.formatLocale,
+        state.resetCredits,
       )
     : projectLiveFixture(
         state.settings,
@@ -580,7 +661,33 @@ export function App() {
           navigator.languages[0] || navigator.language || "en",
         ),
         navigator.languages[0] || navigator.language || "en",
+        state.resetCredits,
       );
+
+  const replaceAlerts = (alerts: PublicAlertInbox) => {
+    setState((current) =>
+      current.kind === "ready" ? { ...current, alerts } : current,
+    );
+  };
+  const handleDismissAlert = async (eventId: number) => {
+    if (isPreview) {
+      replaceAlerts({
+        ...state.alerts,
+        events: state.alerts.events.filter(
+          (event) => event.eventId !== eventId,
+        ),
+      });
+      return;
+    }
+    replaceAlerts(await dismissAlert(eventId));
+  };
+  const handleDismissAllAlerts = async () => {
+    if (isPreview) {
+      replaceAlerts({ ...state.alerts, events: [] });
+      return;
+    }
+    replaceAlerts(await dismissAllAlerts());
+  };
 
   return (
     <I18nProvider preference={state.settings.interfaceLocale}>
@@ -592,6 +699,9 @@ export function App() {
       externalRefreshing={state.refreshing}
       recoveredFromBackup={state.recoveredFromBackup}
       updateState={state.updateState}
+      onWeekDetailChange={
+        isPreview ? undefined : setMainWindowExpanded
+      }
       onHide={() => {
         void hideMainWindow().catch(() => undefined);
       }}
@@ -611,7 +721,10 @@ export function App() {
           return cooldownMs;
         });
       }}
+      onDismissAlert={handleDismissAlert}
+      onDismissAllAlerts={handleDismissAllAlerts}
       onRequestNotificationPermission={requestSystemNotificationPermission}
+      onPickAuthFile={isPreview ? undefined : pickAuthFile}
       onSendTestEmail={sendTestEmail}
       onExportDiagnostics={exportDiagnostics}
       onClearLocalData={clearAllLocalData}
@@ -799,12 +912,16 @@ export function projectLiveFixture(
   radar: PublicResetRadar = emptyRadarState,
   interfaceLocale: InterfaceLocale = "zh-CN",
   formatLocale = "zh-CN",
+  resetCredits: PublicResetCredits | null = null,
 ): LedgerFixture {
   if (!account.configured) {
     return {
       tone: "unconfigured",
+      pressure: "safe",
       weeklyUsed: "",
       weeklyRemaining: "",
+      burnProjection: null,
+      resetCredits: null,
       todayAvailable: "",
       todayLimit: "",
       sourceHealth:
@@ -821,8 +938,11 @@ export function projectLiveFixture(
   if (live === null) {
     return {
       tone: "stale",
+      pressure: "safe",
       weeklyUsed: "",
       weeklyRemaining: "",
+      burnProjection: null,
+      resetCredits: null,
       sourceHealth: copy(
         interfaceLocale,
         "Codex 额度 · 等待首次同步",
@@ -874,10 +994,62 @@ export function projectLiveFixture(
         : today?.status === "warning"
           ? "warning"
           : "fresh";
+  const nearestCreditExpiry = resetCredits?.credits
+    .filter(
+      (credit) =>
+        credit.status === "available" &&
+        credit.expiresAtUnixS !== null &&
+        credit.expiresAtUnixS * 1_000 > now,
+    )
+    .map((credit) => credit.expiresAtUnixS as number)
+    .sort((left, right) => left - right)[0];
+  const resetCreditsFixture =
+    resetCredits === null
+      ? null
+      : {
+          availableLabel: copy(
+            interfaceLocale,
+            `可用 ${String(resetCredits.availableCount)} 次`,
+            `${String(resetCredits.availableCount)} available`,
+          ),
+          expiryLabel:
+            nearestCreditExpiry === undefined
+              ? copy(interfaceLocale, "暂无到期信息", "No expiry information")
+              : copy(
+                  interfaceLocale,
+                  `最近一枚 ${String(Math.max(1, Math.ceil((nearestCreditExpiry * 1_000 - now) / 86_400_000)))} 天后到期`,
+                  `Next credit expires in ${String(Math.max(1, Math.ceil((nearestCreditExpiry * 1_000 - now) / 86_400_000)))} days`,
+                ),
+        };
+  const burnProjection =
+    live.burnProjection === null
+      ? null
+      : {
+          rate: `${formatMicropoints(live.burnProjection.rateMicropointsPerHour, formatLocale)}/${copy(interfaceLocale, "小时", "h")}`,
+          projectedUsage: formatMicropoints(
+            live.burnProjection.projectedUsedAtResetMicropoints,
+            formatLocale,
+          ),
+          conclusion:
+            live.burnProjection.exhaustsAtUnixS === null
+              ? copy(
+                  interfaceLocale,
+                  `按当前速度，到重置预计使用 ${formatMicropoints(live.burnProjection.projectedUsedAtResetMicropoints, formatLocale)}`,
+                  `At this rate, projected to use ${formatMicropoints(live.burnProjection.projectedUsedAtResetMicropoints, formatLocale)} by reset`,
+                )
+              : copy(
+                  interfaceLocale,
+                  `预计 ${formatDateTime(live.burnProjection.exhaustsAtUnixS * 1_000, formatLocale)} 触顶，早于重置`,
+                  `Expected to hit the limit ${formatDateTime(live.burnProjection.exhaustsAtUnixS * 1_000, formatLocale)}, before reset`,
+                ),
+        };
   return {
     tone,
+    pressure: live.pressure,
     weeklyUsed: used,
     weeklyRemaining: remaining,
+    burnProjection,
+    resetCredits: resetCreditsFixture,
     sourceHealth,
     windowLabel:
       days.length === 0
@@ -935,7 +1107,10 @@ export function projectRadarFixture(
     radar.latestAnnouncement === null
       ? null
       : {
-          text: radar.latestAnnouncement.text,
+          text: localizeRadarText(
+            radar.latestAnnouncement.text,
+            interfaceLocale,
+          ),
           sourceUrl: radar.latestAnnouncement.sourceUrl,
           announcedAt: formatDateTime(
             radar.latestAnnouncement.announcedAtUnixMs,
@@ -961,16 +1136,20 @@ export function projectRadarFixture(
     return {
       kind: "active" as const,
       chance: prediction.displayChance,
-      explanation: prediction.explanation,
+      explanation: localizeRadarText(prediction.explanation, interfaceLocale),
       sourceUrl: prediction.sourceUrl,
-      timing: `${copy(interfaceLocale, "有效至", "Valid until")} ${formatDateTime(prediction.expiresAtUnixMs, formatLocale)}`,
+      timing: `${copy(interfaceLocale, "预计", "Expected")} ${formatDateTime(prediction.expiresAtUnixMs, formatLocale)}`,
       health,
       announcement,
     };
   }
   const message =
       radar.sourceStatus === "fresh"
-      ? copy(interfaceLocale, "当前无有效预测", "No active prediction")
+      ? copy(
+          interfaceLocale,
+          "当前无计划重置信号",
+          "No scheduled reset signal",
+        )
       : radar.lastAttemptAtUnixMs === null
         ? copy(
             interfaceLocale,
@@ -979,14 +1158,35 @@ export function projectRadarFixture(
           )
         : copy(
             interfaceLocale,
-            "预测数据暂不可用",
-            "Prediction data is unavailable",
+            "重置数据暂不可用",
+            "Reset data is unavailable",
           );
   return {
     kind: "empty" as const,
     message,
     announcement,
   };
+}
+
+function localizeRadarText(
+  value: string,
+  interfaceLocale: InterfaceLocale,
+): string {
+  if (value === "Explicit Codex quota reset schedule.") {
+    return copy(
+      interfaceLocale,
+      "公开信号明确提到 Codex 额度重置计划。",
+      value,
+    );
+  }
+  if (value === "Explicit Codex quota reset announcement.") {
+    return copy(
+      interfaceLocale,
+      "公开信号明确宣布 Codex 额度已经重置。",
+      value,
+    );
+  }
+  return value;
 }
 
 function projectLedgerDay(

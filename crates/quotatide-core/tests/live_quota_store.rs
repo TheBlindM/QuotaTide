@@ -1,6 +1,6 @@
 use quotatide_core::{
-    AccountSettingsStore, QuotaUnits, RefreshAccountBinding, SourceStatus, UsageCommitDisposition,
-    UsageSourceErrorCode, WeeklyUsageObservation,
+    AccountSettingsStore, QuotaPressure, QuotaUnits, RefreshAccountBinding, SourceStatus,
+    UsageCommitDisposition, UsageSourceErrorCode, WeeklyUsageObservation,
 };
 use tempfile::tempdir;
 
@@ -31,6 +31,151 @@ fn observation_with_reset(
 
 fn binding(revision: u32, path: &str, account_id: &str) -> RefreshAccountBinding {
     RefreshAccountBinding::selected(revision, path.into()).with_account_id(account_id.to_owned())
+}
+
+#[tokio::test]
+async fn public_quota_projects_exhaustion_from_recent_same_window_samples() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let reset = timestamp_ms("2026-08-10T00:00:00Z") / 1_000;
+    let selected = binding(1, "/chosen/auth.json", "account-one");
+
+    for (captured, used) in [
+        ("2026-08-07T00:00:00Z", 70_000_000),
+        ("2026-08-07T03:00:00Z", 73_000_000),
+        ("2026-08-07T06:00:00Z", 76_000_000),
+    ] {
+        store
+            .record_usage_success(
+                &selected,
+                observation_with_reset(timestamp_ms(captured), used, reset),
+            )
+            .await
+            .expect("record projection sample");
+    }
+
+    let quota = store
+        .public_live_quota(timestamp_ms("2026-08-07T06:00:00Z"))
+        .await
+        .expect("public quota")
+        .expect("configured quota");
+    let projection = quota.burn_projection.expect("stable projection");
+
+    assert_eq!(projection.sample_count, 3);
+    assert_eq!(projection.observed_span_seconds, 6 * 60 * 60);
+    assert_eq!(projection.rate_micropoints_per_hour, 1_000_000);
+    assert_eq!(projection.projected_used_at_reset_micropoints, 142_000_000);
+    assert_eq!(
+        projection.exhausts_at_unix_s,
+        Some(timestamp_ms("2026-08-08T06:00:00Z") / 1_000)
+    );
+    assert_eq!(quota.pressure, QuotaPressure::Critical);
+}
+
+#[tokio::test]
+async fn public_quota_withholds_unstable_projection_but_keeps_current_pressure() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let reset = timestamp_ms("2026-08-10T00:00:00Z") / 1_000;
+    let selected = binding(1, "/chosen/auth.json", "account-one");
+
+    for (captured, used) in [
+        ("2026-08-07T00:00:00Z", 64_000_000),
+        ("2026-08-07T01:00:00Z", 65_000_000),
+    ] {
+        store
+            .record_usage_success(
+                &selected,
+                observation_with_reset(timestamp_ms(captured), used, reset),
+            )
+            .await
+            .expect("record incomplete projection sample");
+    }
+
+    let quota = store
+        .public_live_quota(timestamp_ms("2026-08-07T01:00:00Z"))
+        .await
+        .expect("public quota")
+        .expect("configured quota");
+
+    assert_eq!(quota.burn_projection, None);
+    assert_eq!(quota.pressure, QuotaPressure::Warning);
+}
+
+#[tokio::test]
+async fn public_quota_keeps_idle_intervals_in_the_robust_burn_estimate() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    let reset = timestamp_ms("2026-08-10T00:00:00Z") / 1_000;
+    let selected = binding(1, "/chosen/auth.json", "account-one");
+
+    for (captured, used) in [
+        ("2026-08-07T00:00:00Z", 70_000_000),
+        ("2026-08-07T02:00:00Z", 70_000_000),
+        ("2026-08-07T04:00:00Z", 70_000_000),
+        ("2026-08-07T06:00:00Z", 70_000_000),
+        ("2026-08-07T07:00:00Z", 75_000_000),
+    ] {
+        store
+            .record_usage_success(
+                &selected,
+                observation_with_reset(timestamp_ms(captured), used, reset),
+            )
+            .await
+            .expect("record burst sample");
+    }
+
+    let quota = store
+        .public_live_quota(timestamp_ms("2026-08-07T07:00:00Z"))
+        .await
+        .expect("public quota")
+        .expect("configured quota");
+
+    assert_eq!(quota.burn_projection, None);
+    assert_eq!(quota.pressure, QuotaPressure::Warning);
+}
+
+#[tokio::test]
+async fn configured_account_match_rejects_a_new_identity_at_the_same_path() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+
+    assert!(
+        store
+            .binding_matches_configured_account(&binding(1, "/chosen/auth.json", "account-one",))
+            .await
+            .expect("same account")
+    );
+    assert!(
+        !store
+            .binding_matches_configured_account(&binding(1, "/chosen/auth.json", "account-two",))
+            .await
+            .expect("switched account")
+    );
 }
 
 #[tokio::test]
@@ -505,6 +650,7 @@ async fn confirmed_same_day_reset_retains_pre_and_post_reset_usage() {
         .await
         .expect("projection")
         .expect("quota");
+    assert_eq!(quota.pressure, QuotaPressure::Recovery);
     assert_eq!(quota.ledger_days.len(), 7);
     assert_eq!(
         quota
@@ -514,6 +660,13 @@ async fn confirmed_same_day_reset_retains_pre_and_post_reset_usage() {
             .sum::<i64>(),
         7_000_000
     );
+
+    let settled = store
+        .public_live_quota(1_700_612_200_001)
+        .await
+        .expect("settled projection")
+        .expect("quota after recovery animation");
+    assert_eq!(settled.pressure, QuotaPressure::Safe);
 }
 
 #[tokio::test]

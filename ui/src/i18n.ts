@@ -116,15 +116,39 @@ export function formatResetTime(
   const relative =
     Math.abs(deltaMinutes) < 1
       ? translate(interfaceLocale, "time.resetSoon")
-      : new Intl.RelativeTimeFormat(formatLocale, {
-          numeric: "always",
-          style: "long",
-        }).format(deltaMinutes, "minute");
+      : deltaMinutes > 0
+        ? formatRemainingDuration(deltaMinutes, interfaceLocale, formatLocale)
+        : new Intl.RelativeTimeFormat(formatLocale, {
+            numeric: "always",
+            style: "long",
+          }).format(deltaMinutes, "minute");
   const accessible =
     interfaceLocale === "zh-CN"
       ? `距离重置：${relative}；重置时间：${absolute}`
       : `Time until reset: ${relative}; reset time: ${absolute}`;
   return { absolute, accessible, relative };
+}
+
+function formatRemainingDuration(
+  totalMinutes: number,
+  interfaceLocale: InterfaceLocale,
+  formatLocale: string,
+): string {
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const numberFormatter = new Intl.NumberFormat(formatLocale, {
+    maximumFractionDigits: 0,
+    useGrouping: false,
+  });
+  const { value, zhUnit, enUnit } =
+    days > 0
+      ? { value: days, zhUnit: "天", enUnit: "d" }
+      : hours > 0
+        ? { value: hours, zhUnit: "小时", enUnit: "h" }
+        : { value: totalMinutes, zhUnit: "分钟", enUnit: "m" };
+  const unit = interfaceLocale === "zh-CN" ? zhUnit : enUnit;
+  const duration = `${numberFormatter.format(value)}${unit}`;
+  return interfaceLocale === "zh-CN" ? `${duration}后` : `in ${duration}`;
 }
 
 export function pluralizedMinutes(

@@ -184,6 +184,52 @@ pub enum SourceStatus {
     Unavailable,
 }
 
+/// User-facing pressure state for the current weekly quota chamber.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub enum QuotaPressure {
+    Safe,
+    Warning,
+    Danger,
+    Critical,
+    Recovery,
+}
+
+/// Stable burn projection derived from recent observations in one quota window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct PublicBurnProjection {
+    pub sample_count: u32,
+    pub observed_span_seconds: u32,
+    pub rate_micropoints_per_hour: u32,
+    pub projected_used_at_reset_micropoints: u32,
+    #[ts(type = "number | null")]
+    pub exhausts_at_unix_s: Option<i64>,
+}
+
+/// One read-only earned reset credit. Opaque identifiers are intentionally not exposed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct PublicResetCredit {
+    pub status: String,
+    #[ts(type = "number | null")]
+    pub expires_at_unix_s: Option<i64>,
+}
+
+/// Secret-free, independently fetched reset-credit snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub struct PublicResetCredits {
+    pub available_count: u32,
+    pub credits: Vec<PublicResetCredit>,
+    #[ts(type = "number")]
+    pub checked_at_unix_ms: i64,
+}
+
 /// Secret-free live quota projection returned by the application query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -191,6 +237,8 @@ pub enum SourceStatus {
 pub struct PublicLiveQuota {
     pub used_micropoints: Option<u32>,
     pub remaining_micropoints: Option<u32>,
+    pub pressure: QuotaPressure,
+    pub burn_projection: Option<PublicBurnProjection>,
     #[ts(type = "number | null")]
     pub captured_at_unix_ms: Option<i64>,
     #[ts(type = "number | null")]

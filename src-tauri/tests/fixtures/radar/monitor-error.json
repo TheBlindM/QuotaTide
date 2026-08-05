@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-28T01:47:11.732Z",
+  "lastSuccessfulCheckAt": "2026-07-28T00:47:11.732Z",
+  "monitor": {
+    "status": "error",
+    "errorCode": "upstream_unavailable"
+  },
+  "events": []
+}

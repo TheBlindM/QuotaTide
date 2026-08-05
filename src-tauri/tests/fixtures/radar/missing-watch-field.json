@@ -1,4 +1,10 @@
 {
-  "generated_at": "2026-07-30T01:50:11.274Z",
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-30T01:50:11.274Z",
+  "lastSuccessfulCheckAt": "2026-07-30T01:50:11.274Z",
+  "monitor": {
+    "status": "ok",
+    "errorCode": null
+  },
   "events": []
 }

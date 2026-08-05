@@ -2,9 +2,10 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use quotatide_core::{
-    AccountSettingsStore, DeliveryWorker, NotificationPermissionStatus, PublicDeliveryState,
-    QuotaUnits, RadarObservation, RadarSnapshot, RadarSourceErrorCode, RefreshAccountBinding,
-    SafeNotification, SystemNotifier, UsageSourceErrorCode, WeeklyUsageObservation,
+    AccountSettingsStore, AlertEventKind, DeliveryWorker, NotificationPermissionStatus,
+    PublicDeliveryState, QuotaUnits, RadarObservation, RadarSnapshot, RadarSourceErrorCode,
+    RefreshAccountBinding, SafeNotification, SystemNotifier, UsageSourceErrorCode,
+    WeeklyUsageObservation,
 };
 use tempfile::tempdir;
 use tokio::sync::Notify;
@@ -181,6 +182,157 @@ async fn seed_daily_warning(store: &AccountSettingsStore) {
             .await
             .expect("seed daily warning");
     }
+}
+
+#[tokio::test]
+async fn dismissing_an_in_app_alert_hides_it_without_deleting_delivery_facts() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    seed_daily_warning(&store).await;
+
+    let event_id = store.public_alerts(10).await.expect("public alerts").events[0].event_id;
+    let dismissed_at = timestamp_ms("2026-07-30T02:00:01Z");
+    assert!(
+        store
+            .dismiss_alert(event_id, dismissed_at)
+            .await
+            .expect("dismiss alert")
+    );
+    assert!(
+        !store
+            .dismiss_alert(event_id, dismissed_at + 1)
+            .await
+            .expect("deduplicate dismissal")
+    );
+    assert!(
+        store
+            .public_alerts(10)
+            .await
+            .expect("alerts after dismissal")
+            .events
+            .is_empty()
+    );
+
+    drop(store);
+    let connection =
+        tokio_rusqlite::rusqlite::Connection::open(&database).expect("inspect alert storage");
+    let event_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM alert_events", [], |row| row.get(0))
+        .expect("event count");
+    let delivery_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM alert_deliveries", [], |row| {
+            row.get(0)
+        })
+        .expect("delivery count");
+    assert_eq!(event_count, 1);
+    assert_eq!(delivery_count, 1);
+    drop(connection);
+
+    let reopened = AccountSettingsStore::open(&database)
+        .await
+        .expect("reopen store");
+    assert!(
+        reopened
+            .public_alerts(10)
+            .await
+            .expect("dismissal survives restart")
+            .events
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn clearing_the_in_app_inbox_does_not_hide_future_alerts() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
+        .await
+        .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    seed_daily_warning(&store).await;
+
+    assert_eq!(
+        store
+            .dismiss_all_alerts(timestamp_ms("2026-07-30T02:00:01Z"))
+            .await
+            .expect("clear inbox"),
+        1
+    );
+    assert!(
+        store
+            .public_alerts(10)
+            .await
+            .expect("cleared alerts")
+            .events
+            .is_empty()
+    );
+
+    store
+        .record_usage_success(
+            &binding(),
+            observation(timestamp_ms("2026-07-30T03:00:00Z"), 17_000_000),
+        )
+        .await
+        .expect("record later threshold");
+    let alerts = store
+        .public_alerts(10)
+        .await
+        .expect("future alert remains visible");
+    assert_eq!(alerts.events.len(), 1);
+    assert_eq!(alerts.events[0].event_kind, AlertEventKind::Daily100);
+}
+
+#[tokio::test]
+async fn a_version_twelve_store_gains_persistent_alert_dismissals_without_losing_events() {
+    let directory = tempdir().expect("temporary directory");
+    let database = directory.path().join("state.sqlite3");
+    let store = AccountSettingsStore::open(&database)
+        .await
+        .expect("open current store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+    seed_daily_warning(&store).await;
+    drop(store);
+
+    let connection =
+        tokio_rusqlite::rusqlite::Connection::open(&database).expect("downgrade test fixture");
+    connection
+        .execute_batch(
+            "DROP TABLE alert_inbox_dismissals;
+             ALTER TABLE app_settings DROP COLUMN story_theme;
+             ALTER TABLE app_settings DROP COLUMN tray_display_mode;
+             DELETE FROM schema_migrations WHERE version >= 13;
+             PRAGMA user_version = 12;",
+        )
+        .expect("construct version twelve fixture");
+    drop(connection);
+
+    let upgraded = AccountSettingsStore::open(&database)
+        .await
+        .expect("upgrade version twelve store");
+    let event_id = upgraded
+        .public_alerts(10)
+        .await
+        .expect("preserved alerts")
+        .events[0]
+        .event_id;
+    assert!(
+        upgraded
+            .dismiss_alert(event_id, timestamp_ms("2026-07-30T02:00:01Z"))
+            .await
+            .expect("dismiss after migration")
+    );
 }
 
 #[tokio::test]

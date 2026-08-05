@@ -56,10 +56,69 @@ describe("localized resources and formatters", () => {
       "Asia/Shanghai",
     );
 
-    expect(reset?.relative).toBe("in 3 minutes");
+    expect(reset?.relative).toBe("in 3m");
     expect(reset?.absolute).toContain("Jul 30, 2026");
     expect(reset?.accessible).toContain("reset time");
   });
+
+  it.each([
+    {
+      minutes: 4 * 24 * 60 + 19 * 60 + 21,
+      locale: "zh-CN",
+      formatLocale: "zh-CN",
+      expected: "4天后",
+    },
+    {
+      minutes: 19 * 60 + 21,
+      locale: "zh-CN",
+      formatLocale: "zh-CN",
+      expected: "19小时后",
+    },
+    {
+      minutes: 21,
+      locale: "zh-CN",
+      formatLocale: "zh-CN",
+      expected: "21分钟后",
+    },
+    {
+      minutes: 24 * 60,
+      locale: "zh-CN",
+      formatLocale: "zh-CN",
+      expected: "1天后",
+    },
+    {
+      minutes: 4 * 24 * 60 + 19 * 60 + 21,
+      locale: "en",
+      formatLocale: "en-US",
+      expected: "in 4d",
+    },
+    {
+      minutes: 24 * 60 - 1,
+      locale: "zh-CN",
+      formatLocale: "zh-CN",
+      expected: "23小时后",
+    },
+    {
+      minutes: 60 - 1,
+      locale: "zh-CN",
+      formatLocale: "zh-CN",
+      expected: "59分钟后",
+    },
+  ] as const)(
+    "formats $minutes remaining minutes as $expected",
+    ({ minutes, locale, formatLocale, expected }) => {
+      const now = Date.UTC(2026, 6, 30, 1, 58);
+      const reset = formatResetTime(
+        now + minutes * 60_000,
+        now,
+        locale,
+        formatLocale,
+        "Asia/Shanghai",
+      );
+
+      expect(reset?.relative).toBe(expected);
+    },
+  );
 
   it("keeps English plural and Chinese minute messages deterministic", () => {
     expect(pluralizedMinutes("en", 1)).toBe("in 1 minute");

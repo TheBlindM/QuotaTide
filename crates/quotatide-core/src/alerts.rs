@@ -258,7 +258,7 @@ fn render_notification(delivery: &ClaimedSystemDelivery) -> SafeNotification {
                 AlertEventKind::Daily100 => "今日使用已达到实际额度。",
                 AlertEventKind::WeeklyRemaining20 => "本周额度剩余已降至 20%。",
                 AlertEventKind::WeeklyRemaining10 => "本周额度剩余已降至 10%。",
-                AlertEventKind::RadarChance70 => "Reset Radar 的 24 小时重置概率已达到 70% 档位。",
+                AlertEventKind::RadarChance70 => "第三方重置预测信号的置信度已达到 70% 档位。",
                 AlertEventKind::QuotaResetConfirmed => "Codex 当前七日额度窗口已确认重置。",
                 AlertEventKind::SourceFailures3 => "额度来源已连续采集失败 3 次。",
             },
@@ -271,7 +271,7 @@ fn render_notification(delivery: &ClaimedSystemDelivery) -> SafeNotification {
                 AlertEventKind::WeeklyRemaining20 => "Weekly quota remaining has fallen to 20%.",
                 AlertEventKind::WeeklyRemaining10 => "Weekly quota remaining has fallen to 10%.",
                 AlertEventKind::RadarChance70 => {
-                    "Reset Radar's 24-hour reset chance has reached the 70% tier."
+                    "The third-party reset prediction signal's confidence has reached the 70% tier."
                 }
                 AlertEventKind::QuotaResetConfirmed => {
                     "The current Codex seven-day quota window has reset."

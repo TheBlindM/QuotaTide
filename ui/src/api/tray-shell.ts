@@ -4,6 +4,10 @@ export async function hideMainWindow(): Promise<void> {
   await invoke("hide_main_window");
 }
 
+export async function setMainWindowExpanded(expanded: boolean): Promise<void> {
+  await invoke("set_main_window_expanded", { expanded });
+}
+
 export async function requestManualRefresh(): Promise<number> {
   return await invoke<number>("request_manual_refresh");
 }

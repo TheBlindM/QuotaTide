@@ -10,7 +10,7 @@ use crate::SourceStatus;
 const SOURCE_ACCOUNT: &str = "thsottiaux";
 const MAX_TEXT_BYTES: usize = 4_096;
 
-/// Exact reset probability in one-hundredths of a percentage point.
+/// Storage-compatible third-party classifier confidence in basis points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RadarChance(u16);
 
@@ -32,7 +32,7 @@ impl RadarChance {
     }
 }
 
-/// Source-compatible probability bucket that avoids presenting false precision.
+/// Confidence bucket that avoids presenting false precision.
 #[must_use]
 pub fn radar_bucket_label(chance: RadarChance) -> &'static str {
     match chance.basis_points() {
@@ -61,7 +61,7 @@ pub enum RadarContractError {
     InvalidExplanation,
 }
 
-/// Strictly normalized current third-party reset prediction.
+/// Strictly normalized current third-party scheduled-reset signal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RadarObservation {
     source_id: String,

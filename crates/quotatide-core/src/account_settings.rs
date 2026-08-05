@@ -27,14 +27,14 @@ use crate::quota_ledger::{
     PolicyWindowFacts, QuotaPolicy, ThresholdTransition,
 };
 use crate::{
-    LedgerApplyKind, LedgerDayStatus, PublicLedgerDay, PublicLiveQuota, PublicRadarAnnouncement,
-    PublicRadarPrediction, PublicResetRadar, QuotaLedger, RadarChance, RadarCommitDisposition,
-    RadarSnapshot, RadarSourceError, RadarSourceErrorCode, RefreshAccountBinding, RefreshOutcome,
-    SourceStatus, UsageRefreshAttempt, UsageSourceErrorCode, WeeklyUsageObservation,
-    radar_bucket_label,
+    LedgerApplyKind, LedgerDayStatus, PublicBurnProjection, PublicLedgerDay, PublicLiveQuota,
+    PublicRadarAnnouncement, PublicRadarPrediction, PublicResetRadar, QuotaLedger, QuotaPressure,
+    RadarChance, RadarCommitDisposition, RadarSnapshot, RadarSourceError, RadarSourceErrorCode,
+    RefreshAccountBinding, RefreshOutcome, SourceStatus, UsageRefreshAttempt, UsageSourceErrorCode,
+    WeeklyUsageObservation, radar_bucket_label,
 };
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 15;
 const SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-settings-v1-account-path-stream";
 const LIVE_QUOTA_SCHEMA_CHECKSUM: &str = "quotatide-v2-live-quota-health";
 const QUOTA_LEDGER_SCHEMA_CHECKSUM: &str = "quotatide-v3-current-seven-day-ledger";
@@ -48,7 +48,16 @@ const SMTP_SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-v10-smtp-settings-recipie
 const INTERFACE_LOCALE_SCHEMA_CHECKSUM: &str =
     "quotatide-v11-interface-and-format-locale-preferences";
 const AUTO_UPDATE_SCHEMA_CHECKSUM: &str = "quotatide-v12-automatic-update-preference";
+const ALERT_INBOX_DISMISSALS_SCHEMA_CHECKSUM: &str =
+    "quotatide-v13-persistent-alert-inbox-dismissals";
+const TRAY_DISPLAY_MODE_SCHEMA_CHECKSUM: &str = "quotatide-v14-tray-display-mode";
+const STORY_THEME_SCHEMA_CHECKSUM: &str = "quotatide-v15-story-theme";
 const FRESH_FOR_MS: i64 = 90 * 60 * 1000;
+const BURN_PROJECTION_LOOKBACK_MS: i64 = 24 * 60 * 60 * 1000;
+const BURN_PROJECTION_MIN_SPAN_MS: i64 = 2 * 60 * 60 * 1000;
+const RESET_RECOVERY_FOR_MS: i64 = 2 * 60 * 60 * 1000;
+const ONE_HOUR_MS: i64 = 60 * 60 * 1000;
+const FULL_QUOTA_MICROPOINTS: u32 = 100_000_000;
 const SMTP_SLOT_A: &str = "slot-a";
 const SMTP_SLOT_B: &str = "slot-b";
 
@@ -312,6 +321,63 @@ impl InterfaceLocalePreference {
     }
 }
 
+/// Compact native tray information density.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub enum TrayDisplayMode {
+    #[default]
+    Wave,
+    WaveWeeklyRemaining,
+    WaveResetCountdown,
+}
+
+impl TrayDisplayMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Wave => "wave",
+            Self::WaveWeeklyRemaining => "wave_weekly_remaining",
+            Self::WaveResetCountdown => "wave_reset_countdown",
+        }
+    }
+
+    fn parse(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "wave" => Ok(Self::Wave),
+            "wave_weekly_remaining" => Ok(Self::WaveWeeklyRemaining),
+            "wave_reset_countdown" => Ok(Self::WaveResetCountdown),
+            _ => Err(rusqlite::Error::InvalidQuery),
+        }
+    }
+}
+
+/// Visual narrative used by the compact quota overview.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+pub enum StoryTheme {
+    #[default]
+    RisingWater,
+    LastSupplyLine,
+}
+
+impl StoryTheme {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::RisingWater => "rising_water",
+            Self::LastSupplyLine => "last_supply_line",
+        }
+    }
+
+    fn parse(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "rising_water" => Ok(Self::RisingWater),
+            "last_supply_line" => Ok(Self::LastSupplyLine),
+            _ => Err(rusqlite::Error::InvalidQuery),
+        }
+    }
+}
+
 /// Explicit SMTP password mutation. An empty string never means delete.
 #[derive(Clone, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -336,6 +402,8 @@ pub struct PublicSettings {
     pub alert_preferences: Vec<AlertPreference>,
     pub autostart_enabled: bool,
     pub auto_update_enabled: bool,
+    pub tray_display_mode: TrayDisplayMode,
+    pub story_theme: StoryTheme,
     pub interface_locale: InterfaceLocalePreference,
     pub format_locale: String,
     pub smtp: PublicSmtpSettings,
@@ -353,6 +421,10 @@ pub struct SettingsDraft {
     pub autostart_enabled: bool,
     #[serde(default = "default_auto_update_enabled")]
     pub auto_update_enabled: bool,
+    #[serde(default)]
+    pub tray_display_mode: TrayDisplayMode,
+    #[serde(default)]
+    pub story_theme: StoryTheme,
     #[serde(default)]
     pub interface_locale: InterfaceLocalePreference,
     #[serde(default = "default_format_locale")]
@@ -492,6 +564,8 @@ impl<V: AuthCandidateValidator, A: AutostartControl, C: CredentialVault>
             alert_preferences,
             autostart_enabled,
             auto_update_enabled,
+            tray_display_mode,
+            story_theme,
             interface_locale,
             format_locale,
             smtp,
@@ -616,6 +690,8 @@ impl<V: AuthCandidateValidator, A: AutostartControl, C: CredentialVault>
                 alert_preferences,
                 confirmed_autostart,
                 auto_update_enabled,
+                tray_display_mode,
+                story_theme,
                 interface_locale,
                 format_locale,
                 smtp,
@@ -1251,6 +1327,21 @@ fn initialize_database(
         migrate_auto_update_v12(database, now)?;
     } else {
         validate_migration(database, 12, AUTO_UPDATE_SCHEMA_CHECKSUM)?;
+    }
+    if current_version <= 12 {
+        migrate_alert_inbox_dismissals_v13(database, now)?;
+    } else {
+        validate_migration(database, 13, ALERT_INBOX_DISMISSALS_SCHEMA_CHECKSUM)?;
+    }
+    if current_version <= 13 {
+        migrate_tray_display_mode_v14(database, now)?;
+    } else {
+        validate_migration(database, 14, TRAY_DISPLAY_MODE_SCHEMA_CHECKSUM)?;
+    }
+    if current_version <= 14 {
+        migrate_story_theme_v15(database, now)?;
+    } else {
+        validate_migration(database, 15, STORY_THEME_SCHEMA_CHECKSUM)?;
     }
     validate_database_health(database)?;
     Ok(())
@@ -2058,6 +2149,85 @@ fn migrate_auto_update_v12(database: &mut rusqlite::Connection, now: i64) -> rus
     transaction.commit()
 }
 
+fn migrate_alert_inbox_dismissals_v13(
+    database: &mut rusqlite::Connection,
+    now: i64,
+) -> rusqlite::Result<()> {
+    let transaction =
+        database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE alert_inbox_dismissals (
+           alert_event_id INTEGER PRIMARY KEY REFERENCES alert_events(id),
+           dismissed_at_ms INTEGER NOT NULL
+         );
+         CREATE TRIGGER alert_inbox_dismissals_are_immutable_update
+           BEFORE UPDATE ON alert_inbox_dismissals BEGIN
+             SELECT RAISE(ABORT, 'alert inbox dismissals are immutable');
+           END;
+         CREATE TRIGGER alert_inbox_dismissals_are_immutable_delete
+           BEFORE DELETE ON alert_inbox_dismissals BEGIN
+             SELECT RAISE(ABORT, 'alert inbox dismissals are immutable');
+           END;",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations
+         (version, applied_at_ms, app_version, checksum)
+         VALUES (13, ?1, ?2, ?3)",
+        rusqlite::params![
+            now,
+            env!("CARGO_PKG_VERSION"),
+            ALERT_INBOX_DISMISSALS_SCHEMA_CHECKSUM
+        ],
+    )?;
+    transaction.pragma_update(None, "user_version", 13)?;
+    transaction.commit()
+}
+
+fn migrate_tray_display_mode_v14(
+    database: &mut rusqlite::Connection,
+    now: i64,
+) -> rusqlite::Result<()> {
+    let transaction =
+        database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE app_settings
+           ADD COLUMN tray_display_mode TEXT NOT NULL DEFAULT 'wave'
+             CHECK (tray_display_mode IN (
+               'wave', 'wave_weekly_remaining', 'wave_reset_countdown'
+             ));",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations
+         (version, applied_at_ms, app_version, checksum)
+         VALUES (14, ?1, ?2, ?3)",
+        rusqlite::params![
+            now,
+            env!("CARGO_PKG_VERSION"),
+            TRAY_DISPLAY_MODE_SCHEMA_CHECKSUM
+        ],
+    )?;
+    transaction.pragma_update(None, "user_version", 14)?;
+    transaction.commit()
+}
+
+fn migrate_story_theme_v15(database: &mut rusqlite::Connection, now: i64) -> rusqlite::Result<()> {
+    let transaction =
+        database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE app_settings
+           ADD COLUMN story_theme TEXT NOT NULL DEFAULT 'rising_water'
+             CHECK (story_theme IN ('rising_water', 'last_supply_line'));",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations
+         (version, applied_at_ms, app_version, checksum)
+         VALUES (15, ?1, ?2, ?3)",
+        rusqlite::params![now, env!("CARGO_PKG_VERSION"), STORY_THEME_SCHEMA_CHECKSUM],
+    )?;
+    transaction.pragma_update(None, "user_version", 15)?;
+    transaction.commit()
+}
+
 fn insert_default_policy_revision(
     transaction: &rusqlite::Transaction<'_>,
     now: i64,
@@ -2310,10 +2480,12 @@ fn load_public_atomic_settings(
         notification_permission_status,
         interface_locale,
         format_locale,
-    ): (i64, i64, String, String, String) = database.query_row(
+        tray_display_mode,
+        story_theme,
+    ): (i64, i64, String, String, String, String, String) = database.query_row(
         "SELECT autostart_enabled, auto_update_enabled,
                 notification_permission_status,
-                interface_locale, format_locale
+                interface_locale, format_locale, tray_display_mode, story_theme
          FROM app_settings WHERE singleton_id = 1",
         [],
         |row| {
@@ -2323,6 +2495,8 @@ fn load_public_atomic_settings(
                 row.get(2)?,
                 row.get(3)?,
                 row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
             ))
         },
     )?;
@@ -2407,6 +2581,8 @@ fn load_public_atomic_settings(
         alert_preferences,
         autostart_enabled: autostart_enabled != 0,
         auto_update_enabled: auto_update_enabled != 0,
+        tray_display_mode: TrayDisplayMode::parse(&tray_display_mode)?,
+        story_theme: StoryTheme::parse(&story_theme)?,
         interface_locale: InterfaceLocalePreference::parse(&interface_locale)?,
         format_locale,
         smtp: PublicSmtpSettings {
@@ -2730,6 +2906,8 @@ impl AccountSettingsStore {
         alert_preferences: Vec<AlertPreferenceDraft>,
         autostart_enabled: bool,
         auto_update_enabled: bool,
+        tray_display_mode: TrayDisplayMode,
+        story_theme: StoryTheme,
         interface_locale: InterfaceLocalePreference,
         format_locale: String,
         smtp: SmtpSettingsDraft,
@@ -2817,8 +2995,10 @@ impl AccountSettingsStore {
                          SET auth_path = ?1, configured_account_stream_id = ?2,
                              active_policy_revision_id = ?3, policy_timezone = ?4,
                              autostart_enabled = ?5, auto_update_enabled = ?6,
-                             interface_locale = ?7, format_locale = ?8,
-                             updated_at_ms = ?9
+                             tray_display_mode = ?7,
+                             story_theme = ?8,
+                             interface_locale = ?9, format_locale = ?10,
+                             updated_at_ms = ?11
                          WHERE singleton_id = 1",
                         rusqlite::params![
                             path,
@@ -2827,6 +3007,8 @@ impl AccountSettingsStore {
                             policy_timezone,
                             i64::from(autostart_enabled),
                             i64::from(auto_update_enabled),
+                            tray_display_mode.as_str(),
+                            story_theme.as_str(),
                             interface_locale.as_str(),
                             format_locale,
                             now
@@ -2837,14 +3019,18 @@ impl AccountSettingsStore {
                         "UPDATE app_settings
                          SET active_policy_revision_id = ?1, policy_timezone = ?2,
                              autostart_enabled = ?3, auto_update_enabled = ?4,
-                             interface_locale = ?5, format_locale = ?6,
-                             updated_at_ms = ?7
+                             tray_display_mode = ?5,
+                             story_theme = ?6,
+                             interface_locale = ?7, format_locale = ?8,
+                             updated_at_ms = ?9
                          WHERE singleton_id = 1",
                         rusqlite::params![
                             policy_revision_id,
                             policy_timezone,
                             i64::from(autostart_enabled),
                             i64::from(auto_update_enabled),
+                            tray_display_mode.as_str(),
+                            story_theme.as_str(),
                             interface_locale.as_str(),
                             format_locale,
                             now
@@ -3220,6 +3406,52 @@ impl AccountSettingsStore {
             .map_err(SettingsStoreError::database)
     }
 
+    /// Checks whether one fully resolved refresh binding still names the
+    /// configured account stream without exposing either raw identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the atomic settings snapshot cannot be read.
+    pub async fn binding_matches_configured_account(
+        &self,
+        binding: &RefreshAccountBinding,
+    ) -> Result<bool, SettingsStoreError> {
+        let binding = binding.clone();
+        self.connection
+            .call(move |database| {
+                let (salt, revision, configured_path, configured_account_key): (
+                    Vec<u8>,
+                    i64,
+                    Option<String>,
+                    Option<Vec<u8>>,
+                ) = database.query_row(
+                    "SELECT m.local_hash_salt, m.settings_revision, s.auth_path,
+                            a.account_key
+                     FROM app_meta m
+                     JOIN app_settings s ON s.singleton_id = m.singleton_id
+                     LEFT JOIN account_streams a
+                       ON a.id = s.configured_account_stream_id
+                     WHERE m.singleton_id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                let Some(candidate_account_id) = binding.canonical_account_id.as_deref() else {
+                    return Ok(false);
+                };
+                if revision != i64::from(binding.settings_revision)
+                    || configured_path.as_deref() != binding.canonical_path.to_str()
+                {
+                    return Ok(false);
+                }
+                let candidate_key = account_key(&salt, candidate_account_id);
+                Ok::<bool, rusqlite::Error>(
+                    configured_account_key.as_deref() == Some(candidate_key.as_slice()),
+                )
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+    }
+
     /// Commits both source results from one refresh flight in one transaction
     /// and publishes at most one dashboard revision.
     ///
@@ -3502,7 +3734,8 @@ impl AccountSettingsStore {
                     row.policy_timezone,
                     now_unix_ms,
                 )?;
-                build_public_live_quota(row, ledger_days, now_unix_ms)
+                let burn_samples = query_burn_projection_samples(&transaction, &row)?;
+                build_public_live_quota(row, ledger_days, &burn_samples, now_unix_ms)
                     .map(|quota| (revision, Some(quota)))
             })
             .await
@@ -3535,7 +3768,13 @@ impl AccountSettingsStore {
                         row.policy_timezone,
                         now_unix_ms,
                     )?;
-                    Some(build_public_live_quota(row, ledger_days, now_unix_ms)?)
+                    let burn_samples = query_burn_projection_samples(&transaction, &row)?;
+                    Some(build_public_live_quota(
+                        row,
+                        ledger_days,
+                        &burn_samples,
+                        now_unix_ms,
+                    )?)
                 } else {
                     None
                 };
@@ -3566,6 +3805,10 @@ impl AccountSettingsStore {
                      FROM alert_events e
                      LEFT JOIN alert_deliveries d
                        ON d.alert_event_id = e.id AND d.channel = 'system'
+                     WHERE NOT EXISTS (
+                       SELECT 1 FROM alert_inbox_dismissals dismissal
+                       WHERE dismissal.alert_event_id = e.id
+                     )
                      ORDER BY e.created_at_ms DESC, e.id DESC LIMIT ?1",
                 )?;
                 let events = statement
@@ -3603,6 +3846,63 @@ impl AccountSettingsStore {
                     )?,
                     events,
                 })
+            })
+    }
+
+    /// Removes one reminder from the application inbox without deleting its
+    /// immutable event or delivery history.
+    ///
+    /// Returns whether a new dismissal was persisted.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the dismissal cannot be committed.
+    pub async fn dismiss_alert(
+        &self,
+        event_id: u64,
+        dismissed_at_unix_ms: i64,
+    ) -> Result<bool, SettingsStoreError> {
+        let event_id =
+            i64::try_from(event_id).map_err(|_| SettingsStoreError::InvalidNotificationState)?;
+        self.connection
+            .call(move |database| {
+                database.execute(
+                    "INSERT OR IGNORE INTO alert_inbox_dismissals
+                     (alert_event_id, dismissed_at_ms)
+                     SELECT id, ?2 FROM alert_events WHERE id = ?1",
+                    rusqlite::params![event_id, dismissed_at_unix_ms],
+                )
+            })
+            .await
+            .map(|changed| changed > 0)
+            .map_err(SettingsStoreError::database)
+    }
+
+    /// Removes every currently persisted reminder from the application inbox
+    /// without suppressing alerts created afterward.
+    ///
+    /// Returns the number of newly dismissed reminders.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the dismissals cannot be committed.
+    pub async fn dismiss_all_alerts(
+        &self,
+        dismissed_at_unix_ms: i64,
+    ) -> Result<u64, SettingsStoreError> {
+        self.connection
+            .call(move |database| {
+                database.execute(
+                    "INSERT OR IGNORE INTO alert_inbox_dismissals
+                     (alert_event_id, dismissed_at_ms)
+                     SELECT id, ?1 FROM alert_events",
+                    [dismissed_at_unix_ms],
+                )
+            })
+            .await
+            .map_err(SettingsStoreError::database)
+            .and_then(|changed| {
+                u64::try_from(changed).map_err(|_| SettingsStoreError::InvalidNotificationState)
             })
     }
 
@@ -5484,6 +5784,9 @@ fn persist_success_projection(
 
 struct LiveQuotaRow {
     stream_id: i64,
+    quota_epoch_id: Option<i64>,
+    quota_epoch_sequence: Option<i64>,
+    quota_epoch_first_observed_at_unix_ms: Option<i64>,
     policy_timezone: chrono_tz::Tz,
     used_micropoints: Option<i64>,
     captured_at_unix_ms: Option<i64>,
@@ -5503,8 +5806,9 @@ fn query_live_quota_row(
 
     transaction
         .query_row(
-            "SELECT s.configured_account_stream_id, s.policy_timezone,
-                    o.used_micropoints, o.captured_at_ms,
+            "SELECT s.configured_account_stream_id, o.quota_epoch_id,
+                    e.sequence, e.first_observed_at_ms,
+                    s.policy_timezone, o.used_micropoints, o.captured_at_ms,
                     COALESCE(e.scheduled_reset_at_s, o.resets_at_s),
                     o.plan_type, o.allowed, h.last_attempt_at_ms,
                     h.last_success_at_ms, h.consecutive_failures, h.public_error
@@ -5527,20 +5831,174 @@ fn query_live_quota_row(
             |row| {
                 Ok(LiveQuotaRow {
                     stream_id: row.get(0)?,
-                    policy_timezone: parse_policy_timezone(&row.get::<_, String>(1)?)?,
-                    used_micropoints: row.get(2)?,
-                    captured_at_unix_ms: row.get(3)?,
-                    resets_at_unix_s: row.get(4)?,
-                    plan_type: row.get(5)?,
-                    allowed: row.get(6)?,
-                    last_attempt_at_unix_ms: row.get(7)?,
-                    last_success_at_unix_ms: row.get(8)?,
-                    consecutive_failures: row.get(9)?,
-                    error_key: row.get(10)?,
+                    quota_epoch_id: row.get(1)?,
+                    quota_epoch_sequence: row.get(2)?,
+                    quota_epoch_first_observed_at_unix_ms: row.get(3)?,
+                    policy_timezone: parse_policy_timezone(&row.get::<_, String>(4)?)?,
+                    used_micropoints: row.get(5)?,
+                    captured_at_unix_ms: row.get(6)?,
+                    resets_at_unix_s: row.get(7)?,
+                    plan_type: row.get(8)?,
+                    allowed: row.get(9)?,
+                    last_attempt_at_unix_ms: row.get(10)?,
+                    last_success_at_unix_ms: row.get(11)?,
+                    consecutive_failures: row.get(12)?,
+                    error_key: row.get(13)?,
                 })
             },
         )
         .optional()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BurnProjectionSample {
+    captured_at_unix_ms: i64,
+    used_micropoints: i64,
+}
+
+fn query_burn_projection_samples(
+    transaction: &rusqlite::Transaction<'_>,
+    row: &LiveQuotaRow,
+) -> rusqlite::Result<Vec<BurnProjectionSample>> {
+    let (Some(quota_epoch_id), Some(latest_capture)) =
+        (row.quota_epoch_id, row.captured_at_unix_ms)
+    else {
+        return Ok(Vec::new());
+    };
+    let earliest_capture = latest_capture.saturating_sub(BURN_PROJECTION_LOOKBACK_MS);
+    let mut statement = transaction.prepare(
+        "SELECT captured_at_ms, used_micropoints
+         FROM usage_observations
+         WHERE account_stream_id = ?1
+           AND quota_epoch_id = ?2
+           AND ledger_eligible = 1
+           AND captured_at_ms BETWEEN ?3 AND ?4
+         ORDER BY captured_at_ms, id",
+    )?;
+    statement
+        .query_map(
+            rusqlite::params![
+                row.stream_id,
+                quota_epoch_id,
+                earliest_capture,
+                latest_capture,
+            ],
+            |sample| {
+                Ok(BurnProjectionSample {
+                    captured_at_unix_ms: sample.get(0)?,
+                    used_micropoints: sample.get(1)?,
+                })
+            },
+        )?
+        .collect()
+}
+
+fn burn_projection(
+    samples: &[BurnProjectionSample],
+    resets_at_unix_s: Option<i64>,
+) -> Option<PublicBurnProjection> {
+    let first = samples.first()?;
+    let last = samples.last()?;
+    let sample_count = u32::try_from(samples.len()).ok()?;
+    let span_ms = last
+        .captured_at_unix_ms
+        .checked_sub(first.captured_at_unix_ms)?;
+    if sample_count < 3 || span_ms < BURN_PROJECTION_MIN_SPAN_MS {
+        return None;
+    }
+
+    let mut slopes = Vec::new();
+    for (index, earlier) in samples.iter().enumerate() {
+        for later in &samples[index + 1..] {
+            let elapsed_ms = later
+                .captured_at_unix_ms
+                .saturating_sub(earlier.captured_at_unix_ms);
+            let used_delta = later
+                .used_micropoints
+                .saturating_sub(earlier.used_micropoints);
+            if elapsed_ms <= 0 || used_delta < 0 {
+                continue;
+            }
+            let rate = used_delta
+                .saturating_mul(ONE_HOUR_MS)
+                .checked_div(elapsed_ms)?;
+            slopes.push(rate);
+        }
+    }
+    slopes.sort_unstable();
+    let midpoint = slopes.len() / 2;
+    let rate = if slopes.len() % 2 == 0 {
+        slopes
+            .get(midpoint.saturating_sub(1))?
+            .saturating_add(*slopes.get(midpoint)?)
+            / 2
+    } else {
+        *slopes.get(midpoint)?
+    };
+    if rate <= 0 {
+        return None;
+    }
+    let rate = u32::try_from(rate).ok()?;
+    let reset_ms = resets_at_unix_s?.checked_mul(1_000)?;
+    let remaining_ms = reset_ms.saturating_sub(last.captured_at_unix_ms);
+    if remaining_ms <= 0 {
+        return None;
+    }
+    let current_used = u32::try_from(last.used_micropoints).ok()?;
+    let projected_additional = u64::from(rate).saturating_mul(u64::try_from(remaining_ms).ok()?)
+        / u64::try_from(ONE_HOUR_MS).ok()?;
+    let projected_used = u64::from(current_used).saturating_add(projected_additional);
+    let projected_used_at_reset_micropoints = u32::try_from(projected_used).unwrap_or(u32::MAX);
+    let remaining_quota = FULL_QUOTA_MICROPOINTS.saturating_sub(current_used);
+    let exhaust_ms = u64::from(remaining_quota).saturating_mul(u64::try_from(ONE_HOUR_MS).ok()?)
+        / u64::from(rate);
+    let exhausts_at_unix_s = i64::try_from(exhaust_ms)
+        .ok()
+        .and_then(|duration| last.captured_at_unix_ms.checked_add(duration))
+        .filter(|instant| *instant <= reset_ms)
+        .map(|instant| instant / 1_000);
+
+    Some(PublicBurnProjection {
+        sample_count,
+        observed_span_seconds: u32::try_from(span_ms / 1_000).ok()?,
+        rate_micropoints_per_hour: rate,
+        projected_used_at_reset_micropoints,
+        exhausts_at_unix_s,
+    })
+}
+
+const fn pressure_for_used(used_micropoints: u32) -> QuotaPressure {
+    match used_micropoints {
+        95_000_000.. => QuotaPressure::Critical,
+        80_000_000.. => QuotaPressure::Danger,
+        60_000_000.. => QuotaPressure::Warning,
+        _ => QuotaPressure::Safe,
+    }
+}
+
+fn quota_pressure(
+    used_micropoints: Option<u32>,
+    projection: Option<&PublicBurnProjection>,
+    quota_epoch_sequence: Option<i64>,
+    quota_epoch_first_observed_at_unix_ms: Option<i64>,
+    now_unix_ms: i64,
+) -> QuotaPressure {
+    let current = used_micropoints.map_or(QuotaPressure::Safe, pressure_for_used);
+    let projected = projection.map_or(QuotaPressure::Safe, |projection| {
+        pressure_for_used(projection.projected_used_at_reset_micropoints)
+    });
+    let pressure = current.max(projected);
+    if pressure == QuotaPressure::Safe
+        && quota_epoch_sequence.is_some_and(|sequence| sequence > 1)
+        && quota_epoch_first_observed_at_unix_ms.is_some_and(|first_observed| {
+            now_unix_ms >= first_observed
+                && now_unix_ms.saturating_sub(first_observed) <= RESET_RECOVERY_FOR_MS
+        })
+    {
+        QuotaPressure::Recovery
+    } else {
+        pressure
+    }
 }
 
 fn project_policy_days(
@@ -5772,6 +6230,7 @@ fn load_active_quota_policy(
 fn build_public_live_quota(
     row: LiveQuotaRow,
     ledger_days: Vec<PublicLedgerDay>,
+    burn_samples: &[BurnProjectionSample],
     now_unix_ms: i64,
 ) -> rusqlite::Result<PublicLiveQuota> {
     let used = row
@@ -5810,9 +6269,19 @@ fn build_public_live_quota(
                 .map(|used| day.limit_micropoints.saturating_sub(used))
         })
     });
+    let burn_projection = burn_projection(burn_samples, row.resets_at_unix_s);
+    let pressure = quota_pressure(
+        used,
+        burn_projection.as_ref(),
+        row.quota_epoch_sequence,
+        row.quota_epoch_first_observed_at_unix_ms,
+        now_unix_ms,
+    );
     Ok(PublicLiveQuota {
         used_micropoints: used,
-        remaining_micropoints: used.map(|value| 100_000_000_u32.saturating_sub(value)),
+        remaining_micropoints: used.map(|value| FULL_QUOTA_MICROPOINTS.saturating_sub(value)),
+        pressure,
+        burn_projection,
         captured_at_unix_ms: row.captured_at_unix_ms,
         resets_at_unix_s: row.resets_at_unix_s,
         window_starts_at_unix_s: row

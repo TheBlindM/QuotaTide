@@ -14,6 +14,16 @@ export async function getAlerts(): Promise<PublicAlertInbox> {
   return await invoke<PublicAlertInbox>("get_alerts");
 }
 
+export async function dismissAlert(
+  eventId: number,
+): Promise<PublicAlertInbox> {
+  return await invoke<PublicAlertInbox>("dismiss_alert", { eventId });
+}
+
+export async function dismissAllAlerts(): Promise<PublicAlertInbox> {
+  return await invoke<PublicAlertInbox>("dismiss_all_alerts");
+}
+
 export async function requestSystemNotificationPermission(): Promise<NotificationPermissionStatus> {
   return await invoke<NotificationPermissionStatus>(
     "request_system_notification_permission",

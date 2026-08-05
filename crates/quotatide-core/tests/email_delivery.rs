@@ -8,8 +8,8 @@ use quotatide_core::{
     AtomicSettingsManager, AuthCandidateValidator, AutostartControl, CredentialVault,
     EmailDeliveryWorker, InterfaceLocalePreference, MailTransport, PublicError, QuotaPolicyDraft,
     QuotaUnits, RefreshAccountBinding, SafeMail, SecretUpdate, SettingsDraft, SmtpConnection,
-    SmtpRecipientDraft, SmtpSettingsDraft, SmtpTlsMode, ValidatedAccountCandidate,
-    WeeklyUsageObservation,
+    SmtpRecipientDraft, SmtpSettingsDraft, SmtpTlsMode, StoryTheme, TrayDisplayMode,
+    ValidatedAccountCandidate, WeeklyUsageObservation,
 };
 use secrecy::{ExposeSecret as _, SecretString};
 use tempfile::tempdir;
@@ -159,6 +159,8 @@ fn settings_draft() -> SettingsDraft {
         alert_preferences: preferences(),
         autostart_enabled: false,
         auto_update_enabled: true,
+        tray_display_mode: TrayDisplayMode::Wave,
+        story_theme: StoryTheme::RisingWater,
         interface_locale: InterfaceLocalePreference::System,
         format_locale: "en-US".to_owned(),
         smtp: SmtpSettingsDraft {

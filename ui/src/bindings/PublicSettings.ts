@@ -4,8 +4,10 @@ import type { InterfaceLocalePreference } from "./InterfaceLocalePreference";
 import type { NotificationPermissionStatus } from "./NotificationPermissionStatus";
 import type { PublicQuotaPolicy } from "./PublicQuotaPolicy";
 import type { PublicSmtpSettings } from "./PublicSmtpSettings";
+import type { StoryTheme } from "./StoryTheme";
+import type { TrayDisplayMode } from "./TrayDisplayMode";
 
 /**
  * Every non-secret setting returned as one revisioned projection.
  */
-export type PublicSettings = { settingsRevision: number, configured: boolean, pathSummary: string | null, accountLabel: string | null, notificationPermissionStatus: NotificationPermissionStatus, quotaPolicy: PublicQuotaPolicy, alertPreferences: Array<AlertPreference>, autostartEnabled: boolean, autoUpdateEnabled: boolean, interfaceLocale: InterfaceLocalePreference, formatLocale: string, smtp: PublicSmtpSettings, };
+export type PublicSettings = { settingsRevision: number, configured: boolean, pathSummary: string | null, accountLabel: string | null, notificationPermissionStatus: NotificationPermissionStatus, quotaPolicy: PublicQuotaPolicy, alertPreferences: Array<AlertPreference>, autostartEnabled: boolean, autoUpdateEnabled: boolean, trayDisplayMode: TrayDisplayMode, storyTheme: StoryTheme, interfaceLocale: InterfaceLocalePreference, formatLocale: string, smtp: PublicSmtpSettings, };

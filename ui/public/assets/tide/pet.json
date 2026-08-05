@@ -1,0 +1,6 @@
+{
+  "id": "tide",
+  "displayName": "Tide",
+  "description": "A tiny quota-chamber rescue robot that helps users read weekly Codex pressure at a glance.",
+  "spritesheetPath": "spritesheet.webp"
+}
