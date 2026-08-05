@@ -65,6 +65,7 @@ body {
   min-height: 0;
   color: var(--ink);
   background: transparent;
+  cursor: default;
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
 }
@@ -2730,6 +2731,7 @@ progress::-moz-progress-bar {
   border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
   border-radius: 999px;
   color: var(--accent);
+  cursor: help;
   font-size: 9px;
   font-weight: 760;
   line-height: 1;

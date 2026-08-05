@@ -391,6 +391,56 @@ describe("Weekly Ledger overview", () => {
     expect(screen.queryByText("1.0%/小时")).not.toBeInTheDocument();
   });
 
+  it("explains when high pressure comes from projected usage", () => {
+    render(
+      <WeeklyLedger
+        fixture={{
+          ...ledgerFixtures.fresh,
+          pressure: "danger",
+          weeklyUsed: "63%",
+          weeklyRemaining: "37%",
+          burnProjection: {
+            rate: "0.8%/小时",
+            projectedUsage: "83.1%",
+            conclusion: "按当前速度，到重置预计使用 83.1%",
+          },
+        }}
+        onOpenSettings={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("高压")).toHaveAttribute(
+      "title",
+      "当前消耗过快，预测到重置时会用到 83.1%（≥ 80%）。",
+    );
+  });
+
+  it("explains when high pressure comes from current usage", () => {
+    render(
+      <WeeklyLedger
+        fixture={{
+          ...ledgerFixtures.fresh,
+          pressure: "danger",
+          weeklyUsed: "86%",
+          weeklyRemaining: "14%",
+          burnProjection: {
+            rate: "0.3%/小时",
+            projectedUsage: "92%",
+            conclusion: "按当前速度，到重置预计使用 92%",
+          },
+        }}
+        onOpenSettings={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("高压")).toHaveAttribute(
+      "title",
+      "周额度已用 86%（≥ 80%），额度快用完了。",
+    );
+  });
+
   it("cycles through multiple pet actions inside one pressure state", async () => {
     vi.useFakeTimers();
     const rendered = render(

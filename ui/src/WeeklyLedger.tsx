@@ -647,8 +647,72 @@ function RadarCard({
 }
 
 function percentValue(value: string): number {
-  const parsed = Number.parseFloat(value.replace("%", ""));
+  const parsed = Number.parseFloat(value.replace("%", "").replace(",", "."));
   return Number.isFinite(parsed) ? Math.min(100, Math.max(0, parsed)) : 0;
+}
+
+const pressureThresholds: Partial<Record<QuotaPressure, number>> = {
+  warning: 60,
+  danger: 80,
+  critical: 95,
+};
+
+function pressureReason(
+  fixture: LedgerFixture,
+  locale: InterfaceLocale,
+): string {
+  if (fixture.pressure === "safe") {
+    return textForLocale(
+      locale,
+      "当前周额度使用和预测用量均在安全范围内。",
+      "Current and projected weekly usage are both within the safe range.",
+    );
+  }
+  if (fixture.pressure === "recovery") {
+    return textForLocale(
+      locale,
+      "额度刚刚重置，正在确认新窗口的用量。",
+      "The quota just reset; usage in the new window is being confirmed.",
+    );
+  }
+
+  const threshold = pressureThresholds[fixture.pressure];
+  if (threshold === undefined) {
+    return "";
+  }
+  if (percentValue(fixture.weeklyUsed) >= threshold) {
+    const ending =
+      fixture.pressure === "warning"
+        ? textForLocale(locale, "请留意剩余额度。", "Keep an eye on the remaining quota.")
+        : fixture.pressure === "critical"
+          ? textForLocale(locale, "额度即将用完。", "The quota is almost exhausted.")
+          : textForLocale(locale, "额度快用完了。", "The quota is running low.");
+    return textForLocale(
+      locale,
+      `周额度已用 ${fixture.weeklyUsed}（≥ ${String(threshold)}%），${ending}`,
+      `Weekly usage is ${fixture.weeklyUsed} (≥ ${String(threshold)}%). ${ending}`,
+    );
+  }
+
+  const projectedUsage = fixture.burnProjection?.projectedUsage;
+  if (
+    projectedUsage !== undefined &&
+    percentValue(projectedUsage) >= threshold
+  ) {
+    const pace =
+      fixture.pressure === "warning" ? "当前消耗偏快" : "当前消耗过快";
+    return textForLocale(
+      locale,
+      `${pace}，预测到重置时会用到 ${projectedUsage}（≥ ${String(threshold)}%）。`,
+      `Usage is running too fast; projected usage at reset is ${projectedUsage} (≥ ${String(threshold)}%).`,
+    );
+  }
+
+  return textForLocale(
+    locale,
+    `周额度使用或重置时预测用量已达到 ${String(threshold)}%。`,
+    `Current or projected weekly usage has reached ${String(threshold)}%.`,
+  );
 }
 
 function pressureLabel(
@@ -929,6 +993,7 @@ export function WeeklyLedger({
           ? text("正常", "Normal")
           : text("等待数据", "Waiting for data");
   const weeklyState = pressureLabel(fixture.pressure, locale);
+  const weeklyPressureReason = pressureReason(fixture, locale);
   const toggleWeekDetail = () => {
     setInspectedDayIndex(null);
     setShowWeekDetail((current) => {
@@ -1148,15 +1213,20 @@ export function WeeklyLedger({
             <div
               class={`side-stat quota-side-stat side-stat--${todayUsageTone} pressure-${fixture.pressure}`}
               aria-label={text(
-                `周剩余 ${fixture.weeklyRemaining}，${weeklyState}；今天还可用 ${fixture.todayAvailable}；用量状态：${todayUsageState}${fixture.todayLimit === "" ? "" : `；实际上限 ${fixture.todayLimit}`}`,
-                `Weekly remaining ${fixture.weeklyRemaining}, ${weeklyState}; available today ${fixture.todayAvailable}; usage status: ${todayUsageState}${fixture.todayLimit === "" ? "" : `; adjusted limit ${fixture.todayLimit}`}`,
+                `周剩余 ${fixture.weeklyRemaining}，${weeklyState}；原因：${weeklyPressureReason}；今天还可用 ${fixture.todayAvailable}；用量状态：${todayUsageState}${fixture.todayLimit === "" ? "" : `；实际上限 ${fixture.todayLimit}`}`,
+                `Weekly remaining ${fixture.weeklyRemaining}, ${weeklyState}; reason: ${weeklyPressureReason}; available today ${fixture.todayAvailable}; usage status: ${todayUsageState}${fixture.todayLimit === "" ? "" : `; adjusted limit ${fixture.todayLimit}`}`,
               )}
               aria-live="polite"
             >
               <div class="quota-side-stat__row quota-side-stat__row--weekly">
                 <span>{text("周剩余", "Weekly remaining")}</span>
                 <strong>{fixture.weeklyRemaining}</strong>
-                <small class="quota-side-stat__state">{weeklyState}</small>
+                <small
+                  class="quota-side-stat__state"
+                  title={weeklyPressureReason}
+                >
+                  {weeklyState}
+                </small>
               </div>
               <div class="quota-side-stat__row quota-side-stat__row--today">
                 <span>{text("今天还可用", "Available today")}</span>

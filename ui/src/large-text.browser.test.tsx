@@ -77,6 +77,37 @@ afterEach(() => {
   window.localStorage.removeItem("quotatide.theme");
 });
 
+test("uses desktop cursors for surfaces, help, actions, and text input", () => {
+  root = document.createElement("div");
+  root.id = "root";
+  root.style.width = "360px";
+  root.style.height = "430px";
+  document.body.append(root);
+  render(
+    <I18nProvider preference="system">
+      <WeeklyLedger
+        fixture={{ ...ledgerFixtures.fresh, pressure: "danger" }}
+        onOpenSettings={() => undefined}
+        onRefresh={() => undefined}
+      />
+    </I18nProvider>,
+    root,
+  );
+
+  expect(getComputedStyle(document.body).cursor).toBe("default");
+  expect(getComputedStyle(requireElement(".weekly-ledger")).cursor).toBe(
+    "default",
+  );
+  expect(
+    getComputedStyle(requireElement(".quota-side-stat__state")).cursor,
+  ).toBe("help");
+  expect(getComputedStyle(requireElement("button")).cursor).toBe("pointer");
+
+  const input = document.createElement("input");
+  root.append(input);
+  expect(getComputedStyle(input).cursor).toBe("text");
+});
+
 test("fits the expanded reset announcement in the compact shell with one divider", () => {
   const announcement = ledgerFixtures.fresh.radar?.announcement;
   expect(announcement).toBeDefined();
