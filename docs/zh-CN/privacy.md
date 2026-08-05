@@ -6,7 +6,7 @@ QuotaTide 采用本地优先设计，不提供项目方遥测或分析服务。
 不会把令牌复制进应用数据库，也不会把令牌发送给 QuotaTide 维护者。额度刷新
 访问所选账号对应的上游 Codex 用量服务。
 
-重置预测会访问 `https://codex-resets.com/`；更新检查会访问配置的 GitHub
+重置动态会访问 `https://www.codexrunway.com/api/status.json`；更新检查会访问配置的 GitHub
 Release endpoint。这些服务会看到普通网络请求所需的 IP、User-Agent 等信息，
 但 QuotaTide 不会在重置雷达或更新请求中加入 Codex token、Account ID、额度
 历史、邮箱地址或设备标识。

@@ -24,6 +24,8 @@ Application ID / 应用标识：`dev.theblind.quotatide`
   copies, or displays its tokens.
 - Current-account quota, reset time, and exactly the seven dates in the active
   quota window—not a rolling “last seven days” chart.
+- Rising-water pressure chamber, robust burn-rate/exhaustion projection,
+  read-only reset-credit status, and configurable tray text.
 - Editable daily limits, policy timezone, and dynamic weekday carry-forward.
 - Hourly background refresh, reset-radar estimate, native notifications, and
   optional TLS SMTP alerts.
@@ -36,6 +38,8 @@ Application ID / 应用标识：`dev.theblind.quotatide`
 - 只读访问用户选择的 `auth.json`；不改写、不复制、也不显示其中的令牌。
 - 展示当前账号的额度、重置时间，以及当前额度周期内的七个日期，而不是滚动
   的“最近七天”。
+- 水位上涨压力舱、稳健的消耗速率与耗尽预测、只读重置次数状态，以及可配置的
+  任务栏文字。
 - 可编辑每日额度与策略时区，支持工作日未用额度动态结转。
 - 每小时后台刷新、重置雷达预测、原生通知，以及可选的 TLS SMTP 邮件告警。
 - 本地 SQLite 历史、系统凭证库、诊断导出、恢复模式和本地数据清理。

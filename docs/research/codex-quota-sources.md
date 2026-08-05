@@ -5,7 +5,7 @@
 范围：
 
 - 只读检查 `/Volumes/NewSSD/IdeaProjects/new-api-main` 中 Codex 账号用量实现。
-- 检查 `https://codex-resets.com/` 页面及其公开网络接口。
+- 检查 `https://www.codexrunway.com/` 页面及其公开网络接口。
 - 未读取、输出或保存任何真实 `auth.json` 内容或凭证。
 
 ## 结论摘要
@@ -13,7 +13,7 @@
 1. New API 直接向 ChatGPT 上游查询账号额度：`GET https://chatgpt.com/backend-api/wham/usage`。它不是根据请求日志估算周额度。[New API `service/codex_wham_usage.go:15-54`](../../../new-api-main/service/codex_wham_usage.go#L15-L54) [默认基址 `constant/channel.go:57,121`](../../../new-api-main/constant/channel.go#L57)
 2. 请求至少需要 `access_token` 和 `account_id`，分别放入 `Authorization: Bearer …` 与 `chatgpt-account-id`；另带 `Accept: application/json` 和 `originator: codex_cli_rs`。[New API `service/codex_wham_usage.go:154-160`](../../../new-api-main/service/codex_wham_usage.go#L154-L160)
 3. 上游响应直接提供 `used_percent`、`reset_at`、`reset_after_seconds`、`limit_window_seconds`，以及账号/套餐/是否受限等字段。周窗口不需要从 Codex Resets 推算。[New API UI 类型 `codex-usage-dialog.tsx:69-128`](../../../new-api-main/web/default/src/features/channels/components/dialogs/codex-usage-dialog.tsx#L69-L128)
-4. `https://codex-resets.com/api/resets` 是无需认证的公开 JSON 接口，记录基于 `@thsottiaux` X 公告识别出的全局/临时重置事件；它不是某个账号的额度接口，也不是个人滚动周窗口的未来重置预测。[Codex Resets 页面说明](https://codex-resets.com/) [公开 JSON](https://codex-resets.com/api/resets)
+4. `https://www.codexrunway.com/api/status.json` 是无需认证的公开静态 JSON feed，记录基于 `@thsottiaux` X 公告识别出的计划重置与已完成重置事件；它不是某个账号的额度接口，也不能覆盖个人滚动周窗口。[Codex Runway Reset Watch](https://www.codexrunway.com/) [公开 JSON](https://www.codexrunway.com/api/status.json)
 5. 因此产品应有两个独立数据源：
    - **账号事实源**：`wham/usage`，决定周已用量、剩余量、账号是否可用、账号窗口何时重置。
    - **全局事件雷达**：Codex Resets，展示最近一次额外重置公告并辅助识别额度突然回升的原因；不能覆盖 `wham/usage.reset_at`。
@@ -170,64 +170,27 @@ New API 还实现了两个上游接口：
 
 本共享账号额度服务首版应只读展示 `available_count`，不要自动 consume。消耗 reset credit 是有外部副作用的操作，必须单独权限、明确确认、审计记录和幂等 key。
 
-## 5. Codex Resets 可提供什么
+## 5. Codex Runway Reset Watch 可提供什么
 
-### 5.1 第一方页面自述
-
-Codex Resets 自述：
-
-- 跟踪 `@thsottiaux` 在 X 上发布的 Codex reset 公告；
-- 数据由机器人分类；
-- 与 OpenAI 无关联。
-
-来源：[Codex Resets 页面](https://codex-resets.com/)。
-
-因此它是第三方“公告聚合雷达”，不是 OpenAI 账号状态的权威源。这里的“第一方接口”指该网站自身提供的接口，而不是 OpenAI 第一方接口。
-
-### 5.2 公开接口
-
-页面自己的 `app.js` 调用：
+该第三方页面跟踪 `@thsottiaux` 的公开 X 动态，以 AI 分类生成结构化事件，并明确
+声明与 OpenAI 无关联。公开接口是：
 
 ```http
-GET https://codex-resets.com/api/resets
+GET https://www.codexrunway.com/api/status.json
 Accept: application/json
 ```
 
-并要求响应中有 `events` 数组；失败会在页面内回退到 demo data。来源：[Codex Resets `app.js`](https://codex-resets.com/app.js)。
+feed 使用 `schemaVersion: 1`，包含生成时间、监控健康状态与事件数组。QuotaTide
+只消费：
 
-2026-07-24 实测响应顶层结构：
+- `reset_scheduled`：使用 `announcedAt`、`effectiveAt`、`confidence` 与来源链接
+  展示尚未到时的预计重置；
+- `reset_completed`：展示最近一次重置公告；
+- `limit_increase`：不等于重置，忽略。
 
-```json
-{
-  "events": [
-    {
-      "tweet_id": "…",
-      "tweet_url": "https://x.com/thsottiaux/status/…",
-      "text": "…",
-      "announced_at": "2026-07-21T16:47:15.000Z"
-    }
-  ],
-  "generated_at": "2026-07-24T02:10:29.046Z",
-  "stats": {
-    "total": 36,
-    "last_reset_at": "2026-07-21T16:47:15.000Z",
-    "days_since_last": 2.4,
-    "avg_interval_days": 8.8
-  }
-}
-```
-
-来源：[Codex Resets `/api/resets`](https://codex-resets.com/api/resets)。接口响应当时还带有 `Cache-Control: public, max-age=60`。
-
-### 5.3 是否可直接接入
-
-可以接入，但应通过本服务后端轮询/缓存，不应让管理页面浏览器直接依赖跨域请求：
-
-- 接口公开、无需凭证，页面本身也使用该 JSON。
-- 2026-07-24 实测 response headers 未提供 `Access-Control-Allow-Origin`，跨域前端 `fetch` 不能视为稳定可用。
-- 每 1–5 分钟轮询即可；尊重该接口 `max-age=60`，保存 `generated_at` 与最近 event ID。
-- 接口失败时显示“雷达暂不可用”和最后成功更新时间，不影响账号额度查询与限制决策。
-- 不把 `stats.avg_interval_days` 当作未来 reset ETA；它只是历史均值。
+该 feed 公开且无需凭证。桌面端后端每小时读取一次，不向它发送 Codex Token、
+账号 ID、邮箱或 auth.json 内容。接口失败只影响雷达状态，不影响账号额度查询。
+详情见 [重置预测接口调研](codex-reset-prediction.md)。
 - `announced_at` 是公告时刻。公告文本可能说“未来 30 分钟/1 小时内生效”，因此不能假设额度在该秒已同步完成；最终仍以账号 `wham/usage.used_percent/reset_at` 的变化为准。
 
 ## 6. 推荐的数据融合与状态机

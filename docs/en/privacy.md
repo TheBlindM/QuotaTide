@@ -7,7 +7,7 @@ It does not modify that file, copy its tokens into the application database, or
 send the token to QuotaTide maintainers. Quota refresh contacts the same
 upstream Codex usage service represented by the selected account.
 
-Reset prediction contacts `https://codex-resets.com/`. Update checks contact
+Reset activity contacts `https://www.codexrunway.com/api/status.json`. Update checks contact
 the configured GitHub Release endpoint. These requests expose ordinary network
 metadata such as IP address and user agent to those services, but QuotaTide
 does not add the Codex token, account ID, quota history, email address, or a

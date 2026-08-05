@@ -37,9 +37,9 @@ Rust 桌面端应把两个上游实现为两个彼此独立的防腐层：
 
 ### 第三方来源
 
-- [Codex Resets](https://codex-resets.com/) 自己声明其数据来自公开推文、由自动分类器处理，并且不隶属于 OpenAI。
-- 其 `/api/resets` 是网站自己的未版本化接口。当前响应包含 `generated_at`、`watch`、`events` 和 `stats`；没有稳定性或 SLA 保证。
-- `watch.reset_chance_24h` 是第三方 AI 估算结果，不是 OpenAI 对重置的承诺，也不是当前账号的状态。
+- [Codex Runway Reset Watch](https://www.codexrunway.com/) 声明其数据来自公开 X 动态、由 AI 分类，并且不隶属于 OpenAI。
+- 其 `/api/status.json` 是 `schemaVersion: 1` 的静态 feed；没有 SLA 保证。
+- 事件 `confidence` 是第三方分类置信度，不是当前账号的个人重置概率。
 
 ## `auth.json` 只读契约
 
@@ -236,12 +236,12 @@ observation 仍以不可变、已关联的隔离事实保留，但不参与当�
 成功指向被隔离事实，迁移同步回退到最近合格成功并标记 contract failure；
 没有合格事实时公开状态为 unavailable，不能把空配额标成 fresh。
 
-## Codex Resets `watch` 契约
+## Codex Runway Reset Watch 契约
 
 请求：
 
 ```text
-GET https://codex-resets.com/api/resets
+GET https://www.codexrunway.com/api/status.json
 Accept: application/json
 ```
 
@@ -249,37 +249,38 @@ Accept: application/json
 - 总超时 10 秒，响应体上限 1 MiB。
 - 雷达失败不影响账号额度采集，账号额度失败也不阻止雷达更新。
 
-当前 `watch` 形状：
+当前事件形状：
 
 ```json
 {
-  "watch": {
-    "level": "string",
-    "tweet_id": "string",
-    "tweet_url": "https://x.com/...",
-    "text": "string",
-    "observed_at": "RFC3339 timestamp",
-    "expires_at": "RFC3339 timestamp",
-    "window_hours": 24,
-    "reset_chance_24h": 75,
-    "context_tweet_id": null,
-    "context_tweet_url": null,
-    "context_text": null
-  }
+  "schemaVersion": 1,
+  "monitor": { "status": "ok", "errorCode": null },
+  "events": [{
+    "kind": "reset_scheduled",
+    "announcedAt": "RFC3339 timestamp",
+    "effectiveAt": "RFC3339 timestamp",
+    "source": {
+      "handle": "thsottiaux",
+      "postId": "string",
+      "url": "https://x.com/thsottiaux/status/..."
+    },
+    "confidence": 0.86,
+    "rationale": "string"
+  }]
 }
 ```
 
-活动预测必须同时满足：
+活动预测必须是 `reset_scheduled`，并满足 `announcedAt <= now < effectiveAt`、
+来源 handle 与 X URL 匹配、`confidence` 在 `0..=1`。多个有效计划选择
+`effectiveAt` 最近的一项。`monitor.status != "ok"` 视为来源失败；最后成功快照
+只能保留到 `effectiveAt`，过期后不得继续显示。
 
-- `watch` 是对象；
-- `tweet_id`、`observed_at`、`expires_at` 存在且可解析；
-- `observed_at < expires_at` 且当前时间早于 `expires_at`；
-- `window_hours` 是有限正数；
-- `reset_chance_24h` 是有限数值且在 `0..=100`。
+顶层 `generatedAt` 必须是 RFC3339，最多允许 5 分钟本机时钟偏差；文档生成时间
+落后当前时间超过 6 小时即按上游不可用处理，不能因为 CDN 仍返回 HTTP 200 而把
+陈旧雷达标成 fresh。
 
-`watch: null`、字段缺失、过期或格式错误都表示没有可用的活动预测。最后成功的雷达快照可以保留作诊断，但一旦 `expires_at` 到达就不得继续显示为活动预测。
-
-`generated_at` 是响应生成时间，不是预测观察时间；预测时序使用 `observed_at` 和 `expires_at`。UI 可保留原始 chance，并按网站风格派生十位档标签，例如 `75 -> >70%`；提醒判断使用原始值 `chance >= 70`。
+UI 可按十位档显示置信度，提醒判断使用 `confidence >= 0.7`，但文案不得称其为
+账号重置概率。`reset_completed` 只作为最近公告；`limit_increase` 必须忽略。
 
 预测提醒去重键：
 
