@@ -6,7 +6,7 @@
   "description": "Build and release tooling for the QuotaTide Rust/Tauri desktop app",
   "author": "TheBlind",
   "license": "MIT",
-  "repository": "__GITHUB_REPOSITORY__",
+  "repository": "https://github.com/TheBlindM/QuotaTide",
   "scripts": {
     "icons": "node scripts/generate-icons.mjs",
     "test": "node --test scripts/*.test.mjs scripts/release/*.test.mjs scripts/qa/*.test.mjs",

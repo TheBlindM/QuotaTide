@@ -13,7 +13,7 @@ edition = "2024"
 rust-version = "1.88"
 authors = ["TheBlind"]
 license = "MIT"
-repository = "__GITHUB_REPOSITORY__"
+repository = "https://github.com/TheBlindM/QuotaTide"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

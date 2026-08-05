@@ -2,7 +2,7 @@
   "name": "@quotatide/ui",
   "version": "0.1.0",
   "private": true,
-  "repository": "__GITHUB_REPOSITORY__",
+  "repository": "https://github.com/TheBlindM/QuotaTide",
   "type": "module",
   "engines": {
     "node": ">=22.13"

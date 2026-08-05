@@ -1,13 +1,13 @@
 # Updater key recovery runbook / Updater 密钥恢复手册
 
-The committed `src-tauri/updater.pubkey` is development-only. Its private key
-was destroyed after generation, and `scripts/check-release-identity.mjs`
-rejects its fingerprint. It can exercise development configuration but cannot
-produce a public release.
+The committed `src-tauri/updater.pubkey` is the final v0.1 updater public key.
+Its encrypted private key and password are stored separately in the protected
+`preview-release` GitHub Environment. The two independent offline recovery
+copies and their restore drills remain mandatory before the first public release.
 
-仓库中的 `src-tauri/updater.pubkey` 仅用于开发。生成后私钥已销毁，
-`scripts/check-release-identity.mjs` 会阻止其 fingerprint 用于正式发布。它
-可以验证开发配置，但无法生成公开 Release。
+仓库中的 `src-tauri/updater.pubkey` 是 v0.1 更新链的正式公钥。加密私钥与
+密码已分别存入受保护的 GitHub `preview-release` Environment。首次公开
+发布前仍必须制作两份独立离线恢复副本，并分别完成恢复演练。
 
 Before the first public release:
 

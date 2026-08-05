@@ -1392,6 +1392,7 @@ fn system_reduces_motion() -> bool {
 }
 
 #[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 fn system_reduces_motion() -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
@@ -1463,6 +1464,7 @@ fn window_effects_config(effect: WindowEffect) -> WindowEffectsConfig {
 }
 
 #[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 fn apply_windows_rounded_corners(window: &WebviewWindow) -> bool {
     use std::ffi::c_void;
     use std::mem::size_of_val;

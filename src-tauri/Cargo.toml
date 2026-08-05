@@ -65,5 +65,12 @@ windows-sys = { version = "=0.61.2", features = [
 [dev-dependencies]
 tokio = { version = "=1.49.0", features = ["macros", "rt-multi-thread"] }
 
-[lints]
-workspace = true
+# Windows appearance integration has two audited FFI calls. Keep unsafe code
+# denied everywhere else while allowing those functions to document and scope
+# their platform boundary explicitly.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }

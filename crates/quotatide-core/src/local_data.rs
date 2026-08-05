@@ -92,11 +92,25 @@ pub(crate) fn restore_backup(database_path: &Path, backup: &Path) -> Result<(), 
 
 pub(crate) fn discard_database_artifacts(database_path: &Path) -> Result<(), LocalDataError> {
     for artifact in database_artifacts(database_path) {
-        if artifact.exists() {
-            fs::remove_file(artifact)?;
-        }
+        remove_file_if_present(&artifact)?;
     }
     Ok(())
+}
+
+fn remove_file_if_present(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn move_file_if_present(source: &Path, destination: &Path) -> std::io::Result<()> {
+    match fs::rename(source, destination) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn inspect_read_only(path: &Path, supported_schema: i64) -> Result<i64, LocalDataError> {
@@ -163,7 +177,7 @@ fn isolate_database(database_path: &Path) -> Result<(), LocalDataError> {
             let file_name = path
                 .file_name()
                 .ok_or_else(|| std::io::Error::other("database artifact has no file name"))?;
-            fs::rename(&path, destination.join(file_name))?;
+            move_file_if_present(&path, &destination.join(file_name))?;
         }
     }
     Ok(())
@@ -298,6 +312,24 @@ fn secure_file(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removing_an_already_disappeared_artifact_is_successful() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let artifact = directory.path().join("state.sqlite3-wal");
+
+        remove_file_if_present(&artifact).expect("missing SQLite artifact is already discarded");
+    }
+
+    #[test]
+    fn moving_an_already_disappeared_artifact_is_successful() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let artifact = directory.path().join("state.sqlite3-wal");
+        let isolated = directory.path().join("isolated-state.sqlite3-wal");
+
+        move_file_if_present(&artifact, &isolated)
+            .expect("missing SQLite artifact is already isolated");
+    }
 
     #[test]
     fn validated_backups_rotate_only_after_the_new_copy_exists() {

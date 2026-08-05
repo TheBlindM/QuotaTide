@@ -417,7 +417,8 @@ SMTP 密码输入保存成功后立即清空，重新打开设置只显示“已
 | 手动刷新 | 30 秒冷却，且与定时刷新 single-flight |
 | HTTP | 复用两个固定 origin client；Codex 15 秒、Radar 10 秒超时；Windows/macOS 原生构建继承用户的系统代理 |
 | async/thread | 一个 Tauri Tokio runtime、一个 SQLite 连接线程；无每轮新线程 |
-| UI bundle | gzip 后不超过 100 KiB（不含系统 WebView 与 Tauri runtime） |
+| UI code bundle | HTML/CSS/JS/JSON/SVG gzip 后不超过 100 KiB（不含系统 WebView 与 Tauri runtime） |
+| UI visual assets | 已编码 PNG/WebP 等视觉资源 gzip 后不超过 7 MiB |
 | 空闲 CPU | 窗口隐藏并稳定 5 分钟后，应用平均低于 0.5% |
 | 空闲内存 | 应用与其专属 WebView 进程合计目标不高于 180 MiB |
 | 启动 | 冷启动到托盘可交互目标不超过 2.5 秒 |

@@ -1,7 +1,7 @@
-# Replace this explicit placeholder with the confirmed GitHub maintainer/team.
-/.github/workflows/ @__GITHUB_OWNER__
-/scripts/release/ @__GITHUB_OWNER__
-/scripts/check-release-identity.mjs @__GITHUB_OWNER__
-/src-tauri/tauri*.json @__GITHUB_OWNER__
-/src-tauri/updater.pubkey* @__GITHUB_OWNER__
-/Cargo.lock @__GITHUB_OWNER__
+# Release-sensitive paths require review from the confirmed maintainer.
+/.github/workflows/ @TheBlindM
+/scripts/release/ @TheBlindM
+/scripts/check-release-identity.mjs @TheBlindM
+/src-tauri/tauri*.json @TheBlindM
+/src-tauri/updater.pubkey* @TheBlindM
+/Cargo.lock @TheBlindM

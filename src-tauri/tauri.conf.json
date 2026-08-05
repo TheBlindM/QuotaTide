@@ -48,9 +48,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFCOEMwQzdCNzg4QjVGREIKUldUYlg0dDRld3lNcThxc05aSzN0SzdreEFZR1IzS2xGYi9qRWtBb2ROWE9sYXZHdldxdkx0NWQK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZDNkMzN0VFOTQwREU2QzEKUldUQjVnMlU3amRzL0xVTlFkTmgyY2dhYm1peGFtcndmS3dQUkJmaDlZcEp2cWhaVXMzQVQvZmoK",
       "endpoints": [
-        "https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/latest.json"
+        "https://github.com/TheBlindM/QuotaTide/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

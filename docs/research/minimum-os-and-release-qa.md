@@ -308,7 +308,7 @@ release blocking evidence。
 
 | ID | 预算 | 测量 | 通过标准 |
 |---|---|---|---|
-| PERF-01 | UI gzip ≤ 100 KiB | CI 对 production UI bundle 逐文件和总量 gzip | 不含 source map、系统 WebView 与 Tauri runtime；超限阻断 |
+| PERF-01 | UI code gzip ≤ 100 KiB；视觉资源 gzip ≤ 7 MiB | CI 对 production UI bundle 逐文件 gzip，按可执行代码/文本与已编码视觉资源分类汇总 | 不含 source map、系统 WebView 与 Tauri runtime；任一分类超限均阻断 |
 | PERF-02 | 隐藏空闲 CPU < 0.5% | 最低 macOS/Windows release build，隐藏稳定 5 分钟后连续测 5 分钟 | app process group 平均值均低于 0.5% |
 | PERF-03 | 空闲内存 ≤ 180 MiB | 同环境，合计 QuotaTide 与专属 WebView 进程 | 稳定窗口内峰值和中位数均记录，目标不超过 180 MiB |
 | PERF-04 | 冷启动 ≤ 2.5 秒 | 重启 OS 后从进程创建到 tray 可点击事件，连续 5 次 | 报告中位数和最慢值；每次均不超过 2.5 秒 |
