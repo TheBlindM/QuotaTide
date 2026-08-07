@@ -74,3 +74,5 @@ Author / 作者：TheBlind · Application ID：`dev.theblind.quotatide`
 
 > QuotaTide 与 OpenAI 没有官方关系，也未获得其背书。QuotaTide is not
 > affiliated with or endorsed by OpenAI.
+
+感谢 [linux.do](https://linux.do/) 社区提供的交流平台和技术讨论氛围。
