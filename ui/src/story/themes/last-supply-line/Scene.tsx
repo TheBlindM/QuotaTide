@@ -21,6 +21,50 @@ function siegeState(
   return locale === "zh-CN" ? zh : en;
 }
 
+type SiegePhase = "distant" | "approaching" | "assault" | "breach" | "relief";
+
+export type SiegeBattleState = Readonly<{
+  advance: number;
+  phase: SiegePhase;
+  threat: number;
+}>;
+
+export function createSiegeBattleState(
+  weeklyRemaining: number,
+  pressure: QuotaPressure,
+): SiegeBattleState {
+  const supply = Math.min(100, Math.max(0, weeklyRemaining));
+  const threat = 100 - supply;
+  const phase: Record<QuotaPressure, SiegePhase> = {
+    safe: "distant",
+    warning: "approaching",
+    danger: "assault",
+    critical: "breach",
+    recovery: "relief",
+  };
+  const quotaAdvance = 10 + Math.pow(threat / 100, 1.18) * 68;
+
+  return {
+    advance: pressure === "recovery"
+      ? 8
+      : Number(quotaAdvance.toFixed(2)),
+    phase: phase[pressure],
+    threat,
+  };
+}
+
+function siegePhaseLabel(phase: SiegePhase, locale: InterfaceLocale): string {
+  const labels: Record<SiegePhase, readonly [string, string]> = {
+    distant: ["远距侦测", "DISTANT"],
+    approaching: ["接近防区", "APPROACHING"],
+    assault: ["正在围攻", "UNDER SIEGE"],
+    breach: ["防线破口", "BREACH"],
+    relief: ["尸群撤退", "RETREATING"],
+  };
+  const [zh, en] = labels[phase];
+  return locale === "zh-CN" ? zh : en;
+}
+
 export function LastSupplyLineScene({ snapshot, displayMode }: StorySceneProps) {
   const { locale, text } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -28,10 +72,8 @@ export function LastSupplyLineScene({ snapshot, displayMode }: StorySceneProps) 
   const previousSupplyRef = useRef(snapshot.weeklyRemaining);
   const state = siegeState(snapshot.pressure, locale);
   const supply = snapshot.weeklyRemaining;
-  const weeklyUsed = 100 - supply;
-  const advance = snapshot.pressure === "recovery"
-    ? 14
-    : Number((8 + weeklyUsed * 0.23).toFixed(2));
+  const battle = createSiegeBattleState(supply, snapshot.pressure);
+  const phaseLabel = siegePhaseLabel(battle.phase, locale);
   const supplyBand = supply <= 10 ? "critical" : supply <= 25 ? "low" : "ready";
   const signalState = snapshot.pressure === "recovery"
     ? "delivered"
@@ -78,12 +120,13 @@ export function LastSupplyLineScene({ snapshot, displayMode }: StorySceneProps) 
       class={`primary-stat supply-line pressure-${snapshot.pressure} supply-${supplyBand}`}
       data-story-theme="last_supply_line"
       data-story-display={displayMode}
+      data-siege-phase={battle.phase}
       role="group"
       aria-label={text(
-        `七日围城：周补给剩余 ${snapshot.weeklyRemainingLabel}，${state}。消耗速度 ${pace}。补给信号 ${signal}。`,
-        `Last Supply Line: ${snapshot.weeklyRemainingLabel} weekly supplies remain. ${state}. Burn rate ${pace}. Supply signal ${signal}.`,
+        `七日围城：周补给剩余 ${snapshot.weeklyRemainingLabel}，${state}，${phaseLabel}。消耗速度 ${pace}。补给信号 ${signal}。`,
+        `Last Supply Line: ${snapshot.weeklyRemainingLabel} weekly supplies remain. ${state}, ${phaseLabel}. Burn rate ${pace}. Supply signal ${signal}.`,
       )}
-      style={`--siege-advance:${String(advance)}%;--supply-level:${String(supply)}%;--threat-level:${String(weeklyUsed)}%;--story-pointer-x:0;--story-pointer-y:0`}
+      style={`--siege-advance:${String(battle.advance)}%;--supply-level:${String(supply)}%;--threat-level:${String(battle.threat)}%;--story-pointer-x:0;--story-pointer-y:0`}
       onPointerMove={(event) => {
         const bounds = event.currentTarget.getBoundingClientRect();
         if (bounds.width === 0 || bounds.height === 0) {
@@ -107,6 +150,8 @@ export function LastSupplyLineScene({ snapshot, displayMode }: StorySceneProps) 
         <span class="supply-line__atmosphere supply-line__atmosphere--far" />
         <span class="supply-line__moon" />
         <span class="supply-line__skyline" />
+        <span class="supply-line__alarm" />
+        <span class="supply-line__spotlight" />
         <span class="supply-line__scan" />
         <span class={`supply-line__radio signal-${signalState}`}>
           <i />
@@ -142,6 +187,10 @@ export function LastSupplyLineScene({ snapshot, displayMode }: StorySceneProps) 
           <span />
         </div>
         <span class="supply-line__atmosphere supply-line__atmosphere--near" />
+      </div>
+      <div class="supply-line__threat">
+        <span>{text("战线", "THREAT")}</span>
+        <strong>{phaseLabel}</strong>
       </div>
       <div class="supply-line__readout">
         <div class="supply-line__readout-copy">

@@ -89,8 +89,8 @@ describe("Weekly Ledger overview", () => {
     const laterAdvance = Number.parseFloat(
       scene.style.getPropertyValue("--siege-advance"),
     );
-    expect(earlyAdvance).toBeCloseTo(10.3);
-    expect(laterAdvance).toBeCloseTo(21.8);
+    expect(earlyAdvance).toBeCloseTo(14.49);
+    expect(laterAdvance).toBeCloseTo(47.22);
     expect(laterAdvance).toBeGreaterThan(earlyAdvance);
   });
 

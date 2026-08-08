@@ -351,6 +351,13 @@ test("renders generated artwork for the Last Supply Line scene", () => {
   expect(getComputedStyle(requireElement(".supply-line__barricade")).backgroundImage)
     .toContain("/assets/siege-v2/supply-props");
   const supplyLine = requireElement(".supply-line");
+  expect(supplyLine).toHaveAttribute("data-siege-phase", "approaching");
+  expect(requireElement(".supply-line__threat").textContent)
+    .toContain("接近防区");
+  expect(
+    Array.from(document.querySelectorAll<HTMLElement>(".siege-zombie"))
+      .filter((zombie) => getComputedStyle(zombie).display !== "none"),
+  ).toHaveLength(5);
   const supplyLineWidth = supplyLine.getBoundingClientRect().width;
   expect(
     supplyLineWidth,
@@ -378,6 +385,39 @@ test("renders generated artwork for the Last Supply Line scene", () => {
     frontDefender.left - closestZombieEdge,
     "The warning state should preserve a readable no-man's-land between both sides",
   ).toBeGreaterThanOrEqual(20);
+});
+
+test("turns critical quota pressure into a visible barricade breach", async () => {
+  window.history.replaceState(
+    {},
+    "",
+    `${window.location.pathname}?preview&quota=97&pressure=critical&radar=active&story=last_supply_line&theme=dark`,
+  );
+  root = document.createElement("div");
+  root.id = "root";
+  document.body.append(root);
+  render(
+    <I18nProvider preference="system">
+      <App />
+    </I18nProvider>,
+    root,
+  );
+
+  await page.getByRole("button", { name: "展开故事场景" }).click();
+  const supplyLine = requireElement(".supply-line");
+  expect(supplyLine).toHaveAttribute("data-siege-phase", "breach");
+  expect(Number.parseFloat(supplyLine.style.getPropertyValue("--siege-advance")))
+    .toBeGreaterThan(70);
+  expect(
+    Array.from(document.querySelectorAll<HTMLElement>(".siege-zombie"))
+      .filter((zombie) => getComputedStyle(zombie).display !== "none"),
+  ).toHaveLength(8);
+  expect(getComputedStyle(requireElement(".supply-line__alarm")).animationName)
+    .toContain("siege-alarm");
+  expect(
+    getComputedStyle(requireElement(".supply-line__barricade"), "::after")
+      .opacity,
+  ).toBe("0.95");
 });
 
 test("expands every story adapter through the shared display contract", async () => {

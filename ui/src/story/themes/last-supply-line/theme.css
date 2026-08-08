@@ -110,7 +110,7 @@
   position: absolute;
   z-index: 3;
   bottom: 22px;
-  left: var(--siege-advance);
+  left: var(--siege-render-advance, var(--siege-advance));
   width: 76px;
   height: 62px;
   transform: translateX(-50%);
@@ -638,11 +638,41 @@
 }
 
 .supply-line__atmosphere,
+.supply-line__alarm,
+.supply-line__spotlight,
 .supply-line__scan,
 .supply-line__threat-line {
   position: absolute;
   display: block;
   pointer-events: none;
+}
+
+.supply-line__alarm {
+  z-index: 11;
+  inset: 0;
+  border: 1px solid transparent;
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 86% 12%, color-mix(in srgb, var(--siege-accent) 22%, transparent), transparent 26%),
+    linear-gradient(180deg, color-mix(in srgb, var(--siege-accent) 7%, transparent), transparent 42%);
+  opacity: 0.24;
+}
+
+.supply-line__spotlight {
+  z-index: 3;
+  top: -18%;
+  right: 4%;
+  width: 54%;
+  height: 118%;
+  background: conic-gradient(
+    from 165deg at 88% 0,
+    transparent 0deg,
+    rgb(188 245 224 / 9%) 10deg,
+    transparent 25deg
+  );
+  filter: blur(1px);
+  transform-origin: 88% 0;
+  animation: siege-spotlight 7.2s ease-in-out infinite alternate;
 }
 
 .supply-line__atmosphere {
@@ -718,7 +748,7 @@
 .supply-line[data-story-theme="last_supply_line"] .supply-line__threat-line {
   z-index: 2;
   bottom: 17px;
-  left: var(--siege-advance);
+  left: var(--siege-render-advance, var(--siege-advance));
   width: 1px;
   height: 53px;
   background: linear-gradient(transparent, color-mix(in srgb, var(--siege-accent) 55%, transparent));
@@ -728,6 +758,8 @@
 }
 
 .supply-line[data-story-theme="last_supply_line"] .supply-line__horde {
+  scale: 0.78;
+  transform-origin: 50% 100%;
   transform:
     translateX(-50%)
     translate3d(
@@ -735,6 +767,55 @@
       calc(var(--story-pointer-y) * -1px),
       0
     );
+  transition:
+    left 2.4s cubic-bezier(0.22, 0.61, 0.36, 1),
+    scale 1.2s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 600ms ease;
+}
+
+.supply-line[data-siege-phase="approaching"] .supply-line__horde {
+  scale: 0.9;
+}
+
+.supply-line[data-siege-phase="assault"] .supply-line__horde {
+  scale: 1.04;
+}
+
+.supply-line[data-siege-phase="breach"] .supply-line__horde {
+  scale: 1.16;
+}
+
+.supply-line[data-siege-phase="relief"] .supply-line__horde {
+  scale: 0.72;
+}
+
+.supply-line[data-siege-phase="distant"] .siege-zombie:nth-child(n + 4),
+.supply-line[data-siege-phase="relief"] .siege-zombie:nth-child(n + 5) {
+  display: none;
+}
+
+.supply-line[data-siege-phase="approaching"] .siege-zombie:nth-child(n + 6) {
+  display: none;
+}
+
+.supply-line[data-story-display="compact"][data-siege-phase="distant"] {
+  --siege-render-advance: min(var(--siege-advance), 24%);
+}
+
+.supply-line[data-story-display="compact"][data-siege-phase="approaching"] {
+  --siege-render-advance: min(var(--siege-advance), 18%);
+}
+
+.supply-line[data-story-display="compact"][data-siege-phase="assault"] {
+  --siege-render-advance: min(var(--siege-advance), 30%);
+}
+
+.supply-line[data-story-display="compact"][data-siege-phase="breach"] {
+  --siege-render-advance: min(var(--siege-advance), 34%);
+}
+
+.supply-line[data-story-display="expanded"] {
+  --siege-render-advance: var(--siege-advance);
 }
 
 .supply-line[data-story-theme="last_supply_line"] .supply-line__defenders,
@@ -744,6 +825,65 @@
     calc(var(--story-pointer-x) * 3px)
     calc(var(--story-pointer-y) * 1.5px);
   transition: translate 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.supply-line[data-story-theme="last_supply_line"] .supply-line__barricade::after {
+  position: absolute;
+  inset: 7px 10px 6px 16px;
+  background:
+    linear-gradient(118deg, transparent 0 42%, rgb(255 224 176 / 62%) 43% 45%, transparent 46%),
+    linear-gradient(58deg, transparent 0 52%, rgb(255 224 176 / 48%) 53% 55%, transparent 56%),
+    linear-gradient(145deg, transparent 0 62%, rgb(255 224 176 / 42%) 63% 65%, transparent 66%);
+  content: "";
+  filter: drop-shadow(0 0 2px rgb(238 119 67 / 42%));
+  opacity: 0;
+  transition: opacity 420ms ease;
+}
+
+.supply-line[data-siege-phase="assault"] .supply-line__barricade::after {
+  opacity: 0.52;
+}
+
+.supply-line[data-siege-phase="breach"] .supply-line__barricade {
+  rotate: -3deg;
+  filter:
+    saturate(0.72)
+    drop-shadow(0 3px 6px rgb(76 8 10 / 54%));
+}
+
+.supply-line[data-siege-phase="breach"] .supply-line__barricade::after {
+  opacity: 0.95;
+}
+
+.supply-line__threat {
+  position: absolute;
+  z-index: 13;
+  top: 61px;
+  left: 8px;
+  display: flex;
+  min-height: 22px;
+  padding: 4px 7px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--siege-accent) 24%, transparent);
+  border-radius: 999px;
+  background: rgb(3 15 14 / 68%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.supply-line__threat > span {
+  color: rgb(210 234 223 / 58%);
+  font: 700 7px/1 "SFMono-Regular", "Cascadia Mono", Consolas, monospace;
+  letter-spacing: 0.08em;
+}
+
+.ledger-summary .supply-line .supply-line__threat > strong {
+  margin: 0;
+  color: var(--siege-accent);
+  font: 780 8px/1 "SFMono-Regular", "Cascadia Mono", Consolas, monospace;
+  letter-spacing: 0.01em;
 }
 
 .supply-line[data-story-theme="last_supply_line"] .supply-line__readout {
@@ -886,19 +1026,74 @@
     0 12px 26px rgb(77 9 12 / 24%);
 }
 
+.supply-line[data-siege-phase="approaching"] .supply-line__alarm {
+  opacity: 0.42;
+}
+
+.supply-line[data-siege-phase="assault"] .supply-line__alarm {
+  opacity: 0.68;
+  animation: siege-alarm 2.4s ease-in-out infinite;
+}
+
+.supply-line[data-siege-phase="breach"] .supply-line__alarm {
+  border-color: color-mix(in srgb, var(--red) 46%, transparent);
+  opacity: 0.86;
+  animation: siege-alarm 1.15s ease-in-out infinite;
+}
+
 .supply-line[data-story-display="expanded"] .supply-line__readout {
-  width: 174px;
+  top: 12px;
+  left: 12px;
+  width: 196px;
+  padding: 9px 11px 10px;
 }
 
 .supply-line[data-story-display="expanded"] .supply-line__horde {
-  scale: 1.18;
+  bottom: 29px;
+  scale: 1.28;
 }
 
 .supply-line[data-story-display="expanded"] .supply-line__defenders,
 .supply-line[data-story-display="expanded"] .supply-line__barricade,
 .supply-line[data-story-display="expanded"] .supply-line__crates {
-  scale: 1.12;
+  right: 20px;
+  bottom: 28px;
+  scale: 1.34;
   transform-origin: 100% 100%;
+}
+
+.supply-line[data-story-display="expanded"] .supply-line__crates {
+  right: 18px;
+  bottom: 6px;
+  scale: 1.2;
+}
+
+.supply-line[data-story-display="expanded"] .supply-line__scene {
+  background-position: center 61%;
+}
+
+.supply-line[data-story-display="expanded"] .supply-line__threat {
+  top: auto;
+  bottom: 12px;
+  left: 12px;
+  padding: 5px 8px;
+}
+
+.supply-line[data-story-display="expanded"] .supply-line__signal {
+  right: 12px;
+  bottom: 12px;
+}
+
+.supply-line[data-story-display="expanded"] .supply-line__threat-line {
+  bottom: 24px;
+  height: 112px;
+}
+
+.ledger-summary
+  .supply-line[data-story-display="expanded"]
+  .supply-line__readout
+  > strong {
+  font-size: 35px;
 }
 
 @keyframes siege-mist-far {
@@ -914,6 +1109,16 @@
 @keyframes siege-scan-sweep {
   from { transform: rotate(-8deg); opacity: 0.38; }
   to { transform: rotate(14deg); opacity: 0.78; }
+}
+
+@keyframes siege-spotlight {
+  from { transform: rotate(-10deg); opacity: 0.38; }
+  to { transform: rotate(13deg); opacity: 0.86; }
+}
+
+@keyframes siege-alarm {
+  0%, 100% { filter: brightness(0.82); }
+  50% { filter: brightness(1.35); }
 }
 
 @keyframes siege-signal-dot {
@@ -937,7 +1142,6 @@
 @media (prefers-reduced-motion: reduce) {
   .supply-line[data-story-theme="last_supply_line"] .supply-line__scene,
   .supply-line[data-story-theme="last_supply_line"] .supply-line__radio,
-  .supply-line[data-story-theme="last_supply_line"] .supply-line__horde,
   .supply-line[data-story-theme="last_supply_line"] .supply-line__defenders,
   .supply-line[data-story-theme="last_supply_line"] .supply-line__barricade,
   .supply-line[data-story-theme="last_supply_line"] .supply-line__crates {
@@ -945,7 +1149,13 @@
     translate: none;
   }
 
+  .supply-line[data-story-theme="last_supply_line"] .supply-line__horde {
+    transform: translateX(-50%);
+  }
+
   .supply-line__atmosphere,
+  .supply-line__alarm,
+  .supply-line__spotlight,
   .supply-line__scan,
   .supply-line__signal-dot {
     animation: none;
