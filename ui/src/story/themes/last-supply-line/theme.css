@@ -123,9 +123,11 @@
   width: 38px;
   height: 58px;
   background: url("/assets/siege-v2/zombie-actions-2x.webp") 0 0 / 400% 200% no-repeat;
-  filter: none;
+  filter: drop-shadow(0 3px 4px rgb(0 0 0 / 30%));
   transform-origin: 50% 100%;
-  animation: none;
+  animation:
+    zombie-sprite 5.8s step-end infinite,
+    zombie-stagger 2.7s ease-in-out infinite alternate;
 }
 
 .siege-zombie::before {
@@ -141,7 +143,7 @@
   left: -10px;
   z-index: 2;
   scale: 0.65;
-  animation-delay: -1.4s;
+  animation-delay: -1.4s, -600ms;
 }
 
 .siege-zombie--two {
@@ -149,7 +151,7 @@
   left: 8px;
   z-index: 4;
   scale: 0.82;
-  animation-delay: -3.8s;
+  animation-delay: -3.8s, -1.5s;
 }
 
 .siege-zombie--three {
@@ -157,7 +159,7 @@
   bottom: 0;
   z-index: 3;
   scale: 0.72;
-  animation-delay: -2.1s;
+  animation-delay: -2.1s, -900ms;
 }
 
 .siege-zombie--four {
@@ -165,7 +167,7 @@
   bottom: 2px;
   z-index: 2;
   scale: 0.6;
-  animation-delay: -4.7s;
+  animation-delay: -4.7s, -2s;
 }
 
 .siege-zombie--five {
@@ -174,7 +176,7 @@
   z-index: 1;
   opacity: 0.68;
   scale: 0.52;
-  animation-delay: -700ms;
+  animation-delay: -700ms, -200ms;
 }
 
 .siege-zombie--six {
@@ -183,7 +185,7 @@
   z-index: 1;
   opacity: 0.62;
   scale: 0.5;
-  animation-delay: -3s;
+  animation-delay: -3s, -1.2s;
 }
 
 .siege-zombie--seven {
@@ -192,7 +194,7 @@
   z-index: 0;
   opacity: 0.44;
   scale: 0.4;
-  animation-delay: -5.2s;
+  animation-delay: -5.2s, -1.8s;
 }
 
 .siege-zombie--eight {
@@ -201,7 +203,7 @@
   z-index: 0;
   opacity: 0.4;
   scale: 0.42;
-  animation-delay: -2.6s;
+  animation-delay: -2.6s, -400ms;
 }
 
 .supply-line__defenders {
@@ -232,7 +234,7 @@
   width: 44px;
   height: 62px;
   background: url("/assets/siege-v2/survivor-actions-2x.webp") 100% 100% / 400% 200% no-repeat;
-  filter: none;
+  filter: drop-shadow(0 3px 4px rgb(0 0 0 / 28%));
 }
 
 .siege-defender::before {
@@ -426,21 +428,20 @@
   animation: rpg-impact-burst 6.4s step-end 1 both;
 }
 
-.supply-line.pressure-safe .siege-zombie--two {
-  animation: zombie-sprite 7.2s step-end infinite;
+.supply-line.pressure-safe .siege-zombie {
+  animation-duration: 7.2s, 3.2s;
 }
 
-.supply-line.pressure-warning .siege-zombie--two,
-.supply-line.pressure-warning .siege-zombie--three {
-  animation: zombie-sprite 5.8s step-end infinite;
+.supply-line.pressure-warning .siege-zombie {
+  animation-duration: 5.8s, 2.7s;
 }
 
-.supply-line.pressure-danger .siege-zombie:nth-child(-n + 3) {
-  animation: zombie-sprite 4.4s step-end infinite;
+.supply-line.pressure-danger .siege-zombie {
+  animation-duration: 4.4s, 2.1s;
 }
 
-.supply-line.pressure-critical .siege-zombie:nth-child(-n + 4) {
-  animation: zombie-sprite 3.2s step-end infinite;
+.supply-line.pressure-critical .siege-zombie {
+  animation-duration: 3.2s, 1.6s;
 }
 
 .supply-line.pressure-warning .siege-defender--front {
@@ -672,7 +673,7 @@
   );
   filter: blur(1px);
   transform-origin: 88% 0;
-  animation: none;
+  animation: siege-spotlight 7.2s ease-in-out infinite alternate;
 }
 
 .supply-line__atmosphere {
@@ -688,7 +689,7 @@
 .supply-line__atmosphere--far {
   top: 50px;
   left: -18%;
-  animation: none;
+  animation: siege-mist-far 13s ease-in-out infinite alternate;
 }
 
 .supply-line__atmosphere--near {
@@ -697,7 +698,7 @@
   bottom: 2px;
   height: 24px;
   opacity: 0.36;
-  animation: none;
+  animation: siege-mist-near 9s ease-in-out infinite alternate;
 }
 
 .supply-line[data-story-theme="last_supply_line"] .supply-line__radio {
@@ -710,12 +711,6 @@
     0
   );
   transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.supply-line[data-story-display="compact"] .supply-line__radio::before,
-.supply-line[data-story-display="compact"] .supply-line__radio::after,
-.supply-line[data-story-display="compact"] .supply-line__radio i {
-  animation: none !important;
 }
 
 .supply-line[data-story-theme="last_supply_line"]
@@ -742,7 +737,7 @@
   );
   clip-path: polygon(100% 0, 0 100%, 100% 100%);
   opacity: 0.72;
-  animation: none;
+  animation: siege-scan-sweep 4.8s ease-in-out infinite alternate;
 }
 
 .supply-line[data-story-theme="last_supply_line"] .supply-line__road::after {
@@ -764,7 +759,6 @@
 }
 
 .supply-line[data-story-theme="last_supply_line"] .supply-line__horde {
-  filter: drop-shadow(0 3px 4px rgb(0 0 0 / 30%));
   scale: 0.78;
   transform-origin: 50% 100%;
   transform:
@@ -832,10 +826,6 @@
     calc(var(--story-pointer-x) * 3px)
     calc(var(--story-pointer-y) * 1.5px);
   transition: translate 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.supply-line[data-story-theme="last_supply_line"] .supply-line__defenders {
-  filter: drop-shadow(0 3px 4px rgb(0 0 0 / 28%));
 }
 
 .supply-line[data-story-theme="last_supply_line"] .supply-line__barricade::after {
@@ -1032,11 +1022,6 @@
   animation: siege-signal-dot 1.8s ease-in-out infinite;
 }
 
-.supply-line[data-story-display="compact"].pressure-safe
-  .supply-line__signal-dot {
-  animation: none;
-}
-
 .ledger-summary
   .supply-line[data-story-theme="last_supply_line"]
   .supply-line__signal
@@ -1100,14 +1085,6 @@
   background-position: center 61%;
 }
 
-.supply-line[data-story-display="expanded"] .supply-line__spotlight {
-  animation: siege-spotlight 7.2s ease-in-out infinite alternate;
-}
-
-.supply-line[data-story-display="expanded"] .supply-line__scan {
-  animation: siege-scan-sweep 4.8s ease-in-out infinite alternate;
-}
-
 .supply-line[data-story-display="expanded"] .supply-line__threat {
   top: auto;
   bottom: 12px;
@@ -1153,8 +1130,8 @@
 }
 
 @keyframes siege-alarm {
-  0%, 100% { opacity: 0.5; }
-  50% { opacity: 0.86; }
+  0%, 100% { filter: brightness(0.82); }
+  50% { filter: brightness(1.35); }
 }
 
 @keyframes siege-signal-dot {

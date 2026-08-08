@@ -358,18 +358,15 @@ test("renders generated artwork for the Last Supply Line scene", async () => {
     Array.from(document.querySelectorAll<HTMLElement>(".siege-zombie"))
       .filter((zombie) => getComputedStyle(zombie).display !== "none"),
   ).toHaveLength(5);
-  const activeAnimationCount = Array.from(
-    supplyLine.querySelectorAll<HTMLElement>("*"),
-  ).reduce((count, element) => {
-    if (getComputedStyle(element).display === "none") return count;
-    return count + getComputedStyle(element).animationName
-      .split(",")
-      .filter((name) => name.trim() !== "none").length;
-  }, 0);
-  expect(
-    activeAnimationCount,
-    "The compact siege scene should keep its active animation budget bounded",
-  ).toBeLessThanOrEqual(8);
+  const visibleZombies = Array.from(
+    supplyLine.querySelectorAll<HTMLElement>(".siege-zombie"),
+  ).filter((zombie) => getComputedStyle(zombie).display !== "none");
+  for (const zombie of visibleZombies) {
+    expect(
+      getComputedStyle(zombie).animationName.split(",").map((name) => name.trim()),
+      "Every visible zombie should retain both sprite and continuous stagger motion",
+    ).toEqual(["zombie-sprite", "zombie-stagger"]);
+  }
   expect(getComputedStyle(requireElement(".supply-line__readout")).backdropFilter)
     .toBe("none");
   const supplyLineWidth = supplyLine.getBoundingClientRect().width;
