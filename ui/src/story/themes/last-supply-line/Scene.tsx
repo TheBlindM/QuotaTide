@@ -65,11 +65,17 @@ function siegePhaseLabel(phase: SiegePhase, locale: InterfaceLocale): string {
   return locale === "zh-CN" ? zh : en;
 }
 
-export function LastSupplyLineScene({ snapshot, displayMode }: StorySceneProps) {
+export function LastSupplyLineScene({
+  snapshot,
+  displayMode,
+  motionActive,
+}: StorySceneProps) {
   const { locale, text } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
   const valueRef = useRef<HTMLElement>(null);
   const previousSupplyRef = useRef(snapshot.weeklyRemaining);
+  const pointerFrameRef = useRef<number | null>(null);
+  const pendingPointerRef = useRef<readonly [number, number] | null>(null);
   const state = siegeState(snapshot.pressure, locale);
   const supply = snapshot.weeklyRemaining;
   const battle = createSiegeBattleState(supply, snapshot.pressure);
@@ -90,10 +96,7 @@ export function LastSupplyLineScene({ snapshot, displayMode }: StorySceneProps) 
   useEffect(() => {
     const previousSupply = previousSupplyRef.current;
     previousSupplyRef.current = supply;
-    const reduceMotion =
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (previousSupply === supply || reduceMotion) {
+    if (previousSupply === supply || !motionActive) {
       return;
     }
     const valueElement = valueRef.current;
@@ -107,12 +110,30 @@ export function LastSupplyLineScene({ snapshot, displayMode }: StorySceneProps) 
       ],
       { duration: 520, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
     );
-  }, [supply]);
+  }, [motionActive, supply]);
 
+  const applyParallax = (pointerX: number, pointerY: number) => {
+    rootRef.current?.style.setProperty("--story-pointer-x", pointerX.toFixed(3));
+    rootRef.current?.style.setProperty("--story-pointer-y", pointerY.toFixed(3));
+  };
   const resetParallax = () => {
+    if (pointerFrameRef.current !== null) {
+      window.cancelAnimationFrame(pointerFrameRef.current);
+      pointerFrameRef.current = null;
+    }
+    pendingPointerRef.current = null;
     rootRef.current?.style.setProperty("--story-pointer-x", "0");
     rootRef.current?.style.setProperty("--story-pointer-y", "0");
   };
+
+  useEffect(() => {
+    if (!motionActive) resetParallax();
+    return () => {
+      if (pointerFrameRef.current !== null) {
+        window.cancelAnimationFrame(pointerFrameRef.current);
+      }
+    };
+  }, [motionActive]);
 
   return (
     <div
@@ -120,6 +141,7 @@ export function LastSupplyLineScene({ snapshot, displayMode }: StorySceneProps) 
       class={`primary-stat supply-line pressure-${snapshot.pressure} supply-${supplyBand}`}
       data-story-theme="last_supply_line"
       data-story-display={displayMode}
+      data-story-motion={motionActive ? "active" : "paused"}
       data-siege-phase={battle.phase}
       role="group"
       aria-label={text(
@@ -128,20 +150,21 @@ export function LastSupplyLineScene({ snapshot, displayMode }: StorySceneProps) 
       )}
       style={`--siege-advance:${String(battle.advance)}%;--supply-level:${String(supply)}%;--threat-level:${String(battle.threat)}%;--story-pointer-x:0;--story-pointer-y:0`}
       onPointerMove={(event) => {
+        if (!motionActive) return;
         const bounds = event.currentTarget.getBoundingClientRect();
         if (bounds.width === 0 || bounds.height === 0) {
           return;
         }
         const pointerX = ((event.clientX - bounds.left) / bounds.width - 0.5) * 2;
         const pointerY = ((event.clientY - bounds.top) / bounds.height - 0.5) * 2;
-        event.currentTarget.style.setProperty(
-          "--story-pointer-x",
-          pointerX.toFixed(3),
-        );
-        event.currentTarget.style.setProperty(
-          "--story-pointer-y",
-          pointerY.toFixed(3),
-        );
+        pendingPointerRef.current = [pointerX, pointerY];
+        if (pointerFrameRef.current !== null) return;
+        pointerFrameRef.current = window.requestAnimationFrame(() => {
+          pointerFrameRef.current = null;
+          const pending = pendingPointerRef.current;
+          pendingPointerRef.current = null;
+          if (pending !== null) applyParallax(pending[0], pending[1]);
+        });
       }}
       onPointerLeave={resetParallax}
       onBlur={resetParallax}

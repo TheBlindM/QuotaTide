@@ -3,7 +3,11 @@ import { pressureLabel } from "../../model";
 import type { StorySceneProps } from "../../types";
 import "./theme.css";
 
-export function OrbitalBeaconScene({ snapshot, displayMode }: StorySceneProps) {
+export function OrbitalBeaconScene({
+  snapshot,
+  displayMode,
+  motionActive,
+}: StorySceneProps) {
   const { locale, text } = useI18n();
   const state = pressureLabel(snapshot.pressure, locale);
   const signal = snapshot.radarChance ?? text("未锁定", "Unresolved");
@@ -13,6 +17,7 @@ export function OrbitalBeaconScene({ snapshot, displayMode }: StorySceneProps) {
       class={`primary-stat orbital-beacon pressure-${snapshot.pressure}`}
       data-story-theme="orbital_beacon"
       data-story-display={displayMode}
+      data-story-motion={motionActive ? "active" : "paused"}
       role="group"
       aria-label={text(
         `轨道信标：周储备剩余 ${snapshot.weeklyRemainingLabel}，${state}。下次窗口 ${snapshot.resetRelative}，雷达信号 ${signal}。`,

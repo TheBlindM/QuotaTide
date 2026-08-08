@@ -20,8 +20,13 @@ const CHAMBER_WATER_CAP_RATIO = 0.76;
 const CHAMBER_WAVE_WIDTH = 600;
 const CHAMBER_WAVE_HEIGHT = 20;
 const CHAMBER_WAVE_CENTER_Y = CHAMBER_WAVE_HEIGHT / 2;
-const CHAMBER_WAVE_SEGMENTS = 64;
+const CHAMBER_WAVE_SEGMENTS = 32;
 const CHAMBER_WAVE_CYCLE_MS = 2_160;
+const CHAMBER_WAVE_FPS = 30;
+const CHAMBER_WAVE_FRAME_INTERVAL_MS = 1_000 / CHAMBER_WAVE_FPS;
+const CHAMBER_WAVE_FRAME_COUNT = Math.round(
+  CHAMBER_WAVE_CYCLE_MS / CHAMBER_WAVE_FRAME_INTERVAL_MS,
+);
 const CHAMBER_WAVE_PRIMARY_CYCLES = 1.35;
 const CHAMBER_WAVE_SECONDARY_CYCLES = 2.4;
 const CHAMBER_WAVE_SECONDARY_WEIGHT = 0.28;
@@ -80,7 +85,11 @@ function chamberWavePath(phase: number, amplitude: number): string {
   return points.join(" ");
 }
 
-export function RisingWaterScene({ snapshot, displayMode }: StorySceneProps) {
+export function RisingWaterScene({
+  snapshot,
+  displayMode,
+  motionActive,
+}: StorySceneProps) {
   const { locale, text } = useI18n();
   const waterLevel = snapshot.weeklyUsed;
   const forecastLevel = Math.min(
@@ -110,10 +119,7 @@ export function RisingWaterScene({ snapshot, displayMode }: StorySceneProps) {
   }, [snapshot.pressure]);
 
   useEffect(() => {
-    const reduceMotion =
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduceMotion || actions.length < 2) {
+    if (!motionActive || actions.length < 2) {
       return undefined;
     }
     const timeoutId = window.setTimeout(() => {
@@ -122,48 +128,56 @@ export function RisingWaterScene({ snapshot, displayMode }: StorySceneProps) {
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [actions, tideAction]);
+  }, [actions, motionActive, tideAction]);
 
   const waterHeight = waterLevel * CHAMBER_WATER_CAP_RATIO;
   const forecastHeight = forecastLevel * CHAMBER_WATER_CAP_RATIO;
   const waveAmplitude = chamberWaveAmplitude(waterLevel);
   const initialWavePath = chamberWavePath(0, waveAmplitude);
-  const liveWavePathRef = useRef(initialWavePath);
 
   useEffect(() => {
-    const reduceMotion =
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduceMotion || typeof window.requestAnimationFrame !== "function") {
+    if (!motionActive || typeof window.requestAnimationFrame !== "function") {
       return undefined;
     }
 
+    const waveFrames = Array.from(
+      { length: CHAMBER_WAVE_FRAME_COUNT },
+      (_, index) => chamberWavePath(
+        (index / CHAMBER_WAVE_FRAME_COUNT) * Math.PI * 2,
+        waveAmplitude,
+      ),
+    );
     let animationFrameId = 0;
     let startedAt: number | null = null;
+    let renderedFrame = -1;
     const animateWave = (timestamp: number) => {
       startedAt ??= timestamp;
       const elapsed = (timestamp - startedAt) % CHAMBER_WAVE_CYCLE_MS;
-      const phase = (elapsed / CHAMBER_WAVE_CYCLE_MS) * Math.PI * 2;
-      const linePath = chamberWavePath(phase, waveAmplitude);
-      liveWavePathRef.current = linePath;
-      waveLineRef.current?.setAttribute("d", linePath);
-      waveFillRef.current?.setAttribute(
-        "d",
-        `${linePath} L${String(CHAMBER_WAVE_WIDTH)} ${String(CHAMBER_WAVE_HEIGHT)} L0 ${String(CHAMBER_WAVE_HEIGHT)} Z`,
-      );
+      const frame = Math.floor(elapsed / CHAMBER_WAVE_FRAME_INTERVAL_MS) %
+        waveFrames.length;
+      if (frame !== renderedFrame) {
+        renderedFrame = frame;
+        const linePath = waveFrames[frame] ?? initialWavePath;
+        waveLineRef.current?.setAttribute("d", linePath);
+        waveFillRef.current?.setAttribute(
+          "d",
+          `${linePath} L${String(CHAMBER_WAVE_WIDTH)} ${String(CHAMBER_WAVE_HEIGHT)} L0 ${String(CHAMBER_WAVE_HEIGHT)} Z`,
+        );
+      }
       animationFrameId = window.requestAnimationFrame(animateWave);
     };
     animationFrameId = window.requestAnimationFrame(animateWave);
     return () => {
       window.cancelAnimationFrame(animationFrameId);
     };
-  }, [waveAmplitude]);
+  }, [initialWavePath, motionActive, waveAmplitude]);
 
   return (
     <div
       class={`primary-stat quota-chamber pressure-${snapshot.pressure}`}
       data-story-theme="rising_water"
       data-story-display={displayMode}
+      data-story-motion={motionActive ? "active" : "paused"}
       role="group"
       aria-label={text(
         `周额度压力舱：已用 ${snapshot.weeklyUsedLabel}，剩余 ${snapshot.weeklyRemainingLabel}，${state}。${snapshot.resetRelative}重置。${projectionDescription}`,
@@ -191,12 +205,12 @@ export function RisingWaterScene({ snapshot, displayMode }: StorySceneProps) {
               <path
                 ref={waveFillRef}
                 class="quota-water__fill"
-                d={`${liveWavePathRef.current} L${String(CHAMBER_WAVE_WIDTH)} ${String(CHAMBER_WAVE_HEIGHT)} L0 ${String(CHAMBER_WAVE_HEIGHT)} Z`}
+                d={`${initialWavePath} L${String(CHAMBER_WAVE_WIDTH)} ${String(CHAMBER_WAVE_HEIGHT)} L0 ${String(CHAMBER_WAVE_HEIGHT)} Z`}
               />
               <path
                 ref={waveLineRef}
                 class="quota-water__line"
-                d={liveWavePathRef.current}
+                d={initialWavePath}
               />
             </svg>
           </span>

@@ -7,6 +7,7 @@ import type { StorySnapshot } from "./model";
 export type StorySceneProps = Readonly<{
   snapshot: StorySnapshot;
   displayMode: "compact" | "expanded";
+  motionActive: boolean;
 }>;
 
 export type StoryThemeAdapter = Readonly<{

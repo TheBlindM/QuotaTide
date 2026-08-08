@@ -39,6 +39,15 @@
   color: var(--accent);
 }
 
+[data-story-theme][data-story-motion="paused"],
+[data-story-theme][data-story-motion="paused"] *,
+[data-story-theme][data-story-motion="paused"]::before,
+[data-story-theme][data-story-motion="paused"]::after,
+[data-story-theme][data-story-motion="paused"] *::before,
+[data-story-theme][data-story-motion="paused"] *::after {
+  animation: none !important;
+}
+
 @keyframes story-scene-enter {
   from {
     opacity: 0;

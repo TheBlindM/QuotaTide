@@ -326,7 +326,7 @@ test("keeps settings navigation fixed and scrolls inside the active card", async
     .toBe(52);
 });
 
-test("renders generated artwork for the Last Supply Line scene", () => {
+test("renders generated artwork for the Last Supply Line scene", async () => {
   window.history.replaceState(
     {},
     "",
@@ -358,6 +358,20 @@ test("renders generated artwork for the Last Supply Line scene", () => {
     Array.from(document.querySelectorAll<HTMLElement>(".siege-zombie"))
       .filter((zombie) => getComputedStyle(zombie).display !== "none"),
   ).toHaveLength(5);
+  const activeAnimationCount = Array.from(
+    supplyLine.querySelectorAll<HTMLElement>("*"),
+  ).reduce((count, element) => {
+    if (getComputedStyle(element).display === "none") return count;
+    return count + getComputedStyle(element).animationName
+      .split(",")
+      .filter((name) => name.trim() !== "none").length;
+  }, 0);
+  expect(
+    activeAnimationCount,
+    "The compact siege scene should keep its active animation budget bounded",
+  ).toBeLessThanOrEqual(8);
+  expect(getComputedStyle(requireElement(".supply-line__readout")).backdropFilter)
+    .toBe("none");
   const supplyLineWidth = supplyLine.getBoundingClientRect().width;
   expect(
     supplyLineWidth,
@@ -373,6 +387,7 @@ test("renders generated artwork for the Last Supply Line scene", () => {
     clientX: supplyLineRect.right - 2,
     clientY: supplyLineRect.top + 2,
   }));
+  await new Promise((resolve) => window.requestAnimationFrame(resolve));
   expect(Number.parseFloat(supplyLine.style.getPropertyValue("--story-pointer-x")))
     .toBeGreaterThan(0.9);
   const closestZombieEdge = Math.max(
@@ -418,6 +433,43 @@ test("turns critical quota pressure into a visible barricade breach", async () =
     getComputedStyle(requireElement(".supply-line__barricade"), "::after")
       .opacity,
   ).toBe("0.95");
+});
+
+test("caps rising-water SVG path writes at thirty frames per second", async () => {
+  window.history.replaceState(
+    {},
+    "",
+    `${window.location.pathname}?preview&quota=65&pressure=warning&story=rising_water&theme=dark`,
+  );
+  root = document.createElement("div");
+  root.id = "root";
+  document.body.append(root);
+  render(
+    <I18nProvider preference="system">
+      <App />
+    </I18nProvider>,
+    root,
+  );
+
+  const wave = requireElement(".quota-water svg");
+  let pathWrites = 0;
+  const observer = new MutationObserver((records) => {
+    pathWrites += records.filter((record) => record.attributeName === "d").length;
+  });
+  observer.observe(wave, { attributes: true, subtree: true, attributeFilter: ["d"] });
+  await new Promise((resolve) => window.setTimeout(resolve, 700));
+  expect(pathWrites).toBeGreaterThan(20);
+  expect(pathWrites, "The water path should update at no more than 30fps")
+    .toBeLessThanOrEqual(50);
+  window.dispatchEvent(new Event("blur"));
+  await new Promise((resolve) => window.setTimeout(resolve, 150));
+  const writesWhilePaused = pathWrites;
+  await new Promise((resolve) => window.setTimeout(resolve, 150));
+  expect(requireElement(".quota-chamber"))
+    .toHaveAttribute("data-story-motion", "paused");
+  expect(pathWrites - writesWhilePaused).toBeLessThanOrEqual(2);
+  observer.disconnect();
+  window.dispatchEvent(new Event("focus"));
 });
 
 test("expands every story adapter through the shared display contract", async () => {

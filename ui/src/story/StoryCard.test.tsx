@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/preact";
+import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { StoryCard, storyThemeOptions } from ".";
@@ -92,5 +92,16 @@ describe("StoryCard interface", () => {
     );
     expect(screen.getByRole("group", { name: /轨道信标/ }))
       .toHaveAttribute("data-story-display", "expanded");
+  });
+
+  it("pauses every adapter when the app window loses focus", () => {
+    render(<StoryCard themeId="last_supply_line" source={source} />);
+    const scene = screen.getByRole("group", { name: /七日围城/ });
+
+    expect(scene).toHaveAttribute("data-story-motion", "active");
+    fireEvent.blur(window);
+    expect(scene).toHaveAttribute("data-story-motion", "paused");
+    fireEvent.focus(window);
+    expect(scene).toHaveAttribute("data-story-motion", "active");
   });
 });

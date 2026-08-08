@@ -2,6 +2,7 @@ import type { StoryTheme } from "../bindings/StoryTheme";
 import type { InterfaceLocale } from "../i18n";
 import { useI18n } from "../i18n-context";
 import { createStorySnapshot, type StorySource } from "./model";
+import { useStoryMotionActive } from "./motion";
 import { LastSupplyLinePreview } from "./themes/last-supply-line/Preview";
 import { LastSupplyLineScene } from "./themes/last-supply-line/Scene";
 import { OrbitalBeaconPreview } from "./themes/orbital-beacon/Preview";
@@ -70,11 +71,13 @@ export function StoryCard({
   displayMode?: "compact" | "expanded";
 }) {
   const adapter = resolveStoryTheme(themeId);
+  const motionActive = useStoryMotionActive();
   return (
     <adapter.Scene
       key={adapter.id}
       snapshot={createStorySnapshot(source)}
       displayMode={displayMode}
+      motionActive={motionActive}
     />
   );
 }
