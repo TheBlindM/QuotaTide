@@ -8,6 +8,11 @@
 
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
+use std::ffi::OsStr;
+#[cfg(target_os = "macos")]
+use std::path::Path;
+
 use sha2::{Digest, Sha256};
 
 pub type ActivationHandler = Arc<dyn Fn(NativeAlertTarget) + Send + Sync + 'static>;
@@ -65,7 +70,7 @@ pub struct NativeNotifier {
     #[cfg(target_os = "windows")]
     pending_toasts: windows::PendingToasts,
     #[cfg(target_os = "macos")]
-    _delegate: objc2::rc::Retained<macos::NotificationDelegate>,
+    delegate: Option<objc2::rc::Retained<macos::NotificationDelegate>>,
 }
 
 impl NativeNotifier {
@@ -83,7 +88,8 @@ impl NativeNotifier {
     ) -> Result<Self, NativeNotificationError> {
         let app_id = app_id.into();
         #[cfg(target_os = "macos")]
-        let delegate = macos::install_delegate(activation.clone());
+        let delegate = macos::notification_bundle_available()
+            .then(|| macos::install_delegate(activation.clone()));
         #[cfg(not(target_os = "windows"))]
         let _ = app_id;
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -101,7 +107,7 @@ impl NativeNotifier {
             #[cfg(target_os = "windows")]
             pending_toasts: windows::PendingToasts::default(),
             #[cfg(target_os = "macos")]
-            _delegate: delegate,
+            delegate,
         })
     }
 
@@ -113,6 +119,9 @@ impl NativeNotifier {
     pub fn permission_state(&self) -> Result<NativePermissionStatus, NativeNotificationError> {
         #[cfg(target_os = "macos")]
         {
+            self.delegate
+                .as_ref()
+                .ok_or(NativeNotificationError::Unsupported)?;
             macos::permission_state()
         }
         #[cfg(target_os = "windows")]
@@ -133,6 +142,9 @@ impl NativeNotifier {
     pub fn request_permission(&self) -> Result<NativePermissionStatus, NativeNotificationError> {
         #[cfg(target_os = "macos")]
         {
+            self.delegate
+                .as_ref()
+                .ok_or(NativeNotificationError::Unsupported)?;
             macos::request_permission()
         }
         #[cfg(target_os = "windows")]
@@ -154,6 +166,9 @@ impl NativeNotifier {
         let identifier = stable_identifier(notification);
         #[cfg(target_os = "macos")]
         {
+            self.delegate
+                .as_ref()
+                .ok_or(NativeNotificationError::Unsupported)?;
             macos::notify(notification, &identifier)
         }
         #[cfg(target_os = "windows")]
@@ -174,6 +189,22 @@ impl NativeNotifier {
             Err(NativeNotificationError::Unsupported)
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_app_executable(path: &Path) -> bool {
+    let Some(macos_directory) = path.parent() else {
+        return false;
+    };
+    let Some(contents_directory) = macos_directory.parent() else {
+        return false;
+    };
+    let Some(app_directory) = contents_directory.parent() else {
+        return false;
+    };
+    macos_directory.file_name() == Some(OsStr::new("MacOS"))
+        && contents_directory.file_name() == Some(OsStr::new("Contents"))
+        && app_directory.extension() == Some(OsStr::new("app"))
 }
 
 fn stable_identifier(notification: &NativeNotification) -> String {
@@ -232,6 +263,10 @@ mod macos {
     };
 
     const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5);
+
+    pub(super) fn notification_bundle_available() -> bool {
+        std::env::current_exe().is_ok_and(|path| super::is_macos_app_executable(&path))
+    }
 
     pub(super) struct NotificationDelegateIvars {
         activation: ActivationHandler,
@@ -562,5 +597,32 @@ mod tests {
             target_from_identifier(&first),
             Some(NativeAlertTarget::Radar)
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unbundled_process_degrades_instead_of_opening_notification_center() {
+        let notifier =
+            NativeNotifier::new("dev.theblind.quotatide", Arc::new(|_| {}), Arc::new(|_| {}))
+                .expect("an unbundled development process should still initialize");
+
+        assert_eq!(
+            notifier.permission_state(),
+            Err(NativeNotificationError::Unsupported),
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn notification_bundle_requires_an_app_contents_macos_executable() {
+        assert!(is_macos_app_executable(Path::new(
+            "/Applications/QuotaTide.app/Contents/MacOS/quotatide",
+        )));
+        assert!(!is_macos_app_executable(Path::new(
+            "/workspace/target/debug/quotatide",
+        )));
+        assert!(!is_macos_app_executable(Path::new(
+            "/Applications/QuotaTide.app/Contents/Resources/quotatide",
+        )));
     }
 }
