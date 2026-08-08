@@ -1,0 +1,98 @@
+.rising-water-preview {
+  overflow: hidden;
+  background:
+    linear-gradient(90deg, transparent 49%, rgb(193 240 226 / 8%) 50%, transparent 51%),
+    linear-gradient(180deg, #193f40 0 41%, #0b292e 42% 100%);
+}
+
+.rising-water-preview::after {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  border: 1px solid rgb(223 255 246 / 18%);
+  border-radius: inherit;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 15%);
+  content: "";
+}
+
+.rising-water-preview__valve {
+  position: absolute;
+  z-index: 5;
+  top: -5px;
+  left: calc(50% - 13px);
+  width: 26px;
+  height: 15px;
+  border: 2px solid #8e9f95;
+  border-radius: 50%;
+  background: #273b39;
+  box-shadow: 0 2px 5px rgb(0 0 0 / 38%);
+}
+
+.rising-water-preview__water {
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 43%;
+  background: linear-gradient(180deg, rgb(45 196 179 / 76%), rgb(11 101 112 / 82%));
+  box-shadow: 0 -1px 0 #f1cc78, 0 -5px 12px rgb(38 196 179 / 16%);
+}
+
+.rising-water-preview__water::before {
+  position: absolute;
+  top: -3px;
+  right: -8%;
+  left: -8%;
+  height: 7px;
+  border-top: 2px solid #efcb79;
+  border-radius: 50%;
+  content: "";
+  transform: rotate(-1deg);
+}
+
+.rising-water-preview__robot {
+  position: absolute;
+  z-index: 3;
+  right: 22%;
+  bottom: 5px;
+  width: 14px;
+  height: 17px;
+  border: 2px solid #d5e1d8;
+  border-radius: 7px 7px 5px 5px;
+  background: #8fb4aa;
+  box-shadow: 0 2px 4px rgb(0 0 0 / 30%);
+}
+
+.rising-water-preview__robot::before {
+  position: absolute;
+  top: -5px;
+  left: 2px;
+  width: 7px;
+  height: 6px;
+  border-radius: 3px;
+  background: #d9e5dd;
+  content: "";
+}
+
+.rising-water-preview__robot i {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 5px;
+  height: 3px;
+  border-radius: 999px;
+  background: #2de3c7;
+  box-shadow: 0 0 4px #2de3c7;
+}
+
+.rising-water-preview__tick {
+  position: absolute;
+  z-index: 3;
+  left: 7px;
+  width: 11px;
+  border-top: 1px solid rgb(226 255 246 / 25%);
+}
+
+.rising-water-preview__tick--one { top: 18px; }
+.rising-water-preview__tick--two { top: 29px; }

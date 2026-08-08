@@ -199,10 +199,7 @@ export function App() {
             autostartEnabled: false,
             autoUpdateEnabled: true,
             trayDisplayMode: "wave",
-            storyTheme:
-              searchParams.get("story") === "last_supply_line"
-                ? "last_supply_line"
-                : "rising_water",
+            storyTheme: searchParams.get("story") ?? "rising_water",
             interfaceLocale: preview.interfaceLocale,
             formatLocale: preview.formatLocale,
             smtp: {

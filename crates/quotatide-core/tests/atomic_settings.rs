@@ -203,7 +203,7 @@ fn draft(revision: u32, autostart_enabled: bool) -> SettingsDraft {
         autostart_enabled,
         auto_update_enabled: true,
         tray_display_mode: TrayDisplayMode::Wave,
-        story_theme: StoryTheme::RisingWater,
+        story_theme: StoryTheme::rising_water(),
         interface_locale: InterfaceLocalePreference::System,
         format_locale: "en-US".to_owned(),
         smtp: SmtpSettingsDraft {
@@ -311,13 +311,14 @@ async fn story_theme_is_revisioned_and_survives_restart() {
         .expect("open store");
     let service = AtomicSettingsManager::new(store, ValidAuth, FakeAutostart::new(false));
     let mut siege = draft(0, false);
-    siege.story_theme = StoryTheme::LastSupplyLine;
+    let future_theme = StoryTheme::from_id("energy_core").expect("valid future theme id");
+    siege.story_theme = future_theme.clone();
 
     let saved = service
         .save_settings(siege)
         .await
         .expect("save story theme");
-    assert_eq!(saved.story_theme, StoryTheme::LastSupplyLine);
+    assert_eq!(saved.story_theme, future_theme);
     drop(service);
 
     let reopened = AccountSettingsStore::open(database)
@@ -330,7 +331,7 @@ async fn story_theme_is_revisioned_and_survives_restart() {
             .await
             .expect("restarted settings")
             .story_theme,
-        StoryTheme::LastSupplyLine
+        StoryTheme::from_id("energy_core").expect("valid future theme id")
     );
 }
 

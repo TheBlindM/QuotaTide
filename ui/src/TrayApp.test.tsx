@@ -142,9 +142,7 @@ describe("tray-window navigation", () => {
     fireEvent.change(screen.getByLabelText("任务栏显示"), {
       target: { value: "wave_weekly_remaining" },
     });
-    fireEvent.change(screen.getByLabelText("故事主题"), {
-      target: { value: "last_supply_line" },
-    });
+    fireEvent.click(screen.getByRole("radio", { name: /七日围城/ }));
     fireEvent.click(screen.getByRole("tab", { name: "额度" }));
     fireEvent.input(screen.getByLabelText("周一额度"), {
       target: { value: "15" },

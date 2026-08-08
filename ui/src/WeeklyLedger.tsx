@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 
 import type { AlertEventKind } from "./bindings/AlertEventKind";
 import type { AlertTarget } from "./bindings/AlertTarget";
@@ -9,6 +9,8 @@ import type { TodayAvailabilityKind } from "./bindings/TodayAvailabilityKind";
 import { ThemeToggle, type ColorTheme } from "./color-theme";
 import { useI18n } from "./i18n-context";
 import type { InterfaceLocale } from "./i18n";
+import { StoryCard } from "./story";
+import { percentValue, pressureLabel } from "./story/model";
 
 export type LedgerTone =
   | "fresh"
@@ -28,81 +30,6 @@ export type LedgerDay = {
 };
 
 type UsageTone = "normal" | "warning" | "danger" | "unknown";
-
-type TideAction =
-  | "idle"
-  | "running-right"
-  | "running-left"
-  | "waving"
-  | "jumping"
-  | "failed"
-  | "waiting"
-  | "running"
-  | "review";
-
-const CHAMBER_WATER_CAP_RATIO = 0.76;
-const CHAMBER_WAVE_WIDTH = 600;
-const CHAMBER_WAVE_HEIGHT = 20;
-const CHAMBER_WAVE_CENTER_Y = CHAMBER_WAVE_HEIGHT / 2;
-const CHAMBER_WAVE_SEGMENTS = 64;
-const CHAMBER_WAVE_CYCLE_MS = 2_160;
-const CHAMBER_WAVE_PRIMARY_CYCLES = 1.35;
-const CHAMBER_WAVE_SECONDARY_CYCLES = 2.4;
-const CHAMBER_WAVE_SECONDARY_WEIGHT = 0.28;
-const TIDE_ACTION_LOOP_MS: Record<TideAction, number> = {
-  idle: 1_200,
-  "running-right": 800,
-  "running-left": 800,
-  waving: 720,
-  jumping: 750,
-  failed: 1_040,
-  waiting: 960,
-  running: 840,
-  review: 960,
-};
-const TIDE_ACTION_LOOPS: Record<TideAction, number> = {
-  idle: 3,
-  "running-right": 3,
-  "running-left": 3,
-  waving: 3,
-  jumping: 3,
-  failed: 2,
-  waiting: 3,
-  running: 3,
-  review: 3,
-};
-const TIDE_ACTIONS: Record<QuotaPressure, readonly TideAction[]> = {
-  safe: ["idle", "waving", "idle", "jumping", "idle"],
-  warning: ["waiting", "idle", "review", "idle", "running"],
-  danger: ["running-left", "idle", "running-right", "idle", "failed"],
-  critical: ["failed", "idle", "waiting", "idle", "review"],
-  recovery: ["waving", "idle", "jumping", "idle"],
-};
-
-function chamberWaveAmplitude(waterLevel: number): number {
-  const usedFraction = Math.min(1, Math.max(0, waterLevel / 100));
-  const edgeFactor = Math.min(
-    1,
-    Math.min(usedFraction, 1 - usedFraction) * 4,
-  );
-  return 4.8 * (0.35 + 0.65 * edgeFactor);
-}
-
-function chamberWavePath(phase: number, amplitude: number): string {
-  const points = Array.from({ length: CHAMBER_WAVE_SEGMENTS + 1 }, (_, index) => {
-    const x = (index / CHAMBER_WAVE_SEGMENTS) * CHAMBER_WAVE_WIDTH;
-    const horizontalPosition = (x - CHAMBER_WAVE_WIDTH / 2) / CHAMBER_WAVE_WIDTH;
-    const primaryWave = Math.sin(
-      horizontalPosition * Math.PI * 2 * CHAMBER_WAVE_PRIMARY_CYCLES + phase,
-    );
-    const secondaryWave = Math.sin(
-      horizontalPosition * Math.PI * 2 * CHAMBER_WAVE_SECONDARY_CYCLES - phase * 1.4,
-    ) * CHAMBER_WAVE_SECONDARY_WEIGHT;
-    const y = CHAMBER_WAVE_CENTER_Y + amplitude * (primaryWave + secondaryWave);
-    return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
-  });
-  return points.join(" ");
-}
 
 function usageToneForDay(day: LedgerDay | undefined): UsageTone {
   if (
@@ -687,11 +614,6 @@ function RadarCard({
   );
 }
 
-function percentValue(value: string): number {
-  const parsed = Number.parseFloat(value.replace("%", "").replace(",", "."));
-  return Number.isFinite(parsed) ? Math.min(100, Math.max(0, parsed)) : 0;
-}
-
 const pressureThresholds: Partial<Record<QuotaPressure, number>> = {
   warning: 60,
   danger: 80,
@@ -756,249 +678,6 @@ function pressureReason(
   );
 }
 
-function pressureLabel(
-  pressure: QuotaPressure,
-  locale: InterfaceLocale,
-): string {
-  const labels: Record<QuotaPressure, readonly [string, string]> = {
-    safe: ["安全", "Safe"],
-    warning: ["提醒", "Warning"],
-    danger: ["高压", "Danger"],
-    critical: ["临界", "Critical"],
-    recovery: ["恢复", "Recovery"],
-  };
-  const [zh, en] = labels[pressure];
-  return locale === "zh-CN" ? zh : en;
-}
-
-function QuotaChamber({ fixture }: { fixture: LedgerFixture }) {
-  const { locale, text } = useI18n();
-  const waterLevel = percentValue(fixture.weeklyUsed);
-  const forecastLevel = Math.min(
-    100,
-    percentValue(fixture.burnProjection?.projectedUsage ?? fixture.weeklyUsed),
-  );
-  const state = pressureLabel(fixture.pressure, locale);
-  const isRecovery = fixture.pressure === "recovery";
-  const valveState = isRecovery
-    ? text("重置阀已开启", "Reset valve open")
-    : text("重置阀尚未解锁", "Reset valve locked");
-  const projectionDescription =
-    fixture.burnProjection === null
-      ? text("预测样本不足", "Not enough samples to forecast")
-      : text(
-          `速率 ${fixture.burnProjection.rate}。${fixture.burnProjection.conclusion}`,
-          `Rate ${fixture.burnProjection.rate}. ${fixture.burnProjection.conclusion}`,
-        );
-  const actions = TIDE_ACTIONS[fixture.pressure];
-  const [actionIndex, setActionIndex] = useState(0);
-  const tideAction = actions[actionIndex % actions.length] ?? "idle";
-  const waveFillRef = useRef<SVGPathElement>(null);
-  const waveLineRef = useRef<SVGPathElement>(null);
-
-  useEffect(() => {
-    setActionIndex(0);
-  }, [fixture.pressure]);
-
-  useEffect(() => {
-    const reduceMotion =
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduceMotion || actions.length < 2) {
-      return undefined;
-    }
-    const timeoutId = window.setTimeout(() => {
-      setActionIndex((current) => (current + 1) % actions.length);
-    }, TIDE_ACTION_LOOP_MS[tideAction] * TIDE_ACTION_LOOPS[tideAction]);
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [actions, tideAction]);
-
-  const waterHeight = waterLevel * CHAMBER_WATER_CAP_RATIO;
-  const forecastHeight = forecastLevel * CHAMBER_WATER_CAP_RATIO;
-  const waveAmplitude = chamberWaveAmplitude(waterLevel);
-  const initialWavePath = chamberWavePath(0, waveAmplitude);
-  const liveWavePathRef = useRef(initialWavePath);
-
-  useEffect(() => {
-    const reduceMotion =
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduceMotion || typeof window.requestAnimationFrame !== "function") {
-      return undefined;
-    }
-
-    let animationFrameId = 0;
-    let startedAt: number | null = null;
-    const animateWave = (timestamp: number) => {
-      startedAt ??= timestamp;
-      const elapsed = (timestamp - startedAt) % CHAMBER_WAVE_CYCLE_MS;
-      const phase = (elapsed / CHAMBER_WAVE_CYCLE_MS) * Math.PI * 2;
-      const linePath = chamberWavePath(phase, waveAmplitude);
-      liveWavePathRef.current = linePath;
-      waveLineRef.current?.setAttribute("d", linePath);
-      waveFillRef.current?.setAttribute(
-        "d",
-        `${linePath} L${String(CHAMBER_WAVE_WIDTH)} ${String(CHAMBER_WAVE_HEIGHT)} L0 ${String(CHAMBER_WAVE_HEIGHT)} Z`,
-      );
-      animationFrameId = window.requestAnimationFrame(animateWave);
-    };
-    animationFrameId = window.requestAnimationFrame(animateWave);
-    return () => {
-      window.cancelAnimationFrame(animationFrameId);
-    };
-  }, [waveAmplitude]);
-
-  return (
-    <div
-      class={`primary-stat quota-chamber pressure-${fixture.pressure}`}
-      role="group"
-      aria-label={text(
-        `周额度压力舱：已用 ${fixture.weeklyUsed}，剩余 ${fixture.weeklyRemaining}，${state}。${fixture.resetRelative}重置。${projectionDescription}`,
-        `Weekly quota pressure chamber: ${fixture.weeklyUsed} used, ${fixture.weeklyRemaining} remaining, ${state}. Resets ${fixture.resetRelative}. ${projectionDescription}`,
-      )}
-      title={projectionDescription}
-      style={`--water-level:${String(waterLevel)}%;--water-height:${String(waterHeight)}%;--forecast-level:${String(forecastLevel)}%;--forecast-height:${String(forecastHeight)}%`}
-    >
-      <div class="quota-chamber__viewport" aria-hidden="true">
-        <div class="quota-chamber__valve" title={valveState}>
-          <span class="quota-chamber__valve-lock" />
-        </div>
-        {fixture.burnProjection === null ? null : (
-          <div class="quota-chamber__forecast" />
-        )}
-        <div
-          class={`quota-robot quota-robot--${fixture.pressure} quota-robot--action-${tideAction}`}
-          data-action={tideAction}
-        >
-          <span key={`${fixture.pressure}-${String(actionIndex)}-${tideAction}`} class="quota-robot__sprite" />
-        </div>
-        <div class="quota-water">
-          <span class="quota-water__wave" aria-hidden="true">
-            <svg viewBox="0 0 600 20" preserveAspectRatio="none">
-              <path
-                ref={waveFillRef}
-                class="quota-water__fill"
-                d={`${liveWavePathRef.current} L${String(CHAMBER_WAVE_WIDTH)} ${String(CHAMBER_WAVE_HEIGHT)} L0 ${String(CHAMBER_WAVE_HEIGHT)} Z`}
-              />
-              <path
-                ref={waveLineRef}
-                class="quota-water__line"
-                d={liveWavePathRef.current}
-              />
-            </svg>
-          </span>
-        </div>
-        <span
-          class="quota-chamber__reset-chip"
-          title={fixture.resetAbsolute}
-        >
-          {isRecovery ? text("排水中", "Draining") : fixture.resetRelative}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function siegeState(
-  pressure: QuotaPressure,
-  locale: InterfaceLocale,
-): string {
-  const labels: Record<QuotaPressure, readonly [string, string]> = {
-    safe: ["防线稳定", "Line secure"],
-    warning: ["尸群接近", "Horde approaching"],
-    danger: ["防线承压", "Line under pressure"],
-    critical: ["最后防线", "Last line"],
-    recovery: ["补给抵达", "Supplies arrived"],
-  };
-  const [zh, en] = labels[pressure];
-  return locale === "zh-CN" ? zh : en;
-}
-
-function LastSupplyLine({ fixture }: { fixture: LedgerFixture }) {
-  const { locale, text } = useI18n();
-  const state = siegeState(fixture.pressure, locale);
-  const supply = percentValue(fixture.weeklyRemaining);
-  const weeklyUsed = 100 - supply;
-  const advance = fixture.pressure === "recovery"
-    ? 27
-    : Number((7 + weeklyUsed * 0.2).toFixed(2));
-  const supplyBand = supply <= 10 ? "critical" : supply <= 25 ? "low" : "ready";
-  const activeSignal = fixture.radar?.kind === "active"
-    ? fixture.radar.chance
-    : null;
-  const signalState = fixture.pressure === "recovery"
-    ? "delivered"
-    : activeSignal !== null
-      ? "active"
-      : "scanning";
-  const signal: string = signalState === "delivered"
-    ? text("已抵达", "Arrived")
-    : signalState === "active"
-      ? (activeSignal ?? "—")
-      : text("搜寻中", "Scanning");
-  const pace = fixture.burnProjection?.rate ?? text("待观测", "Observing");
-
-  return (
-    <div
-      class={`primary-stat supply-line pressure-${fixture.pressure} supply-${supplyBand}`}
-      role="group"
-      aria-label={text(
-        `七日围城：周补给剩余 ${fixture.weeklyRemaining}，${state}。消耗速度 ${pace}。补给信号 ${signal}。`,
-        `Last Supply Line: ${fixture.weeklyRemaining} weekly supplies remain. ${state}. Burn rate ${pace}. Supply signal ${signal}.`,
-      )}
-      style={`--siege-advance:${String(advance)}%`}
-    >
-      <div class="supply-line__scene" aria-hidden="true">
-        <span class="supply-line__moon" />
-        <span class="supply-line__skyline" />
-        <span class={`supply-line__radio signal-${signalState}`}>
-          <i />
-        </span>
-        <span class="supply-line__road" />
-        <div class="supply-line__horde">
-          <span class="siege-zombie siege-zombie--one" />
-          <span class="siege-zombie siege-zombie--two" />
-          <span class="siege-zombie siege-zombie--three" />
-          <span class="siege-zombie siege-zombie--four" />
-          <span class="siege-zombie siege-zombie--five" />
-          <span class="siege-zombie siege-zombie--six" />
-          <span class="siege-zombie siege-zombie--seven" />
-          <span class="siege-zombie siege-zombie--eight" />
-        </div>
-        <span class="supply-line__airdrop" data-testid="supply-airdrop" />
-        <div class="supply-line__defenders">
-          <span class="siege-defender siege-defender--rear" />
-          <span class="siege-defender siege-defender--front" />
-          <span
-            class="siege-defender siege-defender--rpg"
-            data-testid="siege-rpg"
-          />
-          <span class="siege-muzzle" />
-        </div>
-        <span class="siege-rocket" data-testid="siege-rocket" />
-        <span class="siege-blast" data-testid="siege-blast" />
-        <span class="supply-line__barricade" />
-        <div class="supply-line__crates">
-          <span />
-          <span />
-          <span />
-        </div>
-      </div>
-      <div class="supply-line__readout">
-        <span>{text("周补给", "SUPPLIES")}</span>
-        <strong>{fixture.weeklyRemaining}</strong>
-        <small>{state}</small>
-      </div>
-      <div class="supply-line__signal">
-        <span>{text("补给信号", "SUPPLY SIGNAL")}</span>
-        <strong>{signal}</strong>
-      </div>
-    </div>
-  );
-}
-
 export function WeeklyLedger({
   fixture: sourceFixture,
   storyTheme = "rising_water",
@@ -1019,6 +698,7 @@ export function WeeklyLedger({
   const fixture = localizeFixture(sourceFixture, locale);
   const [showWeekDetail, setShowWeekDetail] = useState(false);
   const [showAlerts, setShowAlerts] = useState(false);
+  const [storyExpanded, setStoryExpanded] = useState(false);
   const [inspectedDayIndex, setInspectedDayIndex] = useState<number | null>(
     null,
   );
@@ -1160,6 +840,23 @@ export function WeeklyLedger({
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />
           <button
             type="button"
+            class="story-display-toggle"
+            aria-label={
+              storyExpanded
+                ? text("收起故事场景", "Collapse story scene")
+                : text("展开故事场景", "Expand story scene")
+            }
+            aria-pressed={storyExpanded}
+            onClick={() => {
+              setStoryExpanded((current) => !current);
+            }}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8.5 4H4v4.5M15.5 4H20v4.5M8.5 20H4v-4.5M15.5 20H20v-4.5" />
+            </svg>
+          </button>
+          <button
+            type="button"
             aria-label={
               refreshing
                 ? text("正在刷新", "Refreshing")
@@ -1245,15 +942,15 @@ export function WeeklyLedger({
 
         <section
           id="quota-target-today"
-          class="ledger-summary command-summary"
+          class={`ledger-summary command-summary${storyExpanded ? " story-expanded" : ""}`}
           aria-label={text("额度控制台", "Quota console")}
           tabIndex={-1}
         >
-          {storyTheme === "last_supply_line" ? (
-            <LastSupplyLine fixture={fixture} />
-          ) : (
-            <QuotaChamber fixture={fixture} />
-          )}
+          <StoryCard
+            themeId={storyTheme}
+            source={fixture}
+            displayMode={storyExpanded ? "expanded" : "compact"}
+          />
           <div class="side-stats">
             <div
               class={`side-stat quota-side-stat side-stat--${todayUsageTone} pressure-${fixture.pressure}`}

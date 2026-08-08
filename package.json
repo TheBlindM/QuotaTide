@@ -9,10 +9,16 @@
   "repository": "https://github.com/TheBlindM/QuotaTide",
   "scripts": {
     "icons": "node scripts/generate-icons.mjs",
+    "new:story-theme": "node scripts/scaffold-story-theme.mjs",
+    "story-assets": "node scripts/qa/optimize-story-assets.mjs --write",
+    "check:story-assets": "node scripts/qa/optimize-story-assets.mjs --check",
     "test": "node --test scripts/*.test.mjs scripts/release/*.test.mjs scripts/qa/*.test.mjs",
-    "check": "npm test && node scripts/check-desktop-versions.mjs && node scripts/check-desktop-identity.mjs && node scripts/check-updater-key.mjs"
+    "check": "npm test && npm run check:story-assets && node scripts/check-desktop-versions.mjs && node scripts/check-desktop-identity.mjs && node scripts/check-updater-key.mjs"
   },
   "engines": {
     "node": ">=22.13"
+  },
+  "devDependencies": {
+    "sharp": "^0.35.3"
   }
 }

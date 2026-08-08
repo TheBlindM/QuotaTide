@@ -200,6 +200,13 @@ test("matches the selected C telemetry layout at 360×460 in both themes", async
   expectNoHorizontalOverflow(ledger);
   expectNoHorizontalOverflow(content);
   const chamberViewport = requireElement(".quota-chamber__viewport");
+  const chamber = requireElement(".quota-chamber");
+  const chamberWidth = chamber.getBoundingClientRect().width;
+  expect(
+    chamberWidth,
+    "Every story theme should use the shared compact summary slot",
+  ).toBeGreaterThan(150);
+  expect(chamberWidth).toBeLessThan(220);
   const valve = requireElement(".quota-chamber__valve");
   const robot = requireElement(".quota-robot");
   expect(document.querySelector(".quota-robot__tether")).toBeNull();
@@ -302,6 +309,21 @@ test("keeps settings navigation fixed and scrolls inside the active card", async
   const panelRect = panel.getBoundingClientRect();
   expect(panelRect.top).toBeGreaterThan(contentRect.top);
   expect(panelRect.bottom).toBeLessThanOrEqual(contentRect.bottom);
+
+  const themePicker = requireElement(".story-theme-picker");
+  const themeRadios = themePicker.querySelectorAll<HTMLInputElement>(
+    'input[type="radio"]',
+  );
+  expect(themeRadios).toHaveLength(3);
+  expectNoHorizontalOverflow(themePicker);
+  const siegeRadio = Array.from(themeRadios).find(
+    (radio) => radio.value === "last_supply_line",
+  );
+  expect(siegeRadio).toBeDefined();
+  siegeRadio?.click();
+  expect(siegeRadio?.checked).toBe(true);
+  expect(requireElement(".last-supply-line-preview").getBoundingClientRect().height)
+    .toBe(52);
 });
 
 test("renders generated artwork for the Last Supply Line scene", () => {
@@ -328,6 +350,24 @@ test("renders generated artwork for the Last Supply Line scene", () => {
     .toContain("/assets/siege-v2/survivor-actions");
   expect(getComputedStyle(requireElement(".supply-line__barricade")).backgroundImage)
     .toContain("/assets/siege-v2/supply-props");
+  const supplyLine = requireElement(".supply-line");
+  const supplyLineWidth = supplyLine.getBoundingClientRect().width;
+  expect(
+    supplyLineWidth,
+    "Every story theme should use the shared compact summary slot",
+  ).toBeGreaterThan(150);
+  expect(supplyLineWidth).toBeLessThan(220);
+  expect(supplyLine.style.getPropertyValue("--supply-level")).toBe("55%");
+  expect(getComputedStyle(requireElement(".supply-line__signal-dot")).animationName)
+    .toContain("siege-signal-dot");
+  const supplyLineRect = supplyLine.getBoundingClientRect();
+  supplyLine.dispatchEvent(new PointerEvent("pointermove", {
+    bubbles: true,
+    clientX: supplyLineRect.right - 2,
+    clientY: supplyLineRect.top + 2,
+  }));
+  expect(Number.parseFloat(supplyLine.style.getPropertyValue("--story-pointer-x")))
+    .toBeGreaterThan(0.9);
   const closestZombieEdge = Math.max(
     ...Array.from(document.querySelectorAll<HTMLElement>(".siege-zombie"))
       .map((zombie) => zombie.getBoundingClientRect().right),
@@ -338,6 +378,39 @@ test("renders generated artwork for the Last Supply Line scene", () => {
     frontDefender.left - closestZombieEdge,
     "The warning state should preserve a readable no-man's-land between both sides",
   ).toBeGreaterThanOrEqual(20);
+});
+
+test("expands every story adapter through the shared display contract", async () => {
+  window.history.replaceState(
+    {},
+    "",
+    `${window.location.pathname}?preview&state=warning&radar=active&story=orbital_beacon&theme=dark`,
+  );
+  root = document.createElement("div");
+  root.id = "root";
+  document.body.append(root);
+  render(
+    <I18nProvider preference="system">
+      <App />
+    </I18nProvider>,
+    root,
+  );
+
+  const scene = requireElement(".orbital-beacon");
+  expect(scene.getBoundingClientRect().width).toBeLessThan(220);
+  expect(scene).toHaveAttribute("data-story-display", "compact");
+
+  await page.getByRole("button", { name: "展开故事场景" }).click();
+  expect(scene.getBoundingClientRect().width).toBeGreaterThan(300);
+  expect(scene).toHaveAttribute("data-story-display", "expanded");
+  expect(
+    getComputedStyle(requireElement(".side-stats")).gridTemplateColumns.split(" "),
+  ).toHaveLength(2);
+  expectNoHorizontalOverflow(requireElement(".command-summary"));
+
+  await page.getByRole("button", { name: "收起故事场景" }).click();
+  expect(scene.getBoundingClientRect().width).toBeLessThan(220);
+  expect(scene).toHaveAttribute("data-story-display", "compact");
 });
 
 test("plays the RPG clear-and-reset sequence when supplies arrive", () => {
@@ -428,8 +501,23 @@ test("drives water level, pressure color, and pet sprite from mocked quota", asy
     expect(waveLine).not.toBeNull();
     if (mock.pressure === "warning") {
       const initialWavePath = waveLine.getAttribute("d");
-      await new Promise((resolve) => window.setTimeout(resolve, 120));
-      expect(waveLine.getAttribute("d")).not.toBe(initialWavePath);
+      const waveChanged = await new Promise<boolean>((resolve) => {
+        let animationFrameId = 0;
+        const timeoutId = window.setTimeout(() => {
+          window.cancelAnimationFrame(animationFrameId);
+          resolve(false);
+        }, 750);
+        const inspectFrame = () => {
+          if (waveLine.getAttribute("d") !== initialWavePath) {
+            window.clearTimeout(timeoutId);
+            resolve(true);
+            return;
+          }
+          animationFrameId = window.requestAnimationFrame(inspectFrame);
+        };
+        animationFrameId = window.requestAnimationFrame(inspectFrame);
+      });
+      expect(waveChanged).toBe(true);
     }
     expect(waterHeight).toBeGreaterThanOrEqual(
       viewportHeight * (mock.quota / 100) * 0.76 - 1,
@@ -584,6 +672,10 @@ test("keeps every core English workflow reachable at 360×460 and 200% text", as
   await expect.element(page.getByRole("group", { name: /Last Supply Line/ })).toBeVisible();
   expectNoHorizontalOverflow(ledger);
   expectNoHorizontalOverflow(ledgerContent);
+  const compactSupplyLine = requireElement(".supply-line").getBoundingClientRect();
+  const compactLedger = ledger.getBoundingClientRect();
+  expect(compactSupplyLine.left).toBeGreaterThanOrEqual(compactLedger.left);
+  expect(compactSupplyLine.right).toBeLessThanOrEqual(compactLedger.right);
 
   revealIn(
     ledger,

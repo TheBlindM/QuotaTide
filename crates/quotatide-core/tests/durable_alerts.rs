@@ -310,6 +310,7 @@ async fn a_version_twelve_store_gains_persistent_alert_dismissals_without_losing
     connection
         .execute_batch(
             "DROP TABLE alert_inbox_dismissals;
+             ALTER TABLE app_settings DROP COLUMN story_theme_id;
              ALTER TABLE app_settings DROP COLUMN story_theme;
              ALTER TABLE app_settings DROP COLUMN tray_display_mode;
              DELETE FROM schema_migrations WHERE version >= 13;

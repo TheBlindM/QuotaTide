@@ -160,7 +160,7 @@ fn settings_draft() -> SettingsDraft {
         autostart_enabled: false,
         auto_update_enabled: true,
         tray_display_mode: TrayDisplayMode::Wave,
-        story_theme: StoryTheme::RisingWater,
+        story_theme: StoryTheme::rising_water(),
         interface_locale: InterfaceLocalePreference::System,
         format_locale: "en-US".to_owned(),
         smtp: SmtpSettingsDraft {

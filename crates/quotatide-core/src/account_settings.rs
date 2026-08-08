@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use secrecy::{ExposeSecret, SecretString};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio_rusqlite::{Connection, rusqlite};
@@ -34,7 +34,7 @@ use crate::{
     UsageRefreshAttempt, UsageSourceErrorCode, WeeklyUsageObservation, radar_bucket_label,
 };
 
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 const SETTINGS_SCHEMA_CHECKSUM: &str = "quotatide-settings-v1-account-path-stream";
 const LIVE_QUOTA_SCHEMA_CHECKSUM: &str = "quotatide-v2-live-quota-health";
 const QUOTA_LEDGER_SCHEMA_CHECKSUM: &str = "quotatide-v3-current-seven-day-ledger";
@@ -52,6 +52,7 @@ const ALERT_INBOX_DISMISSALS_SCHEMA_CHECKSUM: &str =
     "quotatide-v13-persistent-alert-inbox-dismissals";
 const TRAY_DISPLAY_MODE_SCHEMA_CHECKSUM: &str = "quotatide-v14-tray-display-mode";
 const STORY_THEME_SCHEMA_CHECKSUM: &str = "quotatide-v15-story-theme";
+const STORY_THEME_ID_SCHEMA_CHECKSUM: &str = "quotatide-v16-extensible-story-theme-id";
 const FRESH_FOR_MS: i64 = 90 * 60 * 1000;
 const BURN_PROJECTION_LOOKBACK_MS: i64 = 24 * 60 * 60 * 1000;
 const BURN_PROJECTION_MIN_SPAN_MS: i64 = 2 * 60 * 60 * 1000;
@@ -351,30 +352,62 @@ impl TrayDisplayMode {
     }
 }
 
-/// Visual narrative used by the compact quota overview.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
+/// Stable identifier for a visual narrative used by the compact quota overview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[ts(export, export_to = "../../../ui/src/bindings/")]
-pub enum StoryTheme {
-    #[default]
-    RisingWater,
-    LastSupplyLine,
-}
+pub struct StoryTheme(String);
 
 impl StoryTheme {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::RisingWater => "rising_water",
-            Self::LastSupplyLine => "last_supply_line",
+    /// Creates a validated theme identifier suitable for persistence.
+    #[must_use]
+    pub fn from_id(value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        let mut characters = value.chars();
+        let first = characters.next()?;
+        if value.len() > 48
+            || !first.is_ascii_lowercase()
+            || !characters.all(|character| {
+                character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+            })
+        {
+            return None;
         }
+        Some(Self(value))
+    }
+
+    #[must_use]
+    pub fn rising_water() -> Self {
+        Self("rising_water".to_owned())
+    }
+
+    #[must_use]
+    pub fn last_supply_line() -> Self {
+        Self("last_supply_line".to_owned())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 
     fn parse(value: &str) -> rusqlite::Result<Self> {
-        match value {
-            "rising_water" => Ok(Self::RisingWater),
-            "last_supply_line" => Ok(Self::LastSupplyLine),
-            _ => Err(rusqlite::Error::InvalidQuery),
-        }
+        Self::from_id(value).ok_or(rusqlite::Error::InvalidQuery)
+    }
+}
+
+impl Default for StoryTheme {
+    fn default() -> Self {
+        Self::rising_water()
+    }
+}
+
+impl<'de> Deserialize<'de> for StoryTheme {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_id(value).ok_or_else(|| serde::de::Error::custom("invalid story theme id"))
     }
 }
 
@@ -1343,6 +1376,11 @@ fn initialize_database(
     } else {
         validate_migration(database, 15, STORY_THEME_SCHEMA_CHECKSUM)?;
     }
+    if current_version <= 15 {
+        migrate_extensible_story_theme_id_v16(database, now)?;
+    } else {
+        validate_migration(database, 16, STORY_THEME_ID_SCHEMA_CHECKSUM)?;
+    }
     validate_database_health(database)?;
     Ok(())
 }
@@ -2228,6 +2266,36 @@ fn migrate_story_theme_v15(database: &mut rusqlite::Connection, now: i64) -> rus
     transaction.commit()
 }
 
+fn migrate_extensible_story_theme_id_v16(
+    database: &mut rusqlite::Connection,
+    now: i64,
+) -> rusqlite::Result<()> {
+    let transaction =
+        database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE app_settings
+           ADD COLUMN story_theme_id TEXT NOT NULL DEFAULT 'rising_water'
+             CHECK (
+               length(story_theme_id) BETWEEN 1 AND 48
+               AND substr(story_theme_id, 1, 1) GLOB '[a-z]'
+               AND story_theme_id NOT GLOB '*[^a-z0-9_]*'
+             );
+         UPDATE app_settings SET story_theme_id = story_theme;",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations
+         (version, applied_at_ms, app_version, checksum)
+         VALUES (16, ?1, ?2, ?3)",
+        rusqlite::params![
+            now,
+            env!("CARGO_PKG_VERSION"),
+            STORY_THEME_ID_SCHEMA_CHECKSUM
+        ],
+    )?;
+    transaction.pragma_update(None, "user_version", 16)?;
+    transaction.commit()
+}
+
 fn insert_default_policy_revision(
     transaction: &rusqlite::Transaction<'_>,
     now: i64,
@@ -2485,7 +2553,7 @@ fn load_public_atomic_settings(
     ): (i64, i64, String, String, String, String, String) = database.query_row(
         "SELECT autostart_enabled, auto_update_enabled,
                 notification_permission_status,
-                interface_locale, format_locale, tray_display_mode, story_theme
+                interface_locale, format_locale, tray_display_mode, story_theme_id
          FROM app_settings WHERE singleton_id = 1",
         [],
         |row| {
@@ -3011,7 +3079,7 @@ impl AccountSettingsStore {
                              active_policy_revision_id = ?3, policy_timezone = ?4,
                              autostart_enabled = ?5, auto_update_enabled = ?6,
                              tray_display_mode = ?7,
-                             story_theme = ?8,
+                             story_theme_id = ?8,
                              interface_locale = ?9, format_locale = ?10,
                              updated_at_ms = ?11
                          WHERE singleton_id = 1",
@@ -3035,7 +3103,7 @@ impl AccountSettingsStore {
                          SET active_policy_revision_id = ?1, policy_timezone = ?2,
                              autostart_enabled = ?3, auto_update_enabled = ?4,
                              tray_display_mode = ?5,
-                             story_theme = ?6,
+                             story_theme_id = ?6,
                              interface_locale = ?7, format_locale = ?8,
                              updated_at_ms = ?9
                          WHERE singleton_id = 1",

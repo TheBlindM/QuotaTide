@@ -1,0 +1,269 @@
+.command-summary > .orbital-beacon[data-story-theme="orbital_beacon"] {
+  --orbital-accent: #78e6c5;
+  --orbital-alert: #f2bd6d;
+  position: relative;
+  display: block;
+  min-height: 136px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--orbital-accent) 34%, transparent);
+  border-radius: 16px;
+  background: #071413;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 10%),
+    inset 0 0 0 1px rgb(1 8 8 / 38%),
+    0 10px 22px rgb(2 14 13 / 16%);
+  color: #effbf5;
+  isolation: isolate;
+}
+
+.orbital-beacon__scene {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 66% 50%, color-mix(in srgb, var(--orbital-accent) 10%, transparent), transparent 28%),
+    linear-gradient(152deg, rgb(25 96 84 / 12%), transparent 42%),
+    #071413;
+}
+
+.orbital-beacon__grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgb(119 225 193 / 5%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(119 225 193 / 5%) 1px, transparent 1px);
+  background-size: 18px 18px;
+  mask-image: linear-gradient(90deg, transparent, black 32% 88%, transparent);
+}
+
+.orbital-beacon__orbit {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: 67%;
+  display: block;
+  border: 1px solid color-mix(in srgb, var(--orbital-accent) 28%, transparent);
+  border-radius: 50%;
+  transform: translate(-50%, -50%) rotate(-12deg);
+}
+
+.orbital-beacon__orbit--outer { width: 104px; height: 72px; }
+.orbital-beacon__orbit--middle { width: 76px; height: 52px; opacity: 0.72; }
+.orbital-beacon__orbit--inner { width: 48px; height: 34px; opacity: 0.58; }
+
+.orbital-beacon__sweep {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: 67%;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: conic-gradient(from 248deg, transparent 0 78%, color-mix(in srgb, var(--orbital-accent) 20%, transparent), transparent 91%);
+  transform: translate(-50%, -50%);
+  animation: orbital-sweep 5.6s linear infinite;
+}
+
+.orbital-beacon__core {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  left: 67%;
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--orbital-accent) 74%, white);
+  border-radius: 50%;
+  background:
+    conic-gradient(var(--orbital-accent) var(--orbital-reserve), rgb(31 69 63 / 64%) 0),
+    #102a27;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--orbital-accent) 22%, transparent);
+  transform: translate(-50%, -50%);
+}
+
+.orbital-beacon__core i {
+  width: 11px;
+  height: 11px;
+  border: 2px solid #071413;
+  border-radius: 50%;
+  background: #e8fff7;
+  box-shadow: 0 0 8px var(--orbital-accent);
+}
+
+.orbital-beacon__blip {
+  position: absolute;
+  z-index: 5;
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--orbital-alert);
+  box-shadow: 0 0 7px var(--orbital-alert);
+  animation: orbital-blip 1.9s ease-in-out infinite;
+}
+
+.orbital-beacon__blip--one { top: 31%; left: 84%; }
+.orbital-beacon__blip--two { top: 66%; left: 52%; animation-delay: -900ms; }
+
+.orbital-beacon__horizon {
+  position: absolute;
+  z-index: 2;
+  right: 8px;
+  bottom: 16px;
+  left: 42%;
+  border-top: 1px dashed rgb(162 230 208 / 18%);
+}
+
+.orbital-beacon__readout,
+.orbital-beacon__telemetry {
+  position: absolute;
+  z-index: 8;
+  display: grid;
+}
+
+.orbital-beacon__readout {
+  top: 11px;
+  left: 10px;
+  width: 74px;
+}
+
+.orbital-beacon__readout span,
+.orbital-beacon__telemetry span {
+  color: rgb(204 235 225 / 64%);
+  font: 720 8px/1.2 "SFMono-Regular", "Cascadia Mono", Consolas, monospace;
+  letter-spacing: 0.07em;
+}
+
+.ledger-summary .orbital-beacon__readout strong {
+  margin-top: 3px;
+  color: #effbf5;
+  font-size: 28px;
+  letter-spacing: -0.07em;
+}
+
+.orbital-beacon__readout small {
+  margin-top: 3px;
+  color: var(--orbital-alert);
+  font-size: 9px;
+  font-weight: 760;
+}
+
+.orbital-beacon__telemetry {
+  right: 9px;
+  bottom: 8px;
+  left: 9px;
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) 5px auto;
+  gap: 5px;
+}
+
+.orbital-beacon__telemetry > span {
+  display: none;
+}
+
+.ledger-summary .orbital-beacon .orbital-beacon__telemetry strong {
+  margin: 0;
+  overflow: hidden;
+  color: rgb(221 242 234 / 76%);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orbital-beacon__telemetry > i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--orbital-accent);
+  box-shadow: 0 0 6px var(--orbital-accent);
+}
+
+.orbital-beacon__telemetry small {
+  margin: 0;
+  overflow: hidden;
+  color: var(--orbital-accent);
+  font-size: 8px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orbital-beacon.pressure-warning,
+.orbital-beacon.pressure-danger {
+  --orbital-accent: #f0bc6b;
+  --orbital-alert: #ff8a5c;
+}
+
+.orbital-beacon.pressure-critical {
+  --orbital-accent: #ff7d72;
+  --orbital-alert: #ffd17d;
+  border-color: rgb(255 105 96 / 48%);
+}
+
+.orbital-beacon.pressure-recovery {
+  --orbital-accent: #87f3d4;
+  --orbital-alert: #dffef4;
+}
+
+.orbital-beacon[data-story-display="expanded"] .orbital-beacon__orbit--outer {
+  width: 168px;
+  height: 110px;
+}
+
+.orbital-beacon[data-story-display="expanded"] .orbital-beacon__orbit--middle {
+  width: 122px;
+  height: 80px;
+}
+
+.orbital-beacon[data-story-display="expanded"] .orbital-beacon__orbit--inner {
+  width: 74px;
+  height: 48px;
+}
+
+.orbital-beacon[data-story-display="expanded"] .orbital-beacon__sweep {
+  width: 158px;
+  height: 158px;
+}
+
+.orbital-beacon[data-story-display="expanded"] .orbital-beacon__core {
+  width: 34px;
+  height: 34px;
+}
+
+.orbital-beacon[data-story-display="expanded"] .orbital-beacon__telemetry {
+  grid-template-columns: auto minmax(0, 1fr) 5px auto;
+}
+
+.orbital-beacon[data-story-display="expanded"]
+  .orbital-beacon__telemetry
+  > span {
+  display: block;
+}
+
+.ledger-summary
+  .orbital-beacon[data-story-display="expanded"]
+  .orbital-beacon__telemetry
+  strong {
+  font-size: 30px;
+  letter-spacing: -0.06em;
+}
+
+@keyframes orbital-sweep {
+  to { rotate: 1turn; }
+}
+
+@keyframes orbital-blip {
+  0%, 100% { opacity: 0.38; scale: 0.72; }
+  50% { opacity: 1; scale: 1.16; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orbital-beacon__sweep,
+  .orbital-beacon__blip {
+    animation: none;
+  }
+}

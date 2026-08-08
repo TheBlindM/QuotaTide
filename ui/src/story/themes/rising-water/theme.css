@@ -1,0 +1,376 @@
+.ledger-summary > .quota-chamber {
+  --chamber-accent: var(--accent);
+  --chamber-water-surface: rgb(190 255 241 / 88%);
+  --chamber-water-top: rgb(24 176 161 / 42%);
+  --chamber-water-bottom: rgb(4 65 76 / 56%);
+  position: relative;
+  display: block;
+  min-height: 136px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--chamber-accent) 24%, transparent);
+  border-radius: 16px;
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 14%), transparent 48%),
+    color-mix(in srgb, var(--telemetry-primary) 94%, var(--chamber-accent));
+  color: var(--telemetry-primary-ink);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 42%),
+    inset 0 0 0 1px color-mix(in srgb, var(--chamber-accent) 12%, transparent);
+  isolation: isolate;
+}
+
+.quota-chamber::after {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow:
+    inset 10px 0 18px rgb(255 255 255 / 5%),
+    inset -10px 0 18px rgb(0 0 0 / 7%);
+  content: "";
+  pointer-events: none;
+}
+
+.quota-chamber__viewport {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, rgb(2 18 14 / 3%), rgb(2 18 14 / 14%)),
+    url("/assets/tide/chamber-background-2x.webp") center / cover no-repeat,
+    linear-gradient(180deg, rgb(6 23 17 / 44%), rgb(5 27 20 / 68%));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 10%),
+    inset 0 -8px 18px rgb(0 0 0 / 10%),
+    inset 0 0 0 1px color-mix(in srgb, var(--chamber-accent) 22%, transparent);
+}
+
+.quota-chamber__viewport::after {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(105deg, rgb(255 255 255 / 9%), transparent 24% 76%, rgb(255 255 255 / 4%));
+  content: "";
+  pointer-events: none;
+}
+
+.quota-chamber__valve {
+  position: absolute;
+  z-index: 5;
+  top: 6px;
+  left: 50%;
+  display: grid;
+  width: 14px;
+  height: 14px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--chamber-accent) 36%, transparent);
+  border-radius: 50%;
+  background: rgb(5 20 15 / 56%);
+  color: color-mix(in srgb, var(--chamber-accent) 72%, white);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 10%);
+  transform: translateX(-50%);
+}
+
+.quota-chamber__valve-lock {
+  position: relative;
+  width: 6px;
+  height: 5px;
+  border-radius: 1px;
+  background: currentcolor;
+}
+
+.quota-chamber__valve-lock::before {
+  position: absolute;
+  right: 1px;
+  bottom: 3px;
+  left: 1px;
+  height: 4px;
+  border: 1px solid currentcolor;
+  border-bottom: 0;
+  border-radius: 4px 4px 0 0;
+  content: "";
+}
+
+.quota-chamber__forecast {
+  position: absolute;
+  z-index: 1;
+  right: 0;
+  bottom: clamp(7px, var(--forecast-height), 76%);
+  left: 0;
+  border-top: 1px dashed color-mix(in srgb, var(--amber) 58%, transparent);
+  opacity: 0.72;
+}
+
+.quota-chamber__forecast::after {
+  position: absolute;
+  top: -3px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border: 1px solid color-mix(in srgb, var(--amber) 70%, white);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--amber) 76%, #2b2412);
+  box-shadow: 0 0 0 2px rgb(5 20 15 / 46%);
+  content: "";
+}
+
+.quota-robot {
+  --tide-row-y: 0%;
+  position: absolute;
+  z-index: 3;
+  bottom: 3px;
+  left: 50%;
+  width: 48px;
+  height: 52px;
+  contain: paint;
+  transform: translateX(-50%);
+  transition: transform 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.quota-robot__sprite {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  background-image: url("/assets/tide/spritesheet-2x.webp");
+  background-repeat: no-repeat;
+  background-position: 0 var(--tide-row-y);
+  background-size: 384px 468px;
+  image-rendering: auto;
+  transform: translateZ(0);
+  will-change: background-position, opacity;
+  animation:
+    tide-sprite-6 1.2s steps(6, end) infinite,
+    tide-action-enter 120ms ease-out both;
+}
+
+.quota-robot--action-idle {
+  --tide-row-y: 0%;
+}
+
+.quota-robot--action-running-right {
+  --tide-row-y: 12.5%;
+}
+
+.quota-robot--action-running-left {
+  --tide-row-y: 25%;
+}
+
+.quota-robot--action-waving {
+  --tide-row-y: 37.5%;
+}
+
+.quota-robot--action-jumping {
+  --tide-row-y: 50%;
+}
+
+.quota-robot--action-failed {
+  --tide-row-y: 62.5%;
+}
+
+.quota-robot--action-waiting {
+  --tide-row-y: 75%;
+}
+
+.quota-robot--action-running {
+  --tide-row-y: 87.5%;
+}
+
+.quota-robot--action-review {
+  --tide-row-y: 100%;
+}
+
+.quota-robot--action-running-right .quota-robot__sprite,
+.quota-robot--action-running-left .quota-robot__sprite {
+  animation:
+    tide-sprite-8 800ms steps(8, end) infinite,
+    tide-action-enter 120ms ease-out both;
+}
+
+.quota-robot--action-waving .quota-robot__sprite {
+  animation:
+    tide-sprite-4 720ms steps(4, end) infinite,
+    tide-action-enter 120ms ease-out both;
+}
+
+.quota-robot--action-jumping .quota-robot__sprite {
+  animation:
+    tide-sprite-5 750ms steps(5, end) infinite,
+    tide-action-enter 120ms ease-out both;
+}
+
+.quota-robot--action-failed .quota-robot__sprite {
+  animation:
+    tide-sprite-8 1.04s steps(8, end) infinite,
+    tide-action-enter 120ms ease-out both;
+}
+
+.quota-robot--action-waiting .quota-robot__sprite,
+.quota-robot--action-review .quota-robot__sprite {
+  animation:
+    tide-sprite-6 960ms steps(6, end) infinite,
+    tide-action-enter 120ms ease-out both;
+}
+
+.quota-robot--action-running .quota-robot__sprite {
+  animation:
+    tide-sprite-6 840ms steps(6, end) infinite,
+    tide-action-enter 120ms ease-out both;
+}
+
+.quota-water {
+  position: absolute;
+  z-index: 4;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: var(--water-height);
+  min-height: 2px;
+  background: none;
+  opacity: 1;
+  transition: height 820ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.quota-water::after {
+  position: absolute;
+  z-index: 0;
+  inset: 11px 0 0;
+  background: linear-gradient(
+    180deg,
+    var(--chamber-water-top),
+    var(--chamber-water-bottom)
+  );
+  content: "";
+}
+
+.quota-water__wave {
+  position: absolute;
+  z-index: 1;
+  top: -9px;
+  left: -8%;
+  width: 116%;
+  height: 20px;
+  opacity: 0.94;
+  pointer-events: none;
+}
+
+.quota-water__wave svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.quota-water__wave path {
+  vector-effect: non-scaling-stroke;
+}
+
+.quota-water__fill {
+  fill: var(--chamber-water-top);
+  stroke: none;
+}
+
+.quota-water__line {
+  fill: none;
+  stroke: var(--chamber-water-surface);
+  stroke-linecap: round;
+  stroke-width: 2.4;
+}
+
+.quota-chamber__reset-chip {
+  position: absolute;
+  z-index: 7;
+  right: 8px;
+  bottom: 8px;
+  padding: 2px 5px;
+  border: 1px solid rgb(225 255 246 / 14%);
+  border-radius: 999px;
+  background: rgb(3 18 14 / 52%);
+  color: rgb(229 255 248 / 82%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
+  font-family: "SFMono-Regular", "Cascadia Mono", Consolas, monospace;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 720;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.quota-chamber.pressure-warning {
+  --chamber-accent: var(--amber);
+  --chamber-water-surface: rgb(255 218 137 / 90%);
+  --chamber-water-top: rgb(28 166 151 / 44%);
+  --chamber-water-bottom: rgb(5 60 71 / 56%);
+  border-color: color-mix(in srgb, var(--amber) 52%, transparent);
+}
+
+.quota-chamber.pressure-danger {
+  --chamber-accent: var(--amber);
+  --chamber-water-surface: rgb(255 187 100 / 92%);
+  --chamber-water-top: rgb(25 148 139 / 46%);
+  --chamber-water-bottom: rgb(5 50 63 / 58%);
+  border-color: color-mix(in srgb, var(--amber) 52%, transparent);
+}
+
+.quota-chamber.pressure-critical {
+  --chamber-accent: var(--red);
+  --chamber-water-surface: rgb(255 211 198 / 92%);
+  --chamber-water-top: rgb(207 77 79 / 50%);
+  --chamber-water-bottom: rgb(61 24 42 / 62%);
+  border-color: color-mix(in srgb, var(--red) 62%, transparent);
+  background:
+    linear-gradient(150deg, var(--red-soft), transparent 58%),
+    color-mix(in srgb, var(--telemetry-primary) 92%, var(--red));
+}
+
+.quota-chamber.pressure-recovery {
+  --chamber-water-surface: rgb(218 255 249 / 90%);
+  --chamber-water-top: rgb(39 197 178 / 38%);
+  --chamber-water-bottom: rgb(4 72 82 / 52%);
+}
+
+.quota-chamber.pressure-recovery .quota-water {
+  animation: chamber-drain 1.8s ease-out both;
+}
+
+.quota-chamber[data-story-display="expanded"] .quota-robot {
+  scale: 1.18;
+}
+
+.quota-chamber[data-story-display="expanded"] .quota-chamber__reset-chip {
+  right: 12px;
+  bottom: 11px;
+}
+
+@keyframes tide-sprite-4 {
+  to { background-position-x: -192px; }
+}
+
+@keyframes tide-sprite-5 {
+  to { background-position-x: -240px; }
+}
+
+@keyframes tide-sprite-6 {
+  to { background-position-x: -288px; }
+}
+
+@keyframes tide-sprite-8 {
+  to { background-position-x: -384px; }
+}
+
+@keyframes tide-action-enter {
+  from { opacity: 0.76; }
+  to { opacity: 1; }
+}
+
+@keyframes chamber-drain {
+  from { height: var(--water-height); }
+  to { height: 3%; }
+}

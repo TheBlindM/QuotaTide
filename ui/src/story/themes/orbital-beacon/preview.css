@@ -1,0 +1,68 @@
+.orbital-beacon-preview {
+  overflow: hidden;
+  background:
+    linear-gradient(rgb(110 224 191 / 5%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(110 224 191 / 5%) 1px, transparent 1px),
+    radial-gradient(circle at 62% 50%, rgb(50 199 165 / 12%), transparent 36%),
+    #071413;
+  background-size: 13px 13px, 13px 13px, auto, auto;
+}
+
+.orbital-beacon-preview::after {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  border: 1px solid rgb(183 240 223 / 14%);
+  border-radius: inherit;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
+  content: "";
+}
+
+.orbital-beacon-preview__orbit {
+  position: absolute;
+  top: 50%;
+  left: 62%;
+  border: 1px solid rgb(111 230 195 / 35%);
+  border-radius: 50%;
+  transform: translate(-50%, -50%) rotate(-12deg);
+}
+
+.orbital-beacon-preview__orbit--outer { width: 78px; height: 38px; }
+.orbital-beacon-preview__orbit--inner { width: 43px; height: 22px; opacity: 0.62; }
+
+.orbital-beacon-preview__sweep {
+  position: absolute;
+  top: 50%;
+  left: 62%;
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  background: conic-gradient(from 240deg, transparent 0 78%, rgb(87 225 188 / 20%), transparent 92%);
+  transform: translate(-50%, -50%);
+}
+
+.orbital-beacon-preview__core {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  left: 62%;
+  width: 14px;
+  height: 14px;
+  border: 3px solid #e9fff8;
+  border-radius: 50%;
+  background: #39caa4;
+  box-shadow: 0 0 10px rgb(71 224 185 / 60%);
+  transform: translate(-50%, -50%);
+}
+
+.orbital-beacon-preview__blip {
+  position: absolute;
+  z-index: 5;
+  top: 25%;
+  left: 79%;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #efb963;
+  box-shadow: 0 0 6px #efb963;
+}

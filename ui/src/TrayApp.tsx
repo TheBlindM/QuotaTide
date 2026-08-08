@@ -20,6 +20,7 @@ import {
 import type { PublicUpdateState } from "./api/updater";
 import type { NotificationActivation } from "./api/alerts";
 import { useI18n } from "./i18n-context";
+import { StoryThemePicker } from "./story";
 import { WeeklyLedger, type LedgerFixture } from "./WeeklyLedger";
 
 const alertEvents: ReadonlyArray<{
@@ -868,7 +869,7 @@ function SettingsView({
                 }}
               />
             </label>
-            <label class="settings-row settings-row--separated">
+            <div class="settings-row settings-row--separated story-theme-setting">
               <span>
                 <strong>{text("故事主题", "Story theme")}</strong>
                 <small>
@@ -878,22 +879,14 @@ function SettingsView({
                   )}
                 </small>
               </span>
-              <select
-                aria-label={text("故事主题", "Story theme")}
+              <StoryThemePicker
                 value={storyTheme}
-                onChange={(event) => {
-                  setStoryTheme(event.currentTarget.value as StoryTheme);
+                onChange={(themeId) => {
+                  setStoryTheme(themeId);
                   setSaveError(false);
                 }}
-              >
-                <option value="rising_water">
-                  {text("水位上涨", "Rising Water")}
-                </option>
-                <option value="last_supply_line">
-                  {text("七日围城", "Last Supply Line")}
-                </option>
-              </select>
-            </label>
+              />
+            </div>
             <label class="settings-row settings-row--separated">
               <span>
                 <strong>{text("任务栏显示", "Menu bar display")}</strong>

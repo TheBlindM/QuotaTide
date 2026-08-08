@@ -1,0 +1,88 @@
+.last-supply-line-preview {
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgb(3 16 17 / 5%) 38%, rgb(2 10 10 / 56%)),
+    url("/assets/siege-v2/background.webp") center 58% / cover no-repeat,
+    #071718;
+}
+
+.last-supply-line-preview::after {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  border: 1px solid rgb(192 239 225 / 13%);
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgb(2 12 12 / 28%), transparent 48%, rgb(2 12 12 / 8%));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
+  content: "";
+}
+
+.last-supply-line-preview__scan {
+  position: absolute;
+  z-index: 2;
+  top: 5px;
+  right: 9px;
+  width: 38px;
+  height: 30px;
+  background: conic-gradient(from 210deg at 100% 0, transparent, rgb(83 225 207 / 22%), transparent 42deg);
+  clip-path: polygon(100% 0, 0 100%, 100% 100%);
+  transform: rotate(7deg);
+}
+
+.last-supply-line-preview__horde {
+  position: absolute;
+  z-index: 4;
+  bottom: 7px;
+  left: 12px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.last-supply-line-preview__horde i {
+  display: block;
+  width: 6px;
+  height: 13px;
+  border-radius: 3px 3px 2px 2px;
+  background: #707967;
+  box-shadow: 0 2px 3px rgb(0 0 0 / 32%);
+}
+
+.last-supply-line-preview__horde i:nth-child(2) { height: 17px; }
+.last-supply-line-preview__horde i:nth-child(3) { height: 11px; opacity: 0.72; }
+
+.last-supply-line-preview__defender {
+  position: absolute;
+  z-index: 5;
+  right: 20px;
+  bottom: 7px;
+  width: 10px;
+  height: 19px;
+  border: 2px solid #d9e1d5;
+  border-radius: 5px 5px 3px 3px;
+  background: #4f8b7e;
+  box-shadow: 0 2px 4px rgb(0 0 0 / 38%);
+}
+
+.last-supply-line-preview__defender::before {
+  position: absolute;
+  top: -6px;
+  left: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e9eee2;
+  content: "";
+}
+
+.last-supply-line-preview__signal {
+  position: absolute;
+  z-index: 5;
+  right: 8px;
+  bottom: 7px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #eab365;
+  box-shadow: 0 0 7px #eab365;
+}
