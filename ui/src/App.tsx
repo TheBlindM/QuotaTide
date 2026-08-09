@@ -172,7 +172,7 @@ export function App() {
           kind: "ready",
           info: {
             productName: "QuotaTide",
-            version: "0.1.1",
+            version: "0.2.0",
             author: "TheBlind",
             identifier: "dev.theblind.quotatide",
             stage: "weekly-ledger-preview",
@@ -249,7 +249,7 @@ export function App() {
           recoveredFromBackup: false,
           updateState: {
             status: "idle",
-            currentVersion: "0.1.1",
+            currentVersion: "0.2.0",
             availableVersion: null,
             notes: null,
             lastCheckedAtUnixMs: null,

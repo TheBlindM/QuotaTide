@@ -30,8 +30,8 @@ lettre = { version = "=0.11.22", default-features = false, features = [
   "smtp-transport",
   "tokio1-rustls-tls",
 ] }
-quotatide-core = { path = "../crates/quotatide-core", version = "=0.1.1" }
-quotatide-native-notifications = { path = "../crates/quotatide-native-notifications", version = "=0.1.1" }
+quotatide-core = { path = "../crates/quotatide-core", version = "=0.2.0" }
+quotatide-native-notifications = { path = "../crates/quotatide-native-notifications", version = "=0.2.0" }
 reqwest = { version = "=0.13.4", default-features = false, features = [
   "json",
   "native-tls",
