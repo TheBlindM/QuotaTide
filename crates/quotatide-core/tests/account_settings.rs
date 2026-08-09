@@ -414,7 +414,7 @@ async fn populated_version_two_observations_are_backfilled_and_made_immutable() 
         .await
         .expect("projection")
         .expect("quota");
-    assert_eq!(quota.ledger_days.len(), 7);
+    assert_eq!(quota.ledger_days.len(), 8);
     assert_eq!(
         quota
             .ledger_days

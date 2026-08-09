@@ -182,7 +182,7 @@ struct WeeklyUsageSnapshot {
 }
 ```
 
-这里的七天是上游 quota window `[window_start, resets_at)`，不是数据库中的“最近七个自然日”。`window_start` 由 `resets_at - 604800s` 得到，再按用户时区切分展示日。
+这里的七天是上游 quota window `[window_start, resets_at)`，不是数据库中的“最近七个自然日”。`window_start` 由 `resets_at - 604800s` 得到，再按用户时区切分展示全部相交自然日；非午夜重置通常会触及八个自然日期。
 
 ## quota epoch 与每日增量
 

@@ -251,7 +251,7 @@ test("matches the selected C telemetry layout at 360×460 in both themes", async
   }
 
   await page
-    .getByRole("list", { name: "本周策略 07/24 至 07/30" })
+    .getByRole("list", { name: "本周策略 07/24 至 07/31 10:01" })
     .getByText("今天", { exact: true })
     .hover();
   await new Promise((resolve) => window.setTimeout(resolve, 250));
@@ -716,7 +716,7 @@ test("keeps the warning overview stationary and day quota details above the foot
   expect(content.scrollTop).toBe(0);
 
   await page
-    .getByRole("list", { name: "本周策略 07/24 至 07/30" })
+    .getByRole("list", { name: "本周策略 07/24 至 07/31 10:01" })
     .getByText("今天", { exact: true })
     .hover();
   await new Promise((resolve) => window.setTimeout(resolve, 250));
@@ -737,7 +737,7 @@ test("keeps the warning overview stationary and day quota details above the foot
   expect(detailRect.bottom).toBeLessThanOrEqual(footerRect.top);
 });
 
-test("morphs the compact rail into a complete vertical week", async () => {
+test("keeps every exact-window date in one compact rail before expanding details", async () => {
   window.history.replaceState(
     {},
     "",
@@ -754,6 +754,16 @@ test("morphs the compact rail into a complete vertical week", async () => {
   );
 
   const switcher = requireElement(".ledger-week-switcher");
+  const compactRail = requireElement(".ledger-week");
+  const compactDays = Array.from(
+    compactRail.querySelectorAll<HTMLElement>('[role="listitem"]'),
+  );
+  expect(compactDays).toHaveLength(8);
+  const compactRowTop = compactDays[0]?.getBoundingClientRect().top ?? 0;
+  for (const day of compactDays) {
+    expect(Math.abs(day.getBoundingClientRect().top - compactRowTop)).toBeLessThan(1);
+  }
+  expectNoHorizontalOverflow(compactRail);
   const collapsedHeight = switcher.getBoundingClientRect().height;
   expect(collapsedHeight).toBeLessThan(70);
   expect(getComputedStyle(switcher).transitionDuration).not.toBe("0s");
@@ -763,7 +773,7 @@ test("morphs the compact rail into a complete vertical week", async () => {
 
   const detail = requireElement("#ledger-week-detail");
   expect(detail.getAttribute("aria-hidden")).toBe("false");
-  expect(detail.querySelectorAll('[role="listitem"]')).toHaveLength(7);
+  expect(detail.querySelectorAll('[role="listitem"]')).toHaveLength(8);
   expect(switcher.getBoundingClientRect().height).toBeGreaterThan(240);
   expectNoHorizontalOverflow(detail);
   await expect

@@ -260,6 +260,14 @@ function createLiveQuota(
         false,
         "unknown",
       ),
+      ledgerDay(
+        "2026-07-31",
+        null,
+        16_000_000,
+        0,
+        false,
+        "unknown",
+      ),
     ],
   };
 }

@@ -284,9 +284,9 @@ describe("Weekly Ledger overview", () => {
     );
 
     const ledger = screen.getByRole("list", {
-      name: "本周策略 07/24 至 07/30",
+      name: "本周策略 07/24 至 07/31 10:01",
     });
-    expect(within(ledger).getAllByRole("listitem")).toHaveLength(7);
+    expect(within(ledger).getAllByRole("listitem")).toHaveLength(8);
     const todaySummary = within(ledger).getByRole("listitem", {
       name: "今天 07/28 · 正常",
     });
@@ -308,7 +308,7 @@ describe("Weekly Ledger overview", () => {
     expect(onWeekDetailChange).toHaveBeenCalledWith(true);
     await waitFor(() => {
       const detail = screen.getByRole("region", { name: "整周额度明细" });
-      expect(within(detail).getAllByRole("listitem")).toHaveLength(7);
+      expect(within(detail).getAllByRole("listitem")).toHaveLength(8);
       expect(detail).toHaveTextContent("今天");
       expect(detail).toHaveTextContent("11.4%");
       expect(detail).toHaveTextContent("16.8%");
@@ -329,7 +329,7 @@ describe("Weekly Ledger overview", () => {
   it("labels a mid-window baseline as quota suggested from now", () => {
     const suggestedFixture = {
       ...ledgerFixtures.fresh,
-      todayAvailable: "17.3%",
+      todayAvailable: "13%",
       todayAvailabilityKind: "suggested_from_now" as const,
       days: ledgerFixtures.fresh.days.map((day, index) => ({
         ...day,
@@ -337,7 +337,7 @@ describe("Weekly Ledger overview", () => {
         suggested:
           index < 4
             ? null
-            : [17.333334, 17.333333, 17.333333][index - 4],
+            : [13, 13, 13, 13][index - 4],
         status: index < 4 ? day.status : "尚无记录",
       })),
     };
@@ -358,17 +358,17 @@ describe("Weekly Ledger overview", () => {
     fireEvent.mouseEnter(todayDay as HTMLElement);
     const inspector = screen.getByRole("tooltip", { name: "今天 额度明细" });
     expect(inspector).toHaveTextContent("本机已记录0.0%");
-    expect(inspector).toHaveTextContent("计划上限17.3%");
-    expect(inspector).toHaveTextContent("建议可用17.3%");
+    expect(inspector).toHaveTextContent("计划上限13.0%");
+    expect(inspector).toHaveTextContent("建议可用13%");
 
     fireEvent.click(screen.getByRole("button", { name: "查看明细" }));
     const futureDay = screen.getByRole("listitem", {
       name: "周三 07/29 · 尚无记录",
     });
-    expect(futureDay).toHaveTextContent("17.3%");
+    expect(futureDay).toHaveTextContent("13.0%");
   });
 
-  it("renders the selected C telemetry hierarchy instead of the generic card dashboard", () => {
+  it("appends the exact reset time to the strategy window range", () => {
     render(
       <WeeklyLedger
         fixture={ledgerFixtures.fresh}
@@ -387,12 +387,14 @@ describe("Weekly Ledger overview", () => {
     expect(
       within(console).getByRole("region", { name: "重置雷达" }),
     ).toHaveClass("radar-card--summary");
-    const resetTime = within(console).getByText("重置时间", {
-      selector: ".quota-side-stat__row--reset span",
+    expect(within(console).queryByText("重置时间")).not.toBeInTheDocument();
+    const strategyWindow = screen.getByRole("region", {
+      name: ledgerFixtures.fresh.windowLabel,
     });
-    expect(resetTime.parentElement).toHaveTextContent("07/31 10:01");
     expect(
-      resetTime.parentElement?.querySelector("strong"),
+      within(strategyWindow).getByRole("heading", {
+        name: "07/24 至 07/31 10:01",
+      }),
     ).toHaveAttribute("title", ledgerFixtures.fresh.resetAbsolute);
   });
 
@@ -586,7 +588,7 @@ describe("Weekly Ledger overview", () => {
     expect(
       within(screen.getByRole("region", { name: "整周额度明细" }))
         .getAllByRole("listitem"),
-    ).toHaveLength(7);
+    ).toHaveLength(8);
   });
 
   it("moves an exceeded daily limit into a dangerous available-today card", () => {

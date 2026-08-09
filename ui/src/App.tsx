@@ -1064,7 +1064,7 @@ export function projectLiveFixture(
         ? live.windowStartsAtUnixS === null || live.windowEndsAtUnixS === null
           ? ""
           : `${formatDate(live.windowStartsAtUnixS * 1000, formatLocale)} ${copy(interfaceLocale, "至", "to")} ${formatDate(live.windowEndsAtUnixS * 1000, formatLocale)}`
-        : `${days[0].date} ${copy(interfaceLocale, "至", "to")} ${days.at(-1)?.date ?? ""}`,
+        : `${days[0].date} ${copy(interfaceLocale, "至", "to")} ${resetTime?.compact ?? days.at(-1)?.date ?? ""}`,
     lastSuccess:
       live.lastSuccessAtUnixMs === null
         ? copy(interfaceLocale, "尚未成功同步", "No successful sync yet")

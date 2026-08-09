@@ -77,7 +77,7 @@ pub struct LedgerTransition {
     pub assigned_local_date: Option<String>,
 }
 
-/// Seven-day semantic projection for the current epoch.
+/// Natural-date projection for the current exact seven-day epoch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LedgerProjection {
     pub epoch_sequence: u64,
@@ -248,7 +248,7 @@ impl QuotaLedger {
         })
     }
 
-    /// Projects exactly seven natural dates for the active current epoch.
+    /// Projects every natural date touched by the active current epoch.
     ///
     /// # Errors
     ///
@@ -263,25 +263,30 @@ impl QuotaLedger {
         };
         let reset = DateTime::<Utc>::from_timestamp(epoch.scheduled_reset_at_unix_s, 0)
             .ok_or(LedgerError::InvalidResetTime)?;
-        let reset_date = reset.with_timezone(&policy_timezone).date_naive();
-        let window_start = reset_date
-            .checked_sub_signed(Duration::days(7))
+        let window_start = reset
+            .checked_sub_signed(Duration::seconds(i64::from(WEEK_SECONDS)))
             .ok_or(LedgerError::InvalidResetTime)?;
-        let mut days = Vec::with_capacity(7);
-        let mut date = window_start;
-        for index in 0..7 {
+        let window_end = reset
+            .checked_sub_signed(Duration::seconds(1))
+            .ok_or(LedgerError::InvalidResetTime)?;
+        let first_date = window_start.with_timezone(&policy_timezone).date_naive();
+        let last_date = window_end.with_timezone(&policy_timezone).date_naive();
+        let mut days = Vec::new();
+        let mut date = first_date;
+        loop {
             days.push(DailyUsageFact {
                 local_date: date.to_string(),
                 used_micropoints: state.daily_used_micropoints.get(&date).copied(),
             });
-            if index < 6 {
-                date = date.succ_opt().ok_or(LedgerError::DateRangeOverflow)?;
+            if date == last_date {
+                break;
             }
+            date = date.succ_opt().ok_or(LedgerError::DateRangeOverflow)?;
         }
         Ok(Some(LedgerProjection {
             epoch_sequence: epoch.sequence,
-            window_starts_on: window_start.to_string(),
-            window_ends_on: date.to_string(),
+            window_starts_on: first_date.to_string(),
+            window_ends_on: last_date.to_string(),
             days,
         }))
     }
@@ -348,7 +353,7 @@ fn validate_observation(
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, Utc};
+    use chrono::DateTime;
     use chrono_tz::America::New_York;
     use chrono_tz::Asia::Shanghai;
 
@@ -629,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn projection_is_seven_natural_dates_across_dst_with_unknown_slots() {
+    fn projection_includes_every_natural_date_touched_across_dst_with_unknown_slots() {
         let transition = QuotaLedger::apply(
             LedgerState::default(),
             &observation(1_730_700_000_000, 10_000_000, 1_731_283_200),
@@ -640,17 +645,9 @@ mod tests {
             .expect("projection")
             .expect("active epoch");
 
-        assert_eq!(projected.days.len(), 7);
-        assert_eq!(
-            projected.window_ends_on,
-            DateTime::<Utc>::from_timestamp(1_731_283_200, 0)
-                .expect("reset")
-                .with_timezone(&New_York)
-                .date_naive()
-                .pred_opt()
-                .expect("day before reset")
-                .to_string()
-        );
+        assert_eq!(projected.days.len(), 8);
+        assert_eq!(projected.window_starts_on, "2024-11-03");
+        assert_eq!(projected.window_ends_on, "2024-11-10");
         for dates in projected.days.windows(2) {
             let earlier = dates[0]
                 .local_date

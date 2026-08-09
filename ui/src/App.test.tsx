@@ -171,6 +171,7 @@ vi.mock("./api/live-quota", () => ({
         ledgerDay("2026-07-28", 1_000_000, true, "normal"),
         ledgerDay("2026-07-29", null, false),
         ledgerDay("2026-07-30", null, false),
+        ledgerDay("2026-07-31", null, false),
       ],
     },
   }),
@@ -473,7 +474,7 @@ describe("QuotaTide tray app", () => {
 
     expect(screen.getByText("Weekly remaining")).toBeInTheDocument();
     expect(screen.getAllByTitle(/2026年7月31日/u)).toHaveLength(2);
-    expect(screen.getAllByText("周五")).toHaveLength(2);
+    expect(screen.getAllByText("周五")).toHaveLength(4);
     expect(screen.queryByText("Fri")).not.toBeInTheDocument();
   });
 
@@ -609,7 +610,7 @@ describe("QuotaTide tray app", () => {
         ...quota,
         usedMicropoints: 48_000_000,
         remainingMicropoints: 52_000_000,
-        todayAvailableMicropoints: 17_333_334,
+        todayAvailableMicropoints: 13_000_000,
         todayAvailabilityKind: "suggested_from_now",
         ledgerDays: quota.ledgerDays.map((day, index) => ({
           ...day,
@@ -617,21 +618,21 @@ describe("QuotaTide tray app", () => {
           suggestedLimitMicropoints:
             index < 4
               ? null
-              : [17_333_334, 17_333_333, 17_333_333][index - 4],
+              : [13_000_000, 13_000_000, 13_000_000, 13_000_000][index - 4],
           status: "unknown" as const,
         })),
       },
     );
 
-    expect(fixture.todayAvailable).toBe("17.3%");
+    expect(fixture.todayAvailable).toBe("13%");
     expect(fixture.todayAvailabilityKind).toBe("suggested_from_now");
     expect(fixture.days.find((day) => day.today)).toMatchObject({
       used: null,
-      suggested: 17.333334,
+      suggested: 13,
     });
     expect(
       fixture.days.filter((day) => day.suggested !== null).map((day) => day.suggested),
-    ).toEqual([17.333334, 17.333333, 17.333333]);
+    ).toEqual([13, 13, 13, 13]);
   });
 
   it.each([

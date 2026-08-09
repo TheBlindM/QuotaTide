@@ -34,6 +34,111 @@ fn binding(revision: u32, path: &str, account_id: &str) -> RefreshAccountBinding
 }
 
 #[tokio::test]
+async fn public_quota_includes_every_natural_date_touched_by_the_exact_window() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open_with_policy_timezone(
+        directory.path().join("state.sqlite3"),
+        "Asia/Shanghai",
+    )
+    .await
+    .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+
+    let captured_at = timestamp_ms("2026-08-14T10:00:00+08:00");
+    let resets_at = timestamp_ms("2026-08-16T12:00:00+08:00") / 1_000;
+    store
+        .record_usage_success(
+            &binding(1, "/chosen/auth.json", "account-one"),
+            observation_with_reset(captured_at, 41_250_000, resets_at),
+        )
+        .await
+        .expect("record success");
+
+    let quota = store
+        .public_live_quota(captured_at)
+        .await
+        .expect("live quota")
+        .expect("configured quota");
+    assert_eq!(
+        quota
+            .ledger_days
+            .iter()
+            .map(|day| day.local_date.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "2026-08-09",
+            "2026-08-10",
+            "2026-08-11",
+            "2026-08-12",
+            "2026-08-13",
+            "2026-08-14",
+            "2026-08-15",
+            "2026-08-16",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn reset_day_before_the_boundary_remains_available_as_today() {
+    let directory = tempdir().expect("temporary directory");
+    let store = AccountSettingsStore::open_with_policy_timezone(
+        directory.path().join("state.sqlite3"),
+        "Asia/Shanghai",
+    )
+    .await
+    .expect("open store");
+    store
+        .configure_account(0, "/chosen/auth.json", "account-one")
+        .await
+        .expect("configure account");
+
+    let resets_at = timestamp_ms("2026-08-16T12:00:00+08:00") / 1_000;
+    let selected = binding(1, "/chosen/auth.json", "account-one");
+    store
+        .record_usage_success(
+            &selected,
+            observation_with_reset(timestamp_ms("2026-08-09T12:00:00+08:00"), 0, resets_at),
+        )
+        .await
+        .expect("record baseline");
+    let captured_at = timestamp_ms("2026-08-16T10:00:00+08:00");
+    store
+        .record_usage_success(
+            &selected,
+            observation_with_reset(captured_at, 5_000_000, resets_at),
+        )
+        .await
+        .expect("record reset-day usage");
+
+    let quota = store
+        .public_live_quota(captured_at)
+        .await
+        .expect("live quota")
+        .expect("configured quota");
+    assert_eq!(
+        (
+            quota
+                .ledger_days
+                .iter()
+                .find(|day| day.is_today)
+                .map(|day| day.local_date.as_str()),
+            quota.today_base_micropoints,
+            quota.today_available_micropoints,
+            quota.today_availability_kind,
+        ),
+        (
+            Some("2026-08-16"),
+            Some(10_000_000),
+            Some(5_000_000),
+            TodayAvailabilityKind::Actual,
+        )
+    );
+}
+
+#[tokio::test]
 async fn public_quota_projects_exhaustion_from_recent_same_window_samples() {
     let directory = tempdir().expect("temporary directory");
     let store = AccountSettingsStore::open(directory.path().join("state.sqlite3"))
@@ -210,7 +315,7 @@ async fn success_commits_observation_and_health_as_one_public_snapshot() {
     assert_eq!(quota.window_starts_at_unix_s, Some(1_784_895_200));
     assert_eq!(quota.window_ends_at_unix_s, Some(1_785_499_999));
     assert_eq!(quota.public_error, None);
-    assert_eq!(quota.ledger_days.len(), 7);
+    assert_eq!(quota.ledger_days.len(), 8);
     assert!(
         quota
             .ledger_days
@@ -222,14 +327,6 @@ async fn success_commits_observation_and_health_as_one_public_snapshot() {
             .ledger_days
             .iter()
             .all(|day| matches!(day.limit_micropoints, 10_000_000 | 16_000_000))
-    );
-    assert_eq!(
-        quota
-            .ledger_days
-            .iter()
-            .map(|day| day.base_micropoints)
-            .sum::<u32>(),
-        100_000_000
     );
 }
 
@@ -552,7 +649,7 @@ async fn ledger_survives_restart_and_only_projects_the_current_epoch_dates() {
         .expect("projection")
         .expect("quota");
 
-    assert_eq!(before_restart.ledger_days.len(), 7);
+    assert_eq!(before_restart.ledger_days.len(), 8);
     assert_eq!(
         before_restart
             .ledger_days
@@ -870,7 +967,7 @@ fn remove_derived_state_after_asserting_atomic_facts(database: &std::path::Path)
             },
         )
         .expect("atomic ledger facts");
-    assert_eq!(facts, (3, 2, 2, 1, 7));
+    assert_eq!(facts, (3, 2, 2, 1, 8));
     connection
         .execute_batch(
             "PRAGMA foreign_keys = ON;
@@ -939,7 +1036,7 @@ async fn confirmed_same_day_reset_retains_pre_and_post_reset_usage() {
         .expect("projection")
         .expect("quota");
     assert_eq!(quota.pressure, QuotaPressure::Recovery);
-    assert_eq!(quota.ledger_days.len(), 7);
+    assert_eq!(quota.ledger_days.len(), 8);
     assert_eq!(
         quota
             .ledger_days
@@ -1108,7 +1205,7 @@ async fn public_reset_and_ledger_share_the_confirmed_schedule_boundary() {
         .expect("confirmed quota");
     assert_eq!(confirmed.resets_at_unix_s, Some(1_700_612_020));
     assert_eq!(confirmed.window_starts_at_unix_s, Some(1_700_007_220));
-    assert_eq!(confirmed.ledger_days.len(), 7);
+    assert_eq!(confirmed.ledger_days.len(), 8);
 }
 
 #[tokio::test]
