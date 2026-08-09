@@ -126,7 +126,7 @@
   filter: drop-shadow(0 3px 4px rgb(0 0 0 / 30%));
   transform-origin: 50% 100%;
   animation:
-    zombie-sprite 5.8s step-end infinite,
+    zombie-march 5.8s step-end infinite,
     zombie-stagger 2.7s ease-in-out infinite alternate;
 }
 
@@ -433,15 +433,22 @@
 }
 
 .supply-line.pressure-warning .siege-zombie {
+  animation-name: zombie-combat, zombie-stagger;
   animation-duration: 5.8s, 2.7s;
 }
 
 .supply-line.pressure-danger .siege-zombie {
+  animation-name: zombie-combat, zombie-stagger;
   animation-duration: 4.4s, 2.1s;
 }
 
 .supply-line.pressure-critical .siege-zombie {
+  animation-name: zombie-combat, zombie-stagger;
   animation-duration: 3.2s, 1.6s;
+}
+
+.supply-line.pressure-recovery .siege-zombie {
+  animation-name: zombie-combat, zombie-stagger;
 }
 
 .supply-line.pressure-warning .siege-defender--front {
@@ -456,7 +463,18 @@
   animation: survivor-fire 800ms step-end infinite;
 }
 
-@keyframes zombie-sprite {
+@keyframes zombie-march {
+  /* The 33.333% 100% atlas cell is a hit reaction, so idle combat skips it. */
+  0%, 14.27% { background-position: 0 0; }
+  14.28%, 28.55% { background-position: 33.333% 0; }
+  28.56%, 42.83% { background-position: 66.667% 0; }
+  42.84%, 57.11% { background-position: 100% 0; }
+  57.12%, 71.39% { background-position: 0 100%; }
+  71.4%, 85.67% { background-position: 66.667% 100%; }
+  85.68%, 100% { background-position: 100% 100%; }
+}
+
+@keyframes zombie-combat {
   0%, 12.49% { background-position: 0 0; }
   12.5%, 24.99% { background-position: 33.333% 0; }
   25%, 37.49% { background-position: 66.667% 0; }

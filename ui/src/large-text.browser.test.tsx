@@ -365,7 +365,7 @@ test("renders generated artwork for the Last Supply Line scene", async () => {
     expect(
       getComputedStyle(zombie).animationName.split(",").map((name) => name.trim()),
       "Every visible zombie should retain both sprite and continuous stagger motion",
-    ).toEqual(["zombie-sprite", "zombie-stagger"]);
+    ).toEqual(["zombie-combat", "zombie-stagger"]);
   }
   expect(getComputedStyle(requireElement(".supply-line__readout")).backdropFilter)
     .toBe("none");
@@ -397,6 +397,37 @@ test("renders generated artwork for the Last Supply Line scene", async () => {
     frontDefender.left - closestZombieEdge,
     "The warning state should preserve a readable no-man's-land between both sides",
   ).toBeGreaterThanOrEqual(20);
+});
+
+test("keeps safe-state zombies marching without playing hit reactions", () => {
+  window.history.replaceState(
+    {},
+    "",
+    `${window.location.pathname}?preview&quota=0&pressure=safe&story=last_supply_line&theme=dark`,
+  );
+  root = document.createElement("div");
+  root.id = "root";
+  document.body.append(root);
+  render(
+    <I18nProvider preference="system">
+      <App />
+    </I18nProvider>,
+    root,
+  );
+
+  const supplyLine = requireElement(".supply-line");
+  expect(supplyLine).toHaveAttribute("data-siege-combat", "idle");
+  const visibleZombies = Array.from(
+    supplyLine.querySelectorAll<HTMLElement>(".siege-zombie"),
+  ).filter((zombie) => getComputedStyle(zombie).display !== "none");
+  for (const zombie of visibleZombies) {
+    expect(
+      getComputedStyle(zombie).animationName.split(",").map((name) => name.trim()),
+      "Safe-state zombies should march without cycling through the hit frame",
+    ).toEqual(["zombie-march", "zombie-stagger"]);
+  }
+  expect(getComputedStyle(requireElement(".siege-defender--front")).animationName)
+    .toBe("none");
 });
 
 test("turns critical quota pressure into a visible barricade breach", async () => {

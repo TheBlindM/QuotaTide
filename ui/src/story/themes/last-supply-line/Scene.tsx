@@ -79,6 +79,11 @@ export function LastSupplyLineScene({
   const state = siegeState(snapshot.pressure, locale);
   const supply = snapshot.weeklyRemaining;
   const battle = createSiegeBattleState(supply, snapshot.pressure);
+  const combatState = snapshot.pressure === "safe"
+    ? "idle"
+    : snapshot.pressure === "recovery"
+      ? "relief"
+      : "active";
   const phaseLabel = siegePhaseLabel(battle.phase, locale);
   const supplyBand = supply <= 10 ? "critical" : supply <= 25 ? "low" : "ready";
   const signalState = snapshot.pressure === "recovery"
@@ -143,6 +148,7 @@ export function LastSupplyLineScene({
       data-story-display={displayMode}
       data-story-motion={motionActive ? "active" : "paused"}
       data-siege-phase={battle.phase}
+      data-siege-combat={combatState}
       role="group"
       aria-label={text(
         `七日围城：周补给剩余 ${snapshot.weeklyRemainingLabel}，${state}，${phaseLabel}。消耗速度 ${pace}。补给信号 ${signal}。`,
