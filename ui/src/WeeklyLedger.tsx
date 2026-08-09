@@ -128,6 +128,7 @@ export type LedgerFixture = {
   windowLabel: string;
   lastSuccess: string;
   resetAbsolute: string;
+  resetCompact: string;
   resetRelative: string;
   radar: RadarFixture | null;
   days: LedgerDay[];
@@ -169,6 +170,7 @@ const freshFixture: LedgerFixture = {
   windowLabel: "07/24 至 07/30",
   lastSuccess: "上次成功 10:34",
   resetAbsolute: "周四 10:01",
+  resetCompact: "07/31 10:01",
   resetRelative: "约 2 天后",
   radar: {
     kind: "active",
@@ -234,6 +236,7 @@ export const ledgerFixtures: Record<LedgerTone, LedgerFixture> = {
     windowLabel: "",
     lastSuccess: "尚未同步",
     resetAbsolute: "",
+    resetCompact: "",
     resetRelative: "",
     radar: null,
     days: [],
@@ -955,8 +958,8 @@ export function WeeklyLedger({
             <div
               class={`side-stat quota-side-stat side-stat--${todayUsageTone} pressure-${fixture.pressure}`}
               aria-label={text(
-                `周剩余 ${fixture.weeklyRemaining}，${weeklyState}；原因：${weeklyPressureReason}；${todayAvailabilityLabel} ${fixture.todayAvailable}；用量状态：${todayUsageState}${fixture.todayLimit === "" ? "" : `；实际上限 ${fixture.todayLimit}`}`,
-                `Weekly remaining ${fixture.weeklyRemaining}, ${weeklyState}; reason: ${weeklyPressureReason}; ${todayAvailabilityLabel} ${fixture.todayAvailable}; usage status: ${todayUsageState}${fixture.todayLimit === "" ? "" : `; adjusted limit ${fixture.todayLimit}`}`,
+                `周剩余 ${fixture.weeklyRemaining}，${weeklyState}；原因：${weeklyPressureReason}；${todayAvailabilityLabel} ${fixture.todayAvailable}；用量状态：${todayUsageState}${fixture.todayLimit === "" ? "" : `；实际上限 ${fixture.todayLimit}`}${fixture.resetAbsolute === "" ? "" : `；重置时间 ${fixture.resetAbsolute}`}`,
+                `Weekly remaining ${fixture.weeklyRemaining}, ${weeklyState}; reason: ${weeklyPressureReason}; ${todayAvailabilityLabel} ${fixture.todayAvailable}; usage status: ${todayUsageState}${fixture.todayLimit === "" ? "" : `; adjusted limit ${fixture.todayLimit}`}${fixture.resetAbsolute === "" ? "" : `; reset time ${fixture.resetAbsolute}`}`,
               )}
               aria-live="polite"
             >
@@ -974,6 +977,14 @@ export function WeeklyLedger({
                 <span>{todayAvailabilityLabel}</span>
                 <strong>{fixture.todayAvailable}</strong>
               </div>
+              {fixture.resetCompact === "" ? null : (
+                <div class="quota-side-stat__row quota-side-stat__row--reset">
+                  <span>{text("重置时间", "Reset time")}</span>
+                  <strong title={fixture.resetAbsolute}>
+                    {fixture.resetCompact}
+                  </strong>
+                </div>
+              )}
             </div>
             <RadarCard radar={fixture.radar} compact />
           </div>

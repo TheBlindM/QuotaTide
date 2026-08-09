@@ -2695,7 +2695,7 @@ progress::-moz-progress-bar {
 }
 
 .quota-side-stat {
-  gap: 4px;
+  gap: 3px;
   padding: 6px 8px;
 }
 
@@ -2746,6 +2746,25 @@ progress::-moz-progress-bar {
 .ledger-summary .quota-side-stat.pressure-critical .quota-side-stat__state {
   border-color: color-mix(in srgb, var(--red) 52%, transparent);
   color: var(--red);
+}
+
+.quota-side-stat__row--reset {
+  padding-top: 3px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+}
+
+.quota-side-stat .quota-side-stat__row--reset > span {
+  color: var(--accent);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+
+.ledger-summary .quota-side-stat .quota-side-stat__row--reset > strong {
+  color: var(--text);
+  font-family: "SFMono-Regular", "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: -0.025em;
 }
 
 

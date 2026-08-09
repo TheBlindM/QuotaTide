@@ -472,7 +472,7 @@ describe("QuotaTide tray app", () => {
     render(<App />);
 
     expect(screen.getByText("Weekly remaining")).toBeInTheDocument();
-    expect(screen.getByTitle(/2026年7月31日/u)).toBeInTheDocument();
+    expect(screen.getAllByTitle(/2026年7月31日/u)).toHaveLength(2);
     expect(screen.getAllByText("周五")).toHaveLength(2);
     expect(screen.queryByText("Fri")).not.toBeInTheDocument();
   });

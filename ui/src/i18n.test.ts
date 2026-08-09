@@ -58,6 +58,7 @@ describe("localized resources and formatters", () => {
 
     expect(reset?.relative).toBe("in 3m");
     expect(reset?.absolute).toContain("Jul 30, 2026");
+    expect(reset?.compact).toContain("07/30");
     expect(reset?.accessible).toContain("reset time");
   });
 

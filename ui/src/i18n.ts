@@ -99,7 +99,7 @@ export function formatResetTime(
   interfaceLocale: InterfaceLocale,
   formatLocale: string,
   policyTimezone: string,
-): { absolute: string; accessible: string; relative: string } | null {
+): { absolute: string; accessible: string; compact: string; relative: string } | null {
   if (
     resetAtUnixMs === null ||
     !Number.isFinite(resetAtUnixMs) ||
@@ -111,6 +111,13 @@ export function formatResetTime(
   const absolute = new Intl.DateTimeFormat(formatLocale, {
     dateStyle: "medium",
     timeStyle: "short",
+    timeZone: policyTimezone,
+  }).format(resetAtUnixMs);
+  const compact = new Intl.DateTimeFormat(formatLocale, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
     timeZone: policyTimezone,
   }).format(resetAtUnixMs);
   const relative =
@@ -126,7 +133,7 @@ export function formatResetTime(
     interfaceLocale === "zh-CN"
       ? `距离重置：${relative}；重置时间：${absolute}`
       : `Time until reset: ${relative}; reset time: ${absolute}`;
-  return { absolute, accessible, relative };
+  return { absolute, accessible, compact, relative };
 }
 
 function formatRemainingDuration(

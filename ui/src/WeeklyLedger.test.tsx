@@ -387,9 +387,13 @@ describe("Weekly Ledger overview", () => {
     expect(
       within(console).getByRole("region", { name: "重置雷达" }),
     ).toHaveClass("radar-card--summary");
+    const resetTime = within(console).getByText("重置时间", {
+      selector: ".quota-side-stat__row--reset span",
+    });
+    expect(resetTime.parentElement).toHaveTextContent("07/31 10:01");
     expect(
-      screen.queryByText("重置时间", { selector: ".side-stat span" }),
-    ).not.toBeInTheDocument();
+      resetTime.parentElement?.querySelector("strong"),
+    ).toHaveAttribute("title", ledgerFixtures.fresh.resetAbsolute);
   });
 
   it("turns weekly usage and exhaustion pressure into one rising-water chamber", () => {

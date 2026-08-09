@@ -928,6 +928,7 @@ export function projectLiveFixture(
       lastSuccess:
         interfaceLocale === "zh-CN" ? "尚未同步" : "Not synced yet",
       resetAbsolute: "",
+      resetCompact: "",
       resetRelative: "",
       radar: projectRadarFixture(radar, interfaceLocale, formatLocale),
       days: [],
@@ -953,6 +954,7 @@ export function projectLiveFixture(
         "No successful sync yet",
       ),
       resetAbsolute: "",
+      resetCompact: "",
       resetRelative: "",
       todayAvailable: "",
       todayAvailabilityKind: "unavailable",
@@ -964,6 +966,13 @@ export function projectLiveFixture(
 
   const resetMs =
     live.resetsAtUnixS === null ? null : live.resetsAtUnixS * 1000;
+  const resetTime = formatResetTime(
+    resetMs,
+    now,
+    interfaceLocale,
+    formatLocale,
+    account.quotaPolicy.policyTimezone,
+  );
   const used = formatMicropoints(live.usedMicropoints, formatLocale);
   const remaining = formatMicropoints(live.remainingMicropoints, formatLocale);
   const sourceHealth = sourceHealthLabel(live, interfaceLocale);
@@ -1060,26 +1069,9 @@ export function projectLiveFixture(
       live.lastSuccessAtUnixMs === null
         ? copy(interfaceLocale, "尚未成功同步", "No successful sync yet")
         : `${copy(interfaceLocale, "上次成功", "Last successful sync")} ${formatDateTime(live.lastSuccessAtUnixMs, formatLocale)}`,
-    resetAbsolute:
-      resetMs === null
-        ? ""
-        : (formatResetTime(
-            resetMs,
-            now,
-            interfaceLocale,
-            formatLocale,
-            account.quotaPolicy.policyTimezone,
-          )?.absolute ?? ""),
-    resetRelative:
-      resetMs === null
-        ? ""
-        : (formatResetTime(
-            resetMs,
-            now,
-            interfaceLocale,
-            formatLocale,
-            account.quotaPolicy.policyTimezone,
-          )?.relative ?? ""),
+    resetAbsolute: resetTime?.absolute ?? "",
+    resetCompact: resetTime?.compact ?? "",
+    resetRelative: resetTime?.relative ?? "",
     todayAvailable,
     todayAvailabilityKind: live.todayAvailabilityKind,
     todayLimit,
